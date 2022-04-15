@@ -219,14 +219,14 @@ impl MetricsSet {
 
     /// convenience: return the value of time metric with given name, aggregated
     /// across partitions of None if no metric with name is present
-    pub fn time(&self, name: &str) -> Option<usize> {
+    pub fn time(&self, _name: &str) -> Option<usize> {
         self.sum(|metric| matches!(metric.value(), MetricValue::Time { name, .. } if name == name))
             .map(|t| t.as_usize())
     }
 
     /// convenience: return the value of count metric with given name, aggregated
     /// across partitions of None if no metric with name is present
-    pub fn count(&self, name: &str) -> Option<usize> {
+    pub fn count(&self, _name: &str) -> Option<usize> {
         self.sum(|metric| matches!(metric.value(), MetricValue::Count { name, .. } if name == name))
             .map(|t| t.as_usize())
     }

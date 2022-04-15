@@ -42,7 +42,7 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
-use ballista_executor::metrics::{default_metrics_collector, ExecutorMetricsCollector};
+use ballista_executor::metrics::default_metrics_collector;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 
