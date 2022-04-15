@@ -24,6 +24,38 @@ use prometheus::{
     Encoder, Histogram, IntCounter, Opts, TextEncoder,
 };
 
+pub struct StageMetrics {
+    pub write_time: Histogram,
+    pub input_rows: IntCounter,
+    pub output_rows: IntCounter
+}
+
+impl StageMetrics {
+    pub fn new() -> Result<Self> {
+        let write_time = register_histogram!(
+            "shuffle_write_time",
+            "Histogram of stage execution time",
+            vec![50.0, 500.0, 1000.0, 1500.0, 2000.0, 5000.0]
+        )
+            .map_err(|e| {
+                BallistaError::General(format!("Error registering metric: {:?}", e))
+            })?;
+        let output_rows =
+            register_int_counter!("shuffle_output_rows", "Total output rows")
+                .map_err(|e| {
+                    BallistaError::General(format!("Error registering metric: {:?}", e))
+                })?;
+        let input_rows =
+            register_int_counter!("shuffle_input_rows", "Total disk spills")
+                .map_err(|e| {
+                    BallistaError::General(format!("Error registering metric: {:?}", e))
+                })?;
+        Ok(Self {
+            write_time, input_rows, output_rows
+        })
+    }
+}
+
 pub struct ExecutionPlanMetrics {
     pub total_elapsed_compute: IntCounter,
     pub elapsed_compute: Histogram,
@@ -77,13 +109,13 @@ impl ExecutionPlanMetrics {
 }
 
 pub struct PrometheusMetricsCollector {
-    metrics: ExecutionPlanMetrics,
+    metrics: StageMetrics,
 }
 
 impl PrometheusMetricsCollector {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            metrics: ExecutionPlanMetrics::new("SHUFFLE_WRITE")?,
+            metrics: StageMetrics::new()?,
         })
     }
 }
@@ -97,21 +129,16 @@ impl ExecutorMetricsCollector for PrometheusMetricsCollector {
         plan: ShuffleWriterExec,
     ) {
         if let Some(metrics) = plan.metrics().map(|m| m.aggregate_by_partition()) {
-            if let Some(compute) = metrics.elapsed_compute() {
-                self.metrics.total_elapsed_compute.inc_by(compute as u64);
-                self.metrics.elapsed_compute.observe(compute as f64);
+            if let Some(write_time) = metrics.time("write_time") {
+                self.metrics.write_time.observe(write_time as f64);
             }
 
-            if let Some(rows) = metrics.output_rows() {
-                self.metrics.total_output_rows.inc_by(rows as u64);
+            if let Some(output_rows) = metrics.output_rows() {
+                self.metrics.output_rows.inc_by(output_rows as u64);
             }
 
-            if let Some(spills) = metrics.spill_count() {
-                self.metrics.total_spill_count.inc_by(spills as u64);
-            }
-
-            if let Some(spilled) = metrics.spilled_bytes() {
-                self.metrics.total_spilled_bytes.inc_by(spilled as u64);
+            if let Some(input_rows) = metrics.count("input_rows") {
+                self.metrics.input_rows.inc_by(input_rows as u64);
             }
         }
 
