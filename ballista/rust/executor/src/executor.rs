@@ -112,8 +112,8 @@ impl Executor {
             "=== [{}/{}/{}] Physical plan with metrics ===\n{}\n",
             job_id,
             stage_id,
-            partition,
-            DisplayableExecutionPlan::with_metrics(&plan).indent()
+            part,
+            DisplayableExecutionPlan::with_metrics(&exec).indent()
         );
 
         self.metrics_collector
