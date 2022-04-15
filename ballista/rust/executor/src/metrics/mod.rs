@@ -15,8 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "prometheus-metrics")]
+pub mod prometheus;
+
+use ballista_core::error::Result;
 use ballista_core::execution_plans::ShuffleWriterExec;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use std::sync::Arc;
 
 /// `ExecutorMetricsCollector` records metrics for `ShuffleWriteExec`
 /// after they are executed.
@@ -55,4 +60,14 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
             DisplayableExecutionPlan::with_metrics(&plan).indent()
         );
     }
+}
+
+#[cfg(feature = "prometheus-metrics")]
+pub fn default_metrics_collector() -> Result<Arc<dyn ExecutorMetricsCollector>> {
+    Ok(Arc::new(prometheus::PrometheusMetricsCollector::new()?))
+}
+
+#[cfg(not(feature = "prometheus-metrics"))]
+pub fn default_metrics_collector() -> Result<Arc<dyn ExecutorMetricsCollector>> {
+    Ok(Arc::new(LoggingMetricsCollector::default()))
 }

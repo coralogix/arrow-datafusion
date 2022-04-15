@@ -42,7 +42,7 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
-use ballista_executor::metrics::LoggingMetricsCollector;
+use ballista_executor::metrics::{default_metrics_collector, ExecutorMetricsCollector};
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
         BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
     })?);
 
-    let metrics_collector = Arc::new(LoggingMetricsCollector::default());
+    let metrics_collector = default_metrics_collector()?;
 
     let executor = Arc::new(Executor::new(
         executor_meta,
