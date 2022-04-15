@@ -44,7 +44,7 @@ impl ExecutionPlanMetrics {
         let elapsed_compute = register_histogram!(
             format!("{}_elapsed_compute_histogram", name),
             "Histogram of elapsed compute times",
-            vec![50.0, 500.0, 1000.0, 1500.0, 2000.0, 5000.0]
+            vec![0.0, 50.0, 500.0, 1000.0, 1500.0, 2000.0, 5000.0]
         )
         .map_err(|e| {
             BallistaError::General(format!("Error registering metric: {:?}", e))

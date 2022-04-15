@@ -32,6 +32,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 
 /// Ballista executor
 pub struct Executor {
@@ -106,6 +107,14 @@ impl Executor {
         }?;
 
         let partitions = exec.execute_shuffle_write(part, task_ctx).await?;
+
+        println!(
+            "=== [{}/{}/{}] Physical plan with metrics ===\n{}\n",
+            job_id,
+            stage_id,
+            partition,
+            DisplayableExecutionPlan::with_metrics(&plan).indent()
+        );
 
         self.metrics_collector
             .record_stage(&job_id, stage_id, part, exec);
