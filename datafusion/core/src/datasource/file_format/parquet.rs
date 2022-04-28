@@ -397,7 +397,7 @@ impl ChunkReader for ChunkObjectReader {
         }
 
         // Only works as expected when actual IO is performed in sync_chunk_reader
-        // When IO is performed by Read instance returned by sync_chunk_reader
+        // And does not capture time if IO is performed by returned Read object
         #[cfg(debug_assertions)]
         let _timer = self.io_time.as_ref().map(metrics::Time::timer);
 
