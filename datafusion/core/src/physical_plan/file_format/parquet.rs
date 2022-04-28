@@ -89,7 +89,7 @@ struct ParquetFileMetrics {
     pub row_groups_pruned: metrics::Count,
     /// Total number of bytes scanned
     pub bytes_scanned: metrics::Count,
-    /// Time spent readyng bytes
+    /// Time spent reading bytes
     #[cfg(debug_assertions)]
     pub io_time: metrics::Time,
 }
