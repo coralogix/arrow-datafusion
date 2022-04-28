@@ -278,6 +278,8 @@ fn fetch_schema(object_reader: Arc<dyn ObjectReader>) -> Result<Schema> {
     let obj_reader = ChunkObjectReader {
         object_reader,
         bytes_scanned: None,
+        #[cfg(debug_assertions)]
+        io_time: None,
     };
     let file_reader = Arc::new(SerializedFileReader::new(obj_reader)?);
     let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
@@ -294,6 +296,8 @@ fn fetch_statistics(
     let obj_reader = ChunkObjectReader {
         object_reader,
         bytes_scanned: None,
+        #[cfg(debug_assertions)]
+        io_time: None,
     };
     let file_reader = Arc::new(SerializedFileReader::new(obj_reader)?);
     let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
@@ -373,6 +377,9 @@ pub struct ChunkObjectReader {
     pub object_reader: Arc<dyn ObjectReader>,
     /// Optional counter which will track total number of bytes scanned
     pub bytes_scanned: Option<metrics::Count>,
+    /// Time spent reading bytes
+    #[cfg(debug_assertions)]
+    pub io_time: Option<metrics::Time>,
 }
 
 impl Length for ChunkObjectReader {
@@ -388,6 +395,12 @@ impl ChunkReader for ChunkObjectReader {
         if let Some(m) = self.bytes_scanned.as_ref() {
             m.add(length)
         }
+
+        // Only works as expected when actual IO is performed in sync_chunk_reader
+        // And does not capture time if IO is performed by returned Read object
+        #[cfg(debug_assertions)]
+        let _timer = self.io_time.as_ref().map(metrics::Time::timer);
+
         self.object_reader
             .sync_chunk_reader(start, length)
             .map_err(DataFusionError::IoError)

@@ -88,6 +88,9 @@ struct ParquetFileMetrics {
     pub row_groups_pruned: metrics::Count,
     /// Total number of bytes scanned
     pub bytes_scanned: metrics::Count,
+    /// Time spent reading bytes
+    #[cfg(debug_assertions)]
+    pub io_time: metrics::Time,
 }
 
 impl ParquetExec {
@@ -156,10 +159,17 @@ impl ParquetFileMetrics {
             .with_new_label("filename", filename.to_string())
             .counter("bytes_scanned", partition);
 
+        #[cfg(debug_assertions)]
+        let io_time = MetricBuilder::new(metrics)
+            .with_new_label("filename", filename.to_string())
+            .subset_time("io_time", partition);
+
         Self {
             predicate_evaluation_errors,
             row_groups_pruned,
             bytes_scanned,
+            #[cfg(debug_assertions)]
+            io_time,
         }
     }
 }
@@ -321,6 +331,9 @@ impl ParquetExecStream {
             &self.metrics,
         );
         let bytes_scanned = file_metrics.bytes_scanned.clone();
+        #[cfg(debug_assertions)]
+        let io_time = file_metrics.io_time.clone();
+
         let object_reader = self
             .object_store
             .file_reader(file.file_meta.sized_file.clone())?;
@@ -345,6 +358,8 @@ impl ParquetExecStream {
             ChunkObjectReader {
                 object_reader,
                 bytes_scanned: Some(bytes_scanned),
+                #[cfg(debug_assertions)]
+                io_time: Some(io_time),
             },
             opt.build(),
         )?;
