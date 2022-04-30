@@ -34,8 +34,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use async_trait::async_trait;
+
 use futures::{Stream, StreamExt, TryStreamExt};
-use futures::future::{join_all, SelectAll};
 use log::debug;
 use parquet::arrow::{
     arrow_reader::ParquetRecordBatchReader, ArrowReader, ArrowWriter,
@@ -52,6 +52,7 @@ use datafusion_data_access::object_store::ObjectStore;
 use datafusion_expr::Expr;
 
 use crate::physical_plan::stream::RecordBatchReceiverStream;
+
 use crate::{
     datasource::{file_format::parquet::ChunkObjectReader, listing::PartitionedFile},
     error::{DataFusionError, Result},
@@ -66,7 +67,6 @@ use crate::{
     },
     scalar::ScalarValue,
 };
-use crate::physical_plan::EmptyRecordBatchStream;
 
 use super::PartitionColumnProjector;
 
@@ -222,37 +222,38 @@ impl ExecutionPlan for ParquetExec {
                 Arc::clone(&self.projected_schema),
                 &self.base_config.table_partition_cols,
             );
-            streams.push(
-                ParquetExecStream {
-                    error: false,
-                    partition_index,
-                    metrics: self.metrics.clone(),
-                    object_store: self.base_config.object_store.clone(),
-                    pruning_predicate: self.pruning_predicate.clone(),
-                    batch_size: context.session_config().batch_size,
-                    schema: schema.clone(),
-                    projection: projection.clone(),
-                    remaining_rows: self.base_config.limit,
-                    reader: None,
-                    files: vec![file].into(),
-                    projector: partition_col_proj,
-                    adapter: SchemaAdapter::new(self.base_config.file_schema.clone()),
-                }
-            );
+            streams.push(ParquetExecStream {
+                error: false,
+                partition_index,
+                metrics: self.metrics.clone(),
+                object_store: self.base_config.object_store.clone(),
+                pruning_predicate: self.pruning_predicate.clone(),
+                batch_size: context.session_config().batch_size,
+                schema: schema.clone(),
+                projection: projection.clone(),
+                remaining_rows: self.base_config.limit,
+                reader: None,
+                files: vec![file].into(),
+                projector: partition_col_proj,
+                adapter: SchemaAdapter::new(self.base_config.file_schema.clone()),
+            });
         }
-
-        let mut stream = futures::stream::select_all(streams);
 
         // Use spawn_blocking only if running from a tokio context (#2201)
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
-                let (response_tx, response_rx) = tokio::sync::mpsc::channel(2);
+                let (response_tx, response_rx) = tokio::sync::mpsc::channel(8);
 
-                let join_handle = handle.spawn( async move {
-                    for result in stream.next().await {
-                        if response_tx.send(result).await.is_err() {
-                            break;
-                        }
+                let join_handle = handle.spawn(async move {
+                    for mut stream in streams {
+                        let response_tx = response_tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(result) = Iterator::next(&mut stream) {
+                                if response_tx.send(result).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
                     }
                 });
 
@@ -262,12 +263,10 @@ impl ExecutionPlan for ParquetExec {
                     join_handle,
                 ))
             }
-            Err(_) => {
-                // Ok(Box::pin(stream))
-                Ok(Box::pin(MergedParquetExecStream {
-                    schema, inner: stream
-                }))
-            },
+            Err(_) => Ok(Box::pin(MergedParquetExecStream {
+                schema,
+                inner: futures::stream::select_all(streams),
+            })),
         }
     }
 
@@ -457,12 +456,15 @@ impl RecordBatchStream for ParquetExecStream {
 
 struct MergedParquetExecStream {
     schema: SchemaRef,
-    inner: futures::stream::select_all::SelectAll<ParquetExecStream>
+    inner: futures::stream::select_all::SelectAll<ParquetExecStream>,
 }
 
 impl MergedParquetExecStream {
     fn create(schema: SchemaRef, streams: Vec<ParquetExecStream>) -> Self {
-        Self { schema, inner: futures::stream::select_all(streams) }
+        Self {
+            schema,
+            inner: futures::stream::select_all(streams),
+        }
     }
 }
 
