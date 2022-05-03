@@ -326,7 +326,9 @@ fn extract_stage_id_from_stage_key(stage_key: &str) -> Result<StageKey> {
     } else {
         Ok((
             splits.get(2).unwrap().to_string(),
-            splits.get(3).unwrap().parse::<u32>().unwrap(),
+            splits.get(3).unwrap().parse::<u32>().map_err(|_| {
+                BallistaError::Internal(format!("Unexpected stage key: {}", stage_key))
+            })?,
         ))
     }
 }
