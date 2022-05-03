@@ -318,18 +318,25 @@ fn extract_job_id_from_job_key(job_key: &str) -> Result<&str> {
 
 fn extract_stage_id_from_stage_key(stage_key: &str) -> Result<StageKey> {
     let splits: Vec<&str> = stage_key.split('/').collect();
-    if splits.len() < 4 {
+    if splits.len() == 4 {
+        Ok((
+            splits[2].to_string(),
+            splits[3].parse::<u32>().map_err(|_| {
+                BallistaError::Internal(format!("Unexpected stage key: {}", stage_key))
+            })?,
+        ))
+    } else if splits.len() == 5 {
+        Ok((
+            splits[3].to_string(),
+            splits[4].parse::<u32>().map_err(|_| {
+                BallistaError::Internal(format!("Unexpected stage key: {}", stage_key))
+            })?,
+        ))
+    } else {
         Err(BallistaError::Internal(format!(
             "Unexpected stage key: {}",
             stage_key
         )))
-    } else {
-        Ok((
-            splits.get(2).unwrap().to_string(),
-            splits.get(3).unwrap().parse::<u32>().map_err(|_| {
-                BallistaError::Internal(format!("Unexpected stage key: {}", stage_key))
-            })?,
-        ))
     }
 }
 
