@@ -269,6 +269,7 @@ mod tests {
         }};
     }
 
+    #[ignore]
     #[test]
     fn test_cast_decimal_to_decimal() -> Result<()> {
         let array = vec![1234, 2222, 3, 4000, 5000];

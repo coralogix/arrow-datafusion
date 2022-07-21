@@ -1809,7 +1809,7 @@ mod tests {
         let mut dict_builder = StringDictionaryBuilder::new(keys_builder, values_builder);
 
         dict_builder.append("one")?;
-        dict_builder.append_null()?;
+        dict_builder.append_null();
         dict_builder.append("three")?;
         dict_builder.append("four")?;
         let dict_array = dict_builder.finish();
@@ -2634,7 +2634,7 @@ mod tests {
         for value in array {
             match value {
                 None => {
-                    decimal_builder.append_null()?;
+                    decimal_builder.append_null();
                 }
                 Some(v) => {
                     decimal_builder.append_value(*v)?;

@@ -527,15 +527,15 @@ macro_rules! build_values_list {
             for scalar_value in $VALUES {
                 match scalar_value {
                     ScalarValue::$SCALAR_TY(Some(v)) => {
-                        builder.values().append_value(v.clone()).unwrap()
+                        builder.values().append_value(v.clone())
                     }
                     ScalarValue::$SCALAR_TY(None) => {
-                        builder.values().append_null().unwrap();
+                        builder.values().append_null();
                     }
                     _ => panic!("Incompatible ScalarValue for list"),
                 };
             }
-            builder.append(true).unwrap();
+            builder.append(true);
         }
 
         builder.finish()
@@ -550,15 +550,15 @@ macro_rules! build_values_list_tz {
             for scalar_value in $VALUES {
                 match scalar_value {
                     ScalarValue::$SCALAR_TY(Some(v), _) => {
-                        builder.values().append_value(v.clone()).unwrap()
+                        builder.values().append_value(v.clone())
                     }
                     ScalarValue::$SCALAR_TY(None, _) => {
-                        builder.values().append_null().unwrap();
+                        builder.values().append_null();
                     }
                     _ => panic!("Incompatible ScalarValue for list"),
                 };
             }
-            builder.append(true).unwrap();
+            builder.append(true);
         }
 
         builder.finish()
@@ -879,10 +879,10 @@ impl ScalarValue {
                             for s in xs {
                                 match s {
                                     ScalarValue::$SCALAR_TY(Some(val)) => {
-                                        builder.values().append_value(val)?;
+                                        builder.values().append_value(val);
                                     }
                                     ScalarValue::$SCALAR_TY(None) => {
-                                        builder.values().append_null()?;
+                                        builder.values().append_null();
                                     }
                                     sv => {
                                         return Err(DataFusionError::Internal(format!(
@@ -893,10 +893,10 @@ impl ScalarValue {
                                     }
                                 }
                             }
-                            builder.append(true)?;
+                            builder.append(true);
                         }
                         ScalarValue::List(None, _) => {
-                            builder.append(false)?;
+                            builder.append(false);
                         }
                         sv => {
                             return Err(DataFusionError::Internal(format!(
@@ -1129,9 +1129,7 @@ impl ScalarValue {
         data_type: &DataType,
     ) -> Result<GenericListArray<i32>> {
         let mut offsets = Int32Array::builder(0);
-        if let Err(err) = offsets.append_value(0) {
-            return Err(DataFusionError::ArrowError(err));
-        }
+        offsets.append_value(0);
 
         let mut elements: Vec<ArrayRef> = Vec::new();
         let mut valid = BooleanBufferBuilder::new(0);
@@ -1144,9 +1142,7 @@ impl ScalarValue {
 
                         // Add new offset index
                         flat_len += element_array.len() as i32;
-                        if let Err(err) = offsets.append_value(flat_len) {
-                            return Err(DataFusionError::ArrowError(err));
-                        }
+                        offsets.append_value(flat_len);
 
                         elements.push(element_array);
 
@@ -1155,9 +1151,7 @@ impl ScalarValue {
                     }
                     None => {
                         // Repeat previous offset index
-                        if let Err(err) = offsets.append_value(flat_len) {
-                            return Err(DataFusionError::ArrowError(err));
-                        }
+                        offsets.append_value(flat_len);
 
                         // Element is null
                         valid.append(false);
@@ -3106,116 +3100,100 @@ mod tests {
             .values()
             .field_builder::<StringBuilder>(0)
             .unwrap()
-            .append_value("First")
-            .unwrap();
+            .append_value("First");
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(1)
-            .unwrap();
+            .append_value(1);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(2)
-            .unwrap();
+            .append_value(2);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(3)
-            .unwrap();
+            .append_value(3);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
-            .append(true)
-            .unwrap();
-        list_builder.values().append(true).unwrap();
+            .append(true);
+        list_builder.values().append(true);
 
         list_builder
             .values()
             .field_builder::<StringBuilder>(0)
             .unwrap()
-            .append_value("Second")
-            .unwrap();
+            .append_value("Second");
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(4)
-            .unwrap();
+            .append_value(4);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(5)
-            .unwrap();
+            .append_value(5);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
-            .append(true)
-            .unwrap();
-        list_builder.values().append(true).unwrap();
-        list_builder.append(true).unwrap();
+            .append(true);
+        list_builder.values().append(true);
+        list_builder.append(true);
 
         list_builder
             .values()
             .field_builder::<StringBuilder>(0)
             .unwrap()
-            .append_value("Third")
-            .unwrap();
+            .append_value("Third");
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(6)
-            .unwrap();
+            .append_value(6);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
-            .append(true)
-            .unwrap();
-        list_builder.values().append(true).unwrap();
-        list_builder.append(true).unwrap();
+            .append(true);
+        list_builder.values().append(true);
+        list_builder.append(true);
 
         list_builder
             .values()
             .field_builder::<StringBuilder>(0)
             .unwrap()
-            .append_value("Second")
-            .unwrap();
+            .append_value("Second");
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(4)
-            .unwrap();
+            .append_value(4);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
             .values()
-            .append_value(5)
-            .unwrap();
+            .append_value(5);
         list_builder
             .values()
             .field_builder::<ListBuilder<PrimitiveBuilder<Int32Type>>>(1)
             .unwrap()
-            .append(true)
-            .unwrap();
-        list_builder.values().append(true).unwrap();
-        list_builder.append(true).unwrap();
+            .append(true);
+        list_builder.values().append(true);
+        list_builder.append(true);
 
         let expected = list_builder.finish();
 
@@ -3285,27 +3263,27 @@ mod tests {
         let middle_builder = ListBuilder::new(inner_builder);
         let mut outer_builder = ListBuilder::new(middle_builder);
 
-        outer_builder.values().values().append_value(1).unwrap();
-        outer_builder.values().values().append_value(2).unwrap();
-        outer_builder.values().values().append_value(3).unwrap();
-        outer_builder.values().append(true).unwrap();
+        outer_builder.values().values().append_value(1);
+        outer_builder.values().values().append_value(2);
+        outer_builder.values().values().append_value(3);
+        outer_builder.values().append(true);
 
-        outer_builder.values().values().append_value(4).unwrap();
-        outer_builder.values().values().append_value(5).unwrap();
-        outer_builder.values().append(true).unwrap();
-        outer_builder.append(true).unwrap();
+        outer_builder.values().values().append_value(4);
+        outer_builder.values().values().append_value(5);
+        outer_builder.values().append(true);
+        outer_builder.append(true);
 
-        outer_builder.values().values().append_value(6).unwrap();
-        outer_builder.values().append(true).unwrap();
+        outer_builder.values().values().append_value(6);
+        outer_builder.values().append(true);
 
-        outer_builder.values().values().append_value(7).unwrap();
-        outer_builder.values().values().append_value(8).unwrap();
-        outer_builder.values().append(true).unwrap();
-        outer_builder.append(true).unwrap();
+        outer_builder.values().values().append_value(7);
+        outer_builder.values().values().append_value(8);
+        outer_builder.values().append(true);
+        outer_builder.append(true);
 
-        outer_builder.values().values().append_value(9).unwrap();
-        outer_builder.values().append(true).unwrap();
-        outer_builder.append(true).unwrap();
+        outer_builder.values().values().append_value(9);
+        outer_builder.values().append(true);
+        outer_builder.append(true);
 
         let expected = outer_builder.finish();
 

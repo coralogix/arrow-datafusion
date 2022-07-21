@@ -267,15 +267,15 @@ mod tests {
                     Some(values) => {
                         for value in values.iter() {
                             match value {
-                                Some(v) => builder.values().append_value((*v).into())?,
-                                None => builder.values().append_null()?,
+                                Some(v) => builder.values().append_value((*v).into()),
+                                None => builder.values().append_null(),
                             }
                         }
 
-                        builder.append(true)?;
+                        builder.append(true);
                     }
                     None => {
-                        builder.append(false)?;
+                        builder.append(false);
                     }
                 }
             }

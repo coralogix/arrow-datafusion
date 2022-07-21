@@ -586,7 +586,7 @@ mod tests {
         for value in array {
             decimal_builder.append_value(*value)?
         }
-        decimal_builder.append_null()?;
+        decimal_builder.append_null();
         Ok(decimal_builder.finish())
     }
 }

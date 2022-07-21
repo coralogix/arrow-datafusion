@@ -365,13 +365,11 @@ impl StreamedBatch {
         };
         let current_chunk = self.output_indices.last_mut().unwrap();
 
-        current_chunk
-            .streamed_indices
-            .append_value(self.idx as u64)?;
+        current_chunk.streamed_indices.append_value(self.idx as u64);
         if let Some(idx) = buffered_idx {
-            current_chunk.buffered_indices.append_value(idx as u64)?;
+            current_chunk.buffered_indices.append_value(idx as u64);
         } else {
-            current_chunk.buffered_indices.append_null()?;
+            current_chunk.buffered_indices.append_null();
         }
 
         Ok(())

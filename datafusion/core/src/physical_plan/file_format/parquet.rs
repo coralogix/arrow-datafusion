@@ -360,6 +360,38 @@ impl AsyncFileReader for ParquetFileReader {
             .boxed()
     }
 
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>>
+    where
+        Self: Send,
+    {
+        let mut tasks = Vec::with_capacity(ranges.len());
+
+        for range in ranges {
+            self.metrics.bytes_scanned.add(range.end - range.start);
+
+            let task = self.store.get_range(&self.meta.location, range);
+            tasks.push(task);
+        }
+
+        async move {
+            let results = futures::future::join_all(tasks).await;
+
+            results
+                .into_iter()
+                .collect::<object_store::Result<Vec<_>>>()
+                .map_err(|e| {
+                    ParquetError::General(format!(
+                        "Error fetching from object store: {:?}",
+                        e
+                    ))
+                })
+        }
+        .boxed()
+    }
+
     fn get_metadata(
         &mut self,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
