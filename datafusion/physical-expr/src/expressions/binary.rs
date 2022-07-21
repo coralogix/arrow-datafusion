@@ -123,7 +123,7 @@ fn is_not_distinct_from_bool(
 /// Creates an BooleanArray the same size as `left`,
 /// applying `op` to all non-null elements of left
 fn compare_decimal_scalar<F>(
-    left: &DecimalArray,
+    left: &Decimal128Array,
     right: i128,
     op: F,
 ) -> Result<BooleanArray>
@@ -139,8 +139,8 @@ where
 /// Creates an BooleanArray the same size as `left`,
 /// by applying `op` to all non-null elements of left and right
 fn compare_decimal<F>(
-    left: &DecimalArray,
-    right: &DecimalArray,
+    left: &Decimal128Array,
+    right: &Decimal128Array,
     op: F,
 ) -> Result<BooleanArray>
 where
@@ -160,62 +160,68 @@ where
 }
 
 pub(super) fn eq_decimal_scalar(
-    left: &DecimalArray,
+    left: &Decimal128Array,
     right: i128,
 ) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left == right)
 }
 
 pub(super) fn eq_decimal(
-    left: &DecimalArray,
-    right: &DecimalArray,
+    left: &Decimal128Array,
+    right: &Decimal128Array,
 ) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left == right)
 }
 
-fn neq_decimal_scalar(left: &DecimalArray, right: i128) -> Result<BooleanArray> {
+fn neq_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left != right)
 }
 
-fn neq_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<BooleanArray> {
+fn neq_decimal(left: &Decimal128Array, right: &Decimal128Array) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left != right)
 }
 
-fn lt_decimal_scalar(left: &DecimalArray, right: i128) -> Result<BooleanArray> {
+fn lt_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left < right)
 }
 
-fn lt_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<BooleanArray> {
+fn lt_decimal(left: &Decimal128Array, right: &Decimal128Array) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left < right)
 }
 
-fn lt_eq_decimal_scalar(left: &DecimalArray, right: i128) -> Result<BooleanArray> {
+fn lt_eq_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left <= right)
 }
 
-fn lt_eq_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<BooleanArray> {
+fn lt_eq_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left <= right)
 }
 
-fn gt_decimal_scalar(left: &DecimalArray, right: i128) -> Result<BooleanArray> {
+fn gt_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left > right)
 }
 
-fn gt_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<BooleanArray> {
+fn gt_decimal(left: &Decimal128Array, right: &Decimal128Array) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left > right)
 }
 
-fn gt_eq_decimal_scalar(left: &DecimalArray, right: i128) -> Result<BooleanArray> {
+fn gt_eq_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<BooleanArray> {
     compare_decimal_scalar(left, right, |left, right| left >= right)
 }
 
-fn gt_eq_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<BooleanArray> {
+fn gt_eq_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<BooleanArray> {
     compare_decimal(left, right, |left, right| left >= right)
 }
 
 fn is_distinct_from_decimal(
-    left: &DecimalArray,
-    right: &DecimalArray,
+    left: &Decimal128Array,
+    right: &Decimal128Array,
 ) -> Result<BooleanArray> {
     Ok(left
         .iter()
@@ -229,8 +235,8 @@ fn is_distinct_from_decimal(
 }
 
 fn is_not_distinct_from_decimal(
-    left: &DecimalArray,
-    right: &DecimalArray,
+    left: &Decimal128Array,
+    right: &Decimal128Array,
 ) -> Result<BooleanArray> {
     Ok(left
         .iter()
@@ -243,13 +249,13 @@ fn is_not_distinct_from_decimal(
         .collect())
 }
 
-/// Creates an DecimalArray the same size as `left`,
+/// Creates an Decimal128Array the same size as `left`,
 /// by applying `op` to all non-null elements of left and right
 fn arith_decimal<F>(
-    left: &DecimalArray,
-    right: &DecimalArray,
+    left: &Decimal128Array,
+    right: &Decimal128Array,
     op: F,
-) -> Result<DecimalArray>
+) -> Result<Decimal128Array>
 where
     F: Fn(i128, i128) -> Result<i128>,
 {
@@ -266,10 +272,10 @@ where
 }
 
 fn arith_decimal_scalar<F>(
-    left: &DecimalArray,
+    left: &Decimal128Array,
     right: i128,
     op: F,
-) -> Result<DecimalArray>
+) -> Result<Decimal128Array>
 where
     F: Fn(i128, i128) -> Result<i128>,
 {
@@ -284,38 +290,53 @@ where
         .collect()
 }
 
-fn add_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalArray> {
+fn add_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<Decimal128Array> {
     let array = arith_decimal(left, right, |left, right| Ok(left + right))?
         .with_precision_and_scale(left.precision(), left.scale())?;
     Ok(array)
 }
 
-fn add_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArray> {
+fn add_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<Decimal128Array> {
     let array = arith_decimal_scalar(left, right, |left, right| Ok(left + right))?
         .with_precision_and_scale(left.precision(), left.scale())?;
     Ok(array)
 }
 
-fn subtract_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalArray> {
+fn subtract_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<Decimal128Array> {
     let array = arith_decimal(left, right, |left, right| Ok(left - right))?
         .with_precision_and_scale(left.precision(), left.scale())?;
     Ok(array)
 }
 
-fn subtract_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArray> {
+fn subtract_decimal_scalar(
+    left: &Decimal128Array,
+    right: i128,
+) -> Result<Decimal128Array> {
     let array = arith_decimal_scalar(left, right, |left, right| Ok(left - right))?
         .with_precision_and_scale(left.precision(), left.scale())?;
     Ok(array)
 }
 
-fn multiply_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalArray> {
+fn multiply_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<Decimal128Array> {
     let divide = 10_i128.pow(left.scale() as u32);
     let array = arith_decimal(left, right, |left, right| Ok(left * right / divide))?
         .with_precision_and_scale(left.precision(), left.scale())?;
     Ok(array)
 }
 
-fn multiply_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArray> {
+fn multiply_decimal_scalar(
+    left: &Decimal128Array,
+    right: i128,
+) -> Result<Decimal128Array> {
     let divide = 10_i128.pow(left.scale() as u32);
     let array =
         arith_decimal_scalar(left, right, |left, right| Ok(left * right / divide))?
@@ -323,7 +344,10 @@ fn multiply_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalAr
     Ok(array)
 }
 
-fn divide_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalArray> {
+fn divide_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<Decimal128Array> {
     let mul = 10_f64.powi(left.scale() as i32);
     let array = arith_decimal(left, right, |left, right| {
         let l_value = left as f64;
@@ -335,7 +359,7 @@ fn divide_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalAr
     Ok(array)
 }
 
-fn divide_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArray> {
+fn divide_decimal_scalar(left: &Decimal128Array, right: i128) -> Result<Decimal128Array> {
     let mul = 10_f64.powi(left.scale() as i32);
     let array = arith_decimal_scalar(left, right, |left, right| {
         let l_value = left as f64;
@@ -347,7 +371,10 @@ fn divide_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArra
     Ok(array)
 }
 
-fn modulus_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalArray> {
+fn modulus_decimal(
+    left: &Decimal128Array,
+    right: &Decimal128Array,
+) -> Result<Decimal128Array> {
     let array = arith_decimal(left, right, |left, right| {
         if right == 0 {
             Err(DataFusionError::ArrowError(DivideByZero))
@@ -359,7 +386,10 @@ fn modulus_decimal(left: &DecimalArray, right: &DecimalArray) -> Result<DecimalA
     Ok(array)
 }
 
-fn modulus_decimal_scalar(left: &DecimalArray, right: i128) -> Result<DecimalArray> {
+fn modulus_decimal_scalar(
+    left: &Decimal128Array,
+    right: i128,
+) -> Result<Decimal128Array> {
     if right == 0 {
         return Err(DataFusionError::ArrowError(DivideByZero));
     }
@@ -794,7 +824,7 @@ macro_rules! binary_primitive_array_op {
         match $LEFT.data_type() {
             // TODO support decimal type
             // which is not the primitive type
-            DataType::Decimal(_,_) => compute_decimal_op!($LEFT, $RIGHT, $OP, DecimalArray),
+            DataType::Decimal(_,_) => compute_decimal_op!($LEFT, $RIGHT, $OP, Decimal128Array),
             DataType::Int8 => compute_op!($LEFT, $RIGHT, $OP, Int8Array),
             DataType::Int16 => compute_op!($LEFT, $RIGHT, $OP, Int16Array),
             DataType::Int32 => compute_op!($LEFT, $RIGHT, $OP, Int32Array),
@@ -819,7 +849,7 @@ macro_rules! binary_primitive_array_op {
 macro_rules! binary_primitive_array_op_scalar {
     ($LEFT:expr, $RIGHT:expr, $OP:ident) => {{
         let result: Result<Arc<dyn Array>> = match $LEFT.data_type() {
-            DataType::Decimal(_,_) => compute_decimal_op_scalar!($LEFT, $RIGHT, $OP, DecimalArray),
+            DataType::Decimal(_,_) => compute_decimal_op_scalar!($LEFT, $RIGHT, $OP, Decimal128Array),
             DataType::Int8 => compute_op_scalar!($LEFT, $RIGHT, $OP, Int8Array),
             DataType::Int16 => compute_op_scalar!($LEFT, $RIGHT, $OP, Int16Array),
             DataType::Int32 => compute_op_scalar!($LEFT, $RIGHT, $OP, Int32Array),
@@ -846,7 +876,7 @@ macro_rules! binary_array_op {
     ($LEFT:expr, $RIGHT:expr, $OP:ident) => {{
         match $LEFT.data_type() {
             DataType::Null => compute_null_op!($LEFT, $RIGHT, $OP, NullArray),
-            DataType::Decimal(_,_) => compute_decimal_op!($LEFT, $RIGHT, $OP, DecimalArray),
+            DataType::Decimal(_,_) => compute_decimal_op!($LEFT, $RIGHT, $OP, Decimal128Array),
             DataType::Int8 => compute_op!($LEFT, $RIGHT, $OP, Int8Array),
             DataType::Int16 => compute_op!($LEFT, $RIGHT, $OP, Int16Array),
             DataType::Int32 => compute_op!($LEFT, $RIGHT, $OP, Int32Array),
@@ -1079,7 +1109,7 @@ macro_rules! binary_array_op_dyn_scalar {
 
         let result: Result<Arc<dyn Array>> = match right {
             ScalarValue::Boolean(b) => compute_bool_op_dyn_scalar!($LEFT, b, $OP, $OP_TYPE),
-            ScalarValue::Decimal128(..) => compute_decimal_op_scalar!($LEFT, right, $OP, DecimalArray),
+            ScalarValue::Decimal128(..) => compute_decimal_op_scalar!($LEFT, right, $OP, Decimal128Array),
             ScalarValue::Utf8(v) => compute_utf8_op_dyn_scalar!($LEFT, v, $OP, $OP_TYPE),
             ScalarValue::LargeUtf8(v) => compute_utf8_op_dyn_scalar!($LEFT, v, $OP, $OP_TYPE),
             ScalarValue::Int8(v) => compute_op_dyn_scalar!($LEFT, v, $OP, $OP_TYPE),
@@ -2629,8 +2659,8 @@ mod tests {
         array: &[Option<i128>],
         precision: usize,
         scale: usize,
-    ) -> Result<DecimalArray> {
-        let mut decimal_builder = DecimalBuilder::new(array.len(), precision, scale);
+    ) -> Result<Decimal128Array> {
+        let mut decimal_builder = Decimal128Builder::new(array.len(), precision, scale);
         for value in array {
             match value {
                 None => {

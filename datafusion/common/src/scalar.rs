@@ -1112,14 +1112,14 @@ impl ScalarValue {
         scalars: impl IntoIterator<Item = ScalarValue>,
         precision: &usize,
         scale: &usize,
-    ) -> Result<DecimalArray> {
+    ) -> Result<Decimal128Array> {
         let array = scalars
             .into_iter()
             .map(|element: ScalarValue| match element {
                 ScalarValue::Decimal128(v1, _, _) => v1,
                 _ => unreachable!(),
             })
-            .collect::<DecimalArray>()
+            .collect::<Decimal128Array>()
             .with_precision_and_scale(*precision, *scale)?;
         Ok(array)
     }
@@ -1190,10 +1190,10 @@ impl ScalarValue {
         precision: &usize,
         scale: &usize,
         size: usize,
-    ) -> DecimalArray {
+    ) -> Decimal128Array {
         std::iter::repeat(value)
             .take(size)
-            .collect::<DecimalArray>()
+            .collect::<Decimal128Array>()
             .with_precision_and_scale(*precision, *scale)
             .unwrap()
     }
@@ -1399,7 +1399,7 @@ impl ScalarValue {
         precision: &usize,
         scale: &usize,
     ) -> ScalarValue {
-        let array = array.as_any().downcast_ref::<DecimalArray>().unwrap();
+        let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         if array.is_null(index) {
             ScalarValue::Decimal128(None, *precision, *scale)
         } else {
@@ -1587,7 +1587,7 @@ impl ScalarValue {
         precision: usize,
         scale: usize,
     ) -> bool {
-        let array = array.as_any().downcast_ref::<DecimalArray>().unwrap();
+        let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         if array.precision() != precision || array.scale() != scale {
             return false;
         }
@@ -2133,14 +2133,14 @@ mod tests {
 
         // decimal scalar to array
         let array = decimal_value.to_array();
-        let array = array.as_any().downcast_ref::<DecimalArray>().unwrap();
+        let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(1, array.len());
         assert_eq!(DataType::Decimal(10, 1), array.data_type().clone());
         assert_eq!(123i128, array.value(0).as_i128());
 
         // decimal scalar to array with size
         let array = decimal_value.to_array_of_size(10);
-        let array_decimal = array.as_any().downcast_ref::<DecimalArray>().unwrap();
+        let array_decimal = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(10, array.len());
         assert_eq!(DataType::Decimal(10, 1), array.data_type().clone());
         assert_eq!(123i128, array_decimal.value(0).as_i128());

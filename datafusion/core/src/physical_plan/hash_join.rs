@@ -23,7 +23,7 @@ use ahash::RandomState;
 use arrow::{
     array::{
         as_dictionary_array, as_string_array, ArrayData, ArrayRef, BasicDecimalArray,
-        BooleanArray, Date32Array, Date64Array, DecimalArray, DictionaryArray,
+        BooleanArray, Date32Array, Date64Array, Decimal128Array, DictionaryArray,
         LargeStringArray, PrimitiveArray, TimestampMicrosecondArray,
         TimestampMillisecondArray, TimestampSecondArray, UInt32BufferBuilder,
         UInt32Builder, UInt64BufferBuilder, UInt64Builder,
@@ -921,12 +921,11 @@ fn apply_join_filter(
                     },
                 )
                 // Append last row from right side if no match found
-                .and_then(|(row_idx, has_match)| {
+                .map(|(row_idx, has_match)| {
                     if !has_match {
                         right_rebuilt.append_value(row_idx);
                         left_rebuilt.append_null();
                     }
-                    Ok(())
                 })?;
 
             Ok((left_rebuilt.finish(), right_rebuilt.finish()))
@@ -1103,7 +1102,7 @@ fn equal_rows(
                 DataType::Decimal(_, rscale) => {
                     if lscale == rscale {
                         equal_rows_elem!(
-                            DecimalArray,
+                            Decimal128Array,
                             l,
                             r,
                             left,
