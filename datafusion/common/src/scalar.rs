@@ -26,7 +26,7 @@ use arrow::{
         Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, IntervalUnit, TimeUnit,
         TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
         TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
-        DECIMAL_MAX_PRECISION,
+        DECIMAL128_MAX_PRECISION,
     },
     util::decimal::{BasicDecimal, Decimal128},
 };
@@ -610,7 +610,7 @@ impl ScalarValue {
         scale: usize,
     ) -> Result<Self> {
         // make sure the precision and scale is valid
-        if precision <= DECIMAL_MAX_PRECISION && scale <= precision {
+        if precision <= DECIMAL128_MAX_PRECISION && scale <= precision {
             return Ok(ScalarValue::Decimal128(Some(value), precision, scale));
         }
         Err(DataFusionError::Internal(format!(
@@ -1085,7 +1085,8 @@ impl ScalarValue {
             | DataType::Interval(_)
             | DataType::LargeList(_)
             | DataType::Union(_, _, _)
-            | DataType::Map(_, _) => {
+            | DataType::Map(_, _)
+            | DataType::Decimal256(_, _) => {
                 return Err(DataFusionError::Internal(format!(
                     "Unsupported creation of {:?} array from ScalarValue {:?}",
                     data_type,

@@ -18,12 +18,19 @@
 //! Execution plan for reading Parquet files
 
 use fmt::Debug;
+use std::cmp::Ordering;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::ops::Range;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::{any::Any, convert::TryInto};
 
+use arrow::array::{Array, BooleanArray};
+use arrow::compute::{filter_record_batch, prep_null_mask_filter, SlicesIterator};
+use arrow::record_batch::RecordBatch;
 use arrow::{
     array::ArrayRef,
     datatypes::{Schema, SchemaRef},
@@ -31,10 +38,11 @@ use arrow::{
 };
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::debug;
 use object_store::{ObjectMeta, ObjectStore};
-use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::arrow::arrow_reader::RowSelection;
+use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStream};
 use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask};
 use parquet::errors::ParquetError;
 use parquet::file::{
@@ -43,8 +51,11 @@ use parquet::file::{
     statistics::Statistics as ParquetStatistics,
 };
 
-use datafusion_common::Column;
+use datafusion_common::{Column, DFSchema};
+use datafusion_expr::utils::expr_to_columns;
 use datafusion_expr::Expr;
+use datafusion_physical_expr::execution_props::ExecutionProps;
+use datafusion_physical_expr::{create_physical_expr, PhysicalExpr};
 
 use crate::datasource::file_format::parquet::fetch_parquet_metadata;
 use crate::datasource::listing::FileRange;
@@ -65,6 +76,41 @@ use crate::{
     scalar::ScalarValue,
 };
 
+/// Row-level filter expression which may be applied to some subset of the projected columns
+#[derive(Debug, Clone)]
+pub struct RowFilter {
+    projections: Vec<usize>,
+    predicate: Arc<dyn PhysicalExpr>,
+}
+
+impl RowFilter {
+    pub fn try_new(expr: &Expr, schema: &Schema) -> Result<Self> {
+        let mut columns: HashSet<Column> = HashSet::new();
+        expr_to_columns(expr, &mut columns)?;
+
+        let mut projections = vec![];
+        let mut filter_fields = vec![];
+        for col in columns {
+            let (idx, field) = schema
+                .column_with_name(&col.name)
+                .ok_or_else(|| DataFusionError::Execution("".to_owned()))?;
+            projections.push(idx);
+            filter_fields.push(field.clone());
+        }
+
+        let filter_schema = Schema::new(filter_fields);
+
+        let dfschema = DFSchema::try_from(filter_schema.clone())?;
+        let props = ExecutionProps::new();
+        let predicate = create_physical_expr(expr, &dfschema, &filter_schema, &props)?;
+
+        Ok(Self {
+            projections,
+            predicate,
+        })
+    }
+}
+
 /// Execution plan for scanning one or more Parquet partitions
 #[derive(Debug, Clone)]
 pub struct ParquetExec {
@@ -77,6 +123,7 @@ pub struct ParquetExec {
     pruning_predicate: Option<PruningPredicate>,
     /// Optional hint for the size of the parquet metadata
     metadata_size_hint: Option<usize>,
+    row_filter: Option<RowFilter>,
 }
 
 /// Stores metrics about the parquet execution for a particular parquet file
@@ -104,6 +151,16 @@ impl ParquetExec {
         let predicate_creation_errors =
             MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
 
+        let row_filter = predicate.as_ref().and_then(|predicate_expr| {
+            match RowFilter::try_new(predicate_expr, base_config.file_schema.as_ref()) {
+                Ok(row_filter) => Some(row_filter),
+                Err(e) => {
+                    debug!("Could not create row filter for: {}", e);
+                    None
+                }
+            }
+        });
+
         let pruning_predicate = predicate.and_then(|predicate_expr| {
             match PruningPredicate::try_new(
                 predicate_expr,
@@ -127,6 +184,7 @@ impl ParquetExec {
             metrics,
             pruning_predicate,
             metadata_size_hint,
+            row_filter,
         }
     }
 
@@ -221,6 +279,7 @@ impl ExecutionPlan for ParquetExec {
             table_schema: self.base_config.file_schema.clone(),
             metadata_size_hint: self.metadata_size_hint,
             metrics: self.metrics.clone(),
+            row_filter: self.row_filter.clone(),
         };
 
         let stream =
@@ -276,6 +335,7 @@ struct ParquetOpener {
     table_schema: SchemaRef,
     metadata_size_hint: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
+    row_filter: Option<RowFilter>,
 }
 
 impl FormatReader for ParquetOpener {
@@ -291,58 +351,388 @@ impl FormatReader for ParquetOpener {
             &self.metrics,
         );
 
-        let reader = ParquetFileReader {
+        let mut reader = ParquetFileReader {
             store,
             meta,
             metadata_size_hint: self.metadata_size_hint,
             metrics: metrics.clone(),
+            parquet_metadata: None,
         };
 
         let schema_adapter = SchemaAdapter::new(self.table_schema.clone());
         let batch_size = self.batch_size;
         let projection = self.projection.clone();
         let pruning_predicate = self.pruning_predicate.clone();
+        let row_filter = self.row_filter.clone();
 
         Box::pin(async move {
-            let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            let adapted_projections =
-                schema_adapter.map_projections(builder.schema(), &projection)?;
-
-            let mask = ProjectionMask::roots(
-                builder.parquet_schema(),
-                adapted_projections.iter().cloned(),
-            );
-
-            let groups = builder.metadata().row_groups();
+            let metadata = reader.get_metadata().await?;
+            let groups = metadata.row_groups();
             let row_groups = prune_row_groups(groups, range, pruning_predicate, &metrics);
 
-            let stream = builder
-                .with_projection(mask)
-                .with_batch_size(batch_size)
-                .with_row_groups(row_groups)
-                .build()?;
+            match row_filter {
+                Some(row_filter) if row_filter.projections.len() < projection.len() => {
+                    let stream = FilteringRecordBatchStream::try_new(
+                        reader,
+                        schema_adapter,
+                        batch_size,
+                        projection.as_ref().to_vec(),
+                        row_groups,
+                        row_filter,
+                    )
+                    .await?;
 
-            let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
-                .map(move |maybe_batch| {
-                    maybe_batch.and_then(|b| {
-                        schema_adapter
-                            .adapt_batch(b, &projection)
-                            .map_err(Into::into)
-                    })
-                });
+                    Ok(stream.boxed())
+                }
+                _ => {
+                    let stream = create_record_batch_stream(
+                        reader.clone(),
+                        &schema_adapter,
+                        batch_size,
+                        &projection,
+                        row_groups,
+                    )
+                    .await?;
 
-            Ok(adapted.boxed())
+                    let adapted = stream
+                        .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+                        .map(move |maybe_batch| {
+                            maybe_batch.and_then(|b| {
+                                schema_adapter
+                                    .adapt_batch(b, &projection)
+                                    .map_err(Into::into)
+                            })
+                        });
+
+                    Ok(adapted.boxed())
+                }
+            }
         })
     }
 }
 
+async fn create_record_batch_stream(
+    reader: ParquetFileReader,
+    schema_adapter: &SchemaAdapter,
+    batch_size: usize,
+    projection: &[usize],
+    row_groups: Vec<usize>,
+) -> Result<ParquetRecordBatchStream<ParquetFileReader>> {
+    let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+    let adapted_projections =
+        schema_adapter.map_projections(builder.schema(), projection)?;
+
+    let mask = ProjectionMask::roots(
+        builder.parquet_schema(),
+        adapted_projections.iter().cloned(),
+    );
+
+    let stream = builder
+        .with_projection(mask)
+        .with_batch_size(batch_size)
+        .with_row_groups(row_groups)
+        .build()?;
+    Ok(stream)
+}
+
+struct FilteringRecordBatchStream {
+    filter_stream: FilteredRecordBatchStream,
+    selected_stream: SelectedRecordBatchStream,
+    schema_adapter: SchemaAdapter,
+    projections: Vec<usize>,
+}
+
+impl FilteringRecordBatchStream {
+    pub async fn try_new(
+        reader: ParquetFileReader,
+        schema_adapter: SchemaAdapter,
+        batch_size: usize,
+        projection: Vec<usize>,
+        row_groups: Vec<usize>,
+        row_filter: RowFilter,
+    ) -> Result<Self> {
+        let selected_projections = projection
+            .clone()
+            .into_iter()
+            .filter(|idx| !row_filter.projections.contains(idx))
+            .collect();
+
+        let filter_stream = FilteredRecordBatchStream::try_new(
+            reader.clone(),
+            schema_adapter.clone(),
+            batch_size,
+            row_groups.clone(),
+            row_filter,
+        )
+        .await?;
+
+        let selected_stream = SelectedRecordBatchStream::try_new(
+            reader,
+            schema_adapter.clone(),
+            batch_size,
+            selected_projections,
+            row_groups,
+        )
+        .await?;
+
+        Ok(Self {
+            filter_stream,
+            selected_stream,
+            schema_adapter,
+            projections: projection,
+        })
+    }
+}
+
+impl Stream for FilteringRecordBatchStream {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            match this.filter_stream.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok((filter_batch, row_selection)))) => {
+                    this.selected_stream.push_selection(row_selection);
+                    if filter_batch.num_rows() > 0 {
+                        loop {
+                            let poll = this.selected_stream.poll_next_unpin(cx);
+                            match poll {
+                                Poll::Ready(Some(Ok(selected_batch))) => {
+                                    let mut cols = vec![];
+                                    for col in filter_batch.columns() {
+                                        cols.push(col.clone());
+                                    }
+                                    for col in selected_batch.columns() {
+                                        cols.push(col.clone());
+                                    }
+
+                                    let mut fields = vec![];
+                                    for field in filter_batch.schema().fields() {
+                                        fields.push(field.clone());
+                                    }
+                                    for field in selected_batch.schema().fields() {
+                                        fields.push(field.clone());
+                                    }
+
+                                    let schema = Schema::new(fields);
+
+                                    let batch =
+                                        RecordBatch::try_new(Arc::new(schema), cols)
+                                            .unwrap();
+                                    let adapted = this
+                                        .schema_adapter
+                                        .adapt_batch(batch, &this.projections)
+                                        .unwrap();
+                                    return Poll::Ready(Some(Ok(adapted)));
+                                }
+                                Poll::Ready(Some(Err(e))) => {
+                                    return Poll::Ready(Some(Err(e)))
+                                }
+                                Poll::Ready(None) => {
+                                    return Poll::Ready(Some(Err(
+                                        ArrowError::ParquetError(
+                                            "Unexpected end of selected stream"
+                                                .to_owned(),
+                                        ),
+                                    )))
+                                }
+                                Poll::Pending => continue,
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => break Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => break Poll::Ready(None),
+                Poll::Pending => break Poll::Pending,
+            }
+        }
+    }
+}
+
+struct SelectedRecordBatchStream {
+    inner: ParquetRecordBatchStream<ParquetFileReader>,
+    schema_adapter: SchemaAdapter,
+    projections: Vec<usize>,
+}
+
+impl SelectedRecordBatchStream {
+    pub async fn try_new(
+        reader: ParquetFileReader,
+        schema_adapter: SchemaAdapter,
+        batch_size: usize,
+        projections: Vec<usize>,
+        row_groups: Vec<usize>,
+    ) -> Result<Self> {
+        let inner = create_record_batch_stream(
+            reader,
+            &schema_adapter,
+            batch_size,
+            &projections,
+            row_groups,
+        )
+        .await?;
+
+        Ok(Self {
+            inner,
+            schema_adapter,
+            projections,
+        })
+    }
+
+    pub fn push_selection(&mut self, selection: VecDeque<RowSelection>) {
+        self.inner.push_row_selection(selection);
+    }
+}
+
+impl Stream for SelectedRecordBatchStream {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        match this.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(batch))) => {
+                match this.schema_adapter.adapt_batch(batch, &this.projections) {
+                    Ok(adapted) => Poll::Ready(Some(Ok(adapted))),
+                    Err(e) => Poll::Ready(Some(Err(ArrowError::ComputeError(format!(
+                        "Error adapting batch: {:?}",
+                        e
+                    ))))),
+                }
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+struct FilteredRecordBatchStream {
+    inner: ParquetRecordBatchStream<ParquetFileReader>,
+    schema_adapter: SchemaAdapter,
+    row_filter: RowFilter,
+}
+
+impl FilteredRecordBatchStream {
+    pub async fn try_new(
+        reader: ParquetFileReader,
+        schema_adapter: SchemaAdapter,
+        batch_size: usize,
+        row_groups: Vec<usize>,
+        row_filter: RowFilter,
+    ) -> Result<Self> {
+        let inner = create_record_batch_stream(
+            reader,
+            &schema_adapter,
+            batch_size,
+            &row_filter.projections,
+            row_groups,
+        )
+        .await?;
+
+        Ok(Self {
+            inner,
+            schema_adapter,
+            row_filter,
+        })
+    }
+}
+
+impl Stream for FilteredRecordBatchStream {
+    type Item = std::result::Result<(RecordBatch, VecDeque<RowSelection>), ArrowError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let predicate = self.row_filter.predicate.clone();
+        let this = self.get_mut();
+
+        match this.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(batch))) => {
+                let adapted = this
+                    .schema_adapter
+                    .adapt_batch(batch, &this.row_filter.projections)
+                    .unwrap();
+
+                match predicate
+                    .evaluate(&adapted)
+                    .map(|v| v.into_array(adapted.num_rows()))
+                {
+                    Ok(array) => {
+                        if let Some(mask) = array.as_any().downcast_ref::<BooleanArray>()
+                        {
+                            let mask = match mask.null_count() {
+                                0 => BooleanArray::from(mask.data().clone()),
+                                _ => prep_null_mask_filter(mask),
+                            };
+
+                            let filtered_batch =
+                                filter_record_batch(&adapted, &mask).unwrap();
+                            let row_selections = create_selection(&mask);
+
+                            Poll::Ready(Some(Ok((filtered_batch, row_selections))))
+                        } else {
+                            Poll::Ready(Some(Err(ArrowError::ParquetError(
+                                "unexpected result of predicate evaluation".to_owned(),
+                            ))))
+                        }
+                    }
+                    Err(e) => Poll::Ready(Some(Err(ArrowError::ComputeError(format!(
+                        "Error evaluating filter predicate: {:?}",
+                        e
+                    ))))),
+                }
+            }
+            Poll::Ready(Some(Err(e))) => {
+                Poll::Ready(Some(Err(ArrowError::ExternalError(Box::new(e)))))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+fn create_selection(mask: &BooleanArray) -> VecDeque<RowSelection> {
+    let ranges: Vec<Range<usize>> = SlicesIterator::new(mask)
+        .map(|(start, end)| start..end)
+        .collect();
+
+    let total_rows = mask.len();
+
+    let mut selection: VecDeque<RowSelection> = VecDeque::with_capacity(ranges.len() * 2);
+    let mut last_end = 0;
+    for range in ranges {
+        let len = range.end - range.start;
+
+        match range.start.cmp(&last_end) {
+            Ordering::Equal => match selection.pop_back() {
+                Some(mut last) => last.row_count += len,
+                None => selection.push_back(RowSelection::select(len)),
+            },
+            Ordering::Greater => {
+                selection.push_back(RowSelection::skip(range.start - last_end));
+                selection.push_back(RowSelection::select(len))
+            }
+            Ordering::Less => panic!("out of order"),
+        }
+        last_end = range.end;
+    }
+
+    if last_end != total_rows {
+        selection.push_back(RowSelection::skip(total_rows - last_end))
+    }
+
+    selection
+}
+
 /// Implements [`AsyncFileReader`] for a parquet file in object storage
+#[derive(Clone)]
 struct ParquetFileReader {
     store: Arc<dyn ObjectStore>,
     meta: ObjectMeta,
     metadata_size_hint: Option<usize>,
     metrics: ParquetFileMetrics,
+    parquet_metadata: Option<Arc<ParquetMetaData>>,
 }
 
 impl AsyncFileReader for ParquetFileReader {
@@ -396,19 +786,25 @@ impl AsyncFileReader for ParquetFileReader {
         &mut self,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         Box::pin(async move {
-            let metadata = fetch_parquet_metadata(
-                self.store.as_ref(),
-                &self.meta,
-                self.metadata_size_hint,
-            )
-            .await
-            .map_err(|e| {
-                ParquetError::General(format!(
-                    "AsyncChunkReader::get_metadata error: {}",
-                    e
-                ))
-            })?;
-            Ok(Arc::new(metadata))
+            if let Some(meta) = &self.parquet_metadata {
+                Ok(meta.clone())
+            } else {
+                let metadata = fetch_parquet_metadata(
+                    self.store.as_ref(),
+                    &self.meta,
+                    self.metadata_size_hint,
+                )
+                .await
+                .map_err(|e| {
+                    ParquetError::General(format!(
+                        "AsyncChunkReader::get_metadata error: {}",
+                        e
+                    ))
+                })?;
+                let metadata = Arc::new(metadata);
+                self.parquet_metadata = Some(metadata.clone());
+                Ok(metadata)
+            }
         })
     }
 }
@@ -829,16 +1225,18 @@ mod tests {
         let read = round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter))
             .await
             .unwrap();
-        let expected = vec![
-            "+-----+----+----+",
-            "| c1  | c3 | c2 |",
-            "+-----+----+----+",
-            "| Foo | 10 |    |",
-            "|     | 20 |    |",
-            "| bar |    |    |",
-            "+-----+----+----+",
-        ];
-        assert_batches_sorted_eq!(expected, &read);
+
+        assert_eq!(read.len(), 0);
+        // let expected = vec![
+        //     "+-----+----+----+",
+        //     "| c1  | c3 | c2 |",
+        //     "+-----+----+----+",
+        //     "| Foo | 10 |    |",
+        //     "|     | 20 |    |",
+        //     "| bar |    |    |",
+        //     "+-----+----+----+",
+        // ];
+        // assert_batches_sorted_eq!(expected, &read);
     }
 
     #[tokio::test]
@@ -918,7 +1316,7 @@ mod tests {
         let c1: ArrayRef =
             Arc::new(StringArray::from(vec![Some("Foo"), None, Some("bar")]));
 
-        let c2: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), Some(2), None]));
+        let c2: ArrayRef = Arc::new(Int64Array::from(vec![Some(0), Some(2), None]));
 
         // batch1: c1(string)
         let batch1 = create_batch(vec![("c1", c1.clone())]);
@@ -939,13 +1337,11 @@ mod tests {
         // In a real query where this predicate was pushed down from a filter stage instead of created directly in the `ParquetExec`,
         // the filter stage would be preserved as a separate execution plan stage so the actual query results would be as expected.
         let expected = vec![
-            "+-----+----+",
-            "| c1  | c2 |",
-            "+-----+----+",
-            "| Foo |    |",
-            "|     |    |",
-            "| bar |    |",
-            "+-----+----+",
+            "+----+----+",
+            "| c1 | c2 |",
+            "+----+----+",
+            "|    | 0  |",
+            "+----+----+",
         ];
         assert_batches_sorted_eq!(expected, &read);
     }

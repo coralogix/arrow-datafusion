@@ -19,7 +19,7 @@
 
 use crate::{Signature, TypeSignature, Volatility};
 use arrow::datatypes::{
-    DataType, Field, TimeUnit, DECIMAL_MAX_PRECISION, DECIMAL_MAX_SCALE,
+    DataType, Field, TimeUnit, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE,
 };
 use datafusion_common::{DataFusionError, Result};
 use std::ops::Deref;
@@ -403,7 +403,7 @@ pub fn sum_return_type(arg_type: &DataType) -> Result<DataType> {
         DataType::Decimal(precision, scale) => {
             // in the spark, the result type is DECIMAL(min(38,precision+10), s)
             // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
-            let new_precision = DECIMAL_MAX_PRECISION.min(*precision + 10);
+            let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 10);
             Ok(DataType::Decimal(new_precision, *scale))
         }
         other => Err(DataFusionError::Plan(format!(
@@ -499,8 +499,8 @@ pub fn avg_return_type(arg_type: &DataType) -> Result<DataType> {
         DataType::Decimal(precision, scale) => {
             // in the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
             // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
-            let new_precision = DECIMAL_MAX_PRECISION.min(*precision + 4);
-            let new_scale = DECIMAL_MAX_SCALE.min(*scale + 4);
+            let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 4);
+            let new_scale = DECIMAL128_MAX_SCALE.min(*scale + 4);
             Ok(DataType::Decimal(new_precision, new_scale))
         }
         DataType::Int8

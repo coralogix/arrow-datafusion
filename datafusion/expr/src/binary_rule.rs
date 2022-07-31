@@ -19,7 +19,7 @@
 
 use crate::Operator;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{DataType, DECIMAL_MAX_PRECISION, DECIMAL_MAX_SCALE};
+use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE};
 use datafusion_common::DataFusionError;
 use datafusion_common::Result;
 
@@ -330,8 +330,8 @@ fn mathematics_numerical_coercion(
 
 fn create_decimal_type(precision: usize, scale: usize) -> DataType {
     DataType::Decimal(
-        DECIMAL_MAX_PRECISION.min(precision),
-        DECIMAL_MAX_SCALE.min(scale),
+        DECIMAL128_MAX_PRECISION.min(precision),
+        DECIMAL128_MAX_SCALE.min(scale),
     )
 }
 

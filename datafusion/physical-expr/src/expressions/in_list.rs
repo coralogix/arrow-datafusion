@@ -315,6 +315,8 @@ fn make_list_contains_decimal(
         })
         .collect::<Vec<_>>();
 
+    let array: Vec<Option<i128>> = array.iter().map(|d| d.map(|d| d.into())).collect();
+
     collection_contains_check!(array, values, negated, contains_null)
 }
 
@@ -334,6 +336,8 @@ fn make_set_contains_decimal(
         })
         .collect::<Vec<_>>();
     let native_set: HashSet<i128> = HashSet::from_iter(native_array);
+
+    let array: Vec<Option<i128>> = array.iter().map(|d| d.map(|d| d.into())).collect();
 
     collection_contains_check!(array, native_set, negated, contains_null)
 }
