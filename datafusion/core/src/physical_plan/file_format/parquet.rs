@@ -516,14 +516,23 @@ impl Stream for FilteringRecordBatchStream {
 
                                     let schema = Schema::new(fields);
 
-                                    let batch =
-                                        RecordBatch::try_new(Arc::new(schema), cols)
-                                            .unwrap();
-                                    let adapted = this
-                                        .schema_adapter
-                                        .adapt_batch(batch, &this.projections)
-                                        .unwrap();
-                                    return Poll::Ready(Some(Ok(adapted)));
+                                    return match RecordBatch::try_new(
+                                        Arc::new(schema),
+                                        cols,
+                                    )
+                                    .and_then(|batch| {
+                                        this.schema_adapter
+                                            .adapt_batch(batch, &this.projections)
+                                            .map_err(|e| {
+                                                ArrowError::ComputeError(format!(
+                                                    "Failed to adapt batch: {:?}",
+                                                    e
+                                                ))
+                                            })
+                                    }) {
+                                        Ok(batch) => Poll::Ready(Some(Ok(batch))),
+                                        Err(e) => Poll::Ready(Some(Err(e))),
+                                    };
                                 }
                                 Poll::Ready(Some(Err(e))) => {
                                     return Poll::Ready(Some(Err(e)))

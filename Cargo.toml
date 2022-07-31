@@ -36,10 +36,10 @@ codegen-units = 1
 lto = true
 
 [patch.crates-io]
-arrow = { git = "https://github.com/coralogix/arrow-rs", rev = "6c90ecc3102177f468f16b7e85f589ec69cf4078" }
+arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "row-filtering" }
 #arrow = { path = "../arrow-rs/arrow" }
-arrow-flight = { git = "https://github.com/coralogix/arrow-rs", rev = "6c90ecc3102177f468f16b7e85f589ec69cf4078" }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "row-filtering" }
 #arrow-flight = { path = "../arrow-rs/arrow-flight" }
-parquet = { git = "https://github.com/coralogix/arrow-rs", rev = "6c90ecc3102177f468f16b7e85f589ec69cf4078" }
+parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "row-filtering" }
 #parquet = { path = "../arrow-rs/parquet" }
 
