@@ -135,6 +135,8 @@ struct ParquetFileMetrics {
     pub row_groups_pruned: metrics::Count,
     /// Total number of bytes scanned
     pub bytes_scanned: metrics::Count,
+    /// Total number of rows filtered by RowFilter
+    pub rows_filtered: metrics::Count,
 }
 
 impl ParquetExec {
@@ -218,10 +220,15 @@ impl ParquetFileMetrics {
             .with_new_label("filename", filename.to_string())
             .counter("bytes_scanned", partition);
 
+        let rows_filtered = MetricBuilder::new(metrics)
+            .with_new_label("filename", filename.to_string())
+            .counter("rows_filtered", partition);
+
         Self {
             predicate_evaluation_errors,
             row_groups_pruned,
             bytes_scanned,
+            rows_filtered,
         }
     }
 }
@@ -379,6 +386,7 @@ impl FormatReader for ParquetOpener {
                         projection.as_ref().to_vec(),
                         row_groups,
                         row_filter,
+                        metrics,
                     )
                     .await?;
 
@@ -449,6 +457,7 @@ struct FilteringRecordBatchStream {
     schema_adapter: SchemaAdapter,
     projections: Vec<usize>,
     state: FilteringStreamState,
+    metrics: ParquetFileMetrics,
 }
 
 impl FilteringRecordBatchStream {
@@ -459,6 +468,7 @@ impl FilteringRecordBatchStream {
         projection: Vec<usize>,
         row_groups: Vec<usize>,
         row_filter: RowFilter,
+        metrics: ParquetFileMetrics,
     ) -> Result<Self> {
         let selected_projections = projection
             .clone()
@@ -490,6 +500,7 @@ impl FilteringRecordBatchStream {
             schema_adapter,
             projections: projection,
             state: FilteringStreamState::Filtering,
+            metrics,
         })
     }
 
@@ -502,6 +513,12 @@ impl FilteringRecordBatchStream {
                 FilteringStreamState::Filtering => {
                     match self.filter_stream.poll_next_unpin(cx) {
                         Poll::Ready(Some(Ok((batch, selection)))) => {
+                            for select in selection.iter() {
+                                if select.skip {
+                                    self.metrics.rows_filtered.add(select.row_count)
+                                }
+                            }
+
                             self.state =
                                 FilteringStreamState::Selecting { batch, selection };
                         }
