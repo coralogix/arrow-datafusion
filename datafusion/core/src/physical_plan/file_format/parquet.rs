@@ -435,11 +435,20 @@ async fn create_record_batch_stream(
     Ok(stream)
 }
 
+enum FilteringStreamState {
+    Filtering,
+    Selecting {
+        batch: RecordBatch,
+        selection: VecDeque<RowSelection>,
+    },
+}
+
 struct FilteringRecordBatchStream {
     filter_stream: FilteredRecordBatchStream,
     selected_stream: SelectedRecordBatchStream,
     schema_adapter: SchemaAdapter,
     projections: Vec<usize>,
+    state: FilteringStreamState,
 }
 
 impl FilteringRecordBatchStream {
@@ -480,49 +489,57 @@ impl FilteringRecordBatchStream {
             selected_stream,
             schema_adapter,
             projections: projection,
+            state: FilteringStreamState::Filtering,
         })
     }
-}
 
-impl Stream for FilteringRecordBatchStream {
-    type Item = std::result::Result<RecordBatch, ArrowError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+    pub fn poll_inner(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<RecordBatch, ArrowError>>> {
         loop {
-            match this.filter_stream.poll_next_unpin(cx) {
-                Poll::Ready(Some(Ok((filter_batch, row_selection)))) => {
-                    this.selected_stream.push_selection(row_selection);
-                    if filter_batch.num_rows() > 0 {
-                        loop {
-                            let poll = this.selected_stream.poll_next_unpin(cx);
-                            match poll {
-                                Poll::Ready(Some(Ok(selected_batch))) => {
-                                    let mut cols = vec![];
-                                    for col in filter_batch.columns() {
-                                        cols.push(col.clone());
-                                    }
-                                    for col in selected_batch.columns() {
-                                        cols.push(col.clone());
-                                    }
+            match &mut self.state {
+                FilteringStreamState::Filtering => {
+                    match self.filter_stream.poll_next_unpin(cx) {
+                        Poll::Ready(Some(Ok((batch, selection)))) => {
+                            self.state =
+                                FilteringStreamState::Selecting { batch, selection };
+                        }
+                        Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                        Poll::Ready(None) => return Poll::Ready(None),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                FilteringStreamState::Selecting { batch, selection } => {
+                    match self
+                        .selected_stream
+                        .poll_next_selection(cx, selection.clone())
+                    {
+                        Poll::Ready(Some(Ok(selected_batch))) => {
+                            if selected_batch.num_rows() > 0 {
+                                let mut cols = vec![];
+                                for col in batch.columns() {
+                                    cols.push(col.clone());
+                                }
+                                for col in selected_batch.columns() {
+                                    cols.push(col.clone());
+                                }
 
-                                    let mut fields = vec![];
-                                    for field in filter_batch.schema().fields() {
-                                        fields.push(field.clone());
-                                    }
-                                    for field in selected_batch.schema().fields() {
-                                        fields.push(field.clone());
-                                    }
+                                let mut fields = vec![];
+                                for field in batch.schema().fields() {
+                                    fields.push(field.clone());
+                                }
+                                for field in selected_batch.schema().fields() {
+                                    fields.push(field.clone());
+                                }
 
-                                    let schema = Schema::new(fields);
+                                let schema = Schema::new(fields);
 
-                                    return match RecordBatch::try_new(
-                                        Arc::new(schema),
-                                        cols,
-                                    )
+                                self.state = FilteringStreamState::Filtering;
+                                return match RecordBatch::try_new(Arc::new(schema), cols)
                                     .and_then(|batch| {
-                                        this.schema_adapter
-                                            .adapt_batch(batch, &this.projections)
+                                        self.schema_adapter
+                                            .adapt_batch(batch, &self.projections)
                                             .map_err(|e| {
                                                 ArrowError::ComputeError(format!(
                                                     "Failed to adapt batch: {:?}",
@@ -530,33 +547,35 @@ impl Stream for FilteringRecordBatchStream {
                                                 ))
                                             })
                                     }) {
-                                        Ok(batch) => Poll::Ready(Some(Ok(batch))),
-                                        Err(e) => Poll::Ready(Some(Err(e))),
-                                    };
-                                }
-                                Poll::Ready(Some(Err(e))) => {
-                                    return Poll::Ready(Some(Err(e)))
-                                }
-                                Poll::Ready(None) => {
-                                    return Poll::Ready(Some(Err(
-                                        ArrowError::ParquetError(
-                                            "Unexpected end of selected stream"
-                                                .to_owned(),
-                                        ),
-                                    )))
-                                }
-                                Poll::Pending => continue,
+                                    Ok(batch) => Poll::Ready(Some(Ok(batch))),
+                                    Err(e) => Poll::Ready(Some(Err(e))),
+                                };
+                            } else {
+                                self.state = FilteringStreamState::Filtering;
                             }
                         }
-                    } else {
-                        continue;
+                        Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                        Poll::Ready(None) => {
+                            return Poll::Ready(Some(Err(ArrowError::ParquetError(
+                                "Unexpected end of selected stream".to_owned(),
+                            ))))
+                        }
+                        Poll::Pending => return Poll::Pending,
                     }
                 }
-                Poll::Ready(Some(Err(e))) => break Poll::Ready(Some(Err(e))),
-                Poll::Ready(None) => break Poll::Ready(None),
-                Poll::Pending => break Poll::Pending,
             }
         }
+    }
+}
+
+impl Stream for FilteringRecordBatchStream {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.poll_inner(cx)
     }
 }
 
@@ -590,8 +609,25 @@ impl SelectedRecordBatchStream {
         })
     }
 
-    pub fn push_selection(&mut self, selection: VecDeque<RowSelection>) {
-        self.inner.push_row_selection(selection);
+    pub fn poll_next_selection(
+        &mut self,
+        cx: &mut Context<'_>,
+        selection: VecDeque<RowSelection>,
+    ) -> Poll<Option<std::result::Result<RecordBatch, ArrowError>>> {
+        match self.inner.poll_next_selection(cx, selection) {
+            Poll::Ready(Some(Ok(batch))) => {
+                match self.schema_adapter.adapt_batch(batch, &self.projections) {
+                    Ok(adapted) => Poll::Ready(Some(Ok(adapted))),
+                    Err(e) => Poll::Ready(Some(Err(ArrowError::ComputeError(format!(
+                        "Error adapting batch: {:?}",
+                        e
+                    ))))),
+                }
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -612,7 +648,10 @@ impl Stream for SelectedRecordBatchStream {
                 }
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(None) => {
+                println!("something");
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
