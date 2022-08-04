@@ -48,8 +48,12 @@ use crate::{
 };
 use arrow::array::{new_null_array, UInt16BufferBuilder};
 use arrow::record_batch::RecordBatchOptions;
+use datafusion_common::Column;
+use datafusion_expr::utils::expr_to_columns;
+use datafusion_expr::Expr;
 use lazy_static::lazy_static;
 use log::info;
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter, Result as FmtResult},
@@ -227,6 +231,33 @@ impl SchemaAdapter {
         file_schema.index_of(field.name()).ok()
     }
 
+    pub fn projections_for_expr(
+        &self,
+        expr: &Expr,
+        file_schema: &Schema,
+    ) -> Option<(Schema, Vec<usize>)> {
+        let mut expr_columns: HashSet<Column> = HashSet::new();
+        expr_to_columns(expr, &mut expr_columns).ok()?;
+
+        let mut mapped = vec![];
+
+        let mut expr_fields = vec![];
+
+        for col in expr_columns {
+            if let Ok(table_idx) = self.table_schema.index_of(&col.name) {
+                expr_fields.push(self.table_schema.field(table_idx).clone());
+
+                if let Some(mapped_idx) = self.map_column_index(table_idx, file_schema) {
+                    mapped.push(mapped_idx);
+                }
+            } else {
+                return None;
+            }
+        }
+
+        Some((Schema::new(expr_fields), mapped))
+    }
+
     /// Map projected column indexes to the file schema. This will fail if the table schema
     /// and the file schema contain a field with the same name and different types.
     pub fn map_projections(
@@ -282,11 +313,13 @@ impl SchemaAdapter {
         let mut options = RecordBatchOptions::default();
         options.row_count = Some(batch.num_rows());
 
-        Ok(RecordBatch::try_new_with_options(
-            projected_schema,
-            cols,
-            &options,
-        )?)
+        let batch = RecordBatch::try_new_with_options(projected_schema, cols, &options)?;
+
+        Ok(batch)
+    }
+
+    pub fn table_schema(&self) -> &SchemaRef {
+        &self.table_schema
     }
 }
 
