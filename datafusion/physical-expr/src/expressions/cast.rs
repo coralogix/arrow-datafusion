@@ -161,12 +161,12 @@ mod tests {
     use crate::expressions::col;
     use arrow::{
         array::{
-            Array, BasicDecimalArray, Decimal128Array, Float32Array, Float64Array,
-            Int16Array, Int32Array, Int64Array, Int8Array, StringArray,
-            Time64NanosecondArray, TimestampNanosecondArray, UInt32Array,
+            Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array,
+            Int64Array, Int8Array, StringArray, Time64NanosecondArray,
+            TimestampNanosecondArray, UInt32Array,
         },
         datatypes::*,
-        util::decimal::{BasicDecimal, Decimal128},
+        util::decimal::Decimal128,
     };
     use datafusion_common::Result;
 

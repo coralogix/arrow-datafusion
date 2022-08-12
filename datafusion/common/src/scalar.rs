@@ -29,7 +29,7 @@ use arrow::{
         TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
         DECIMAL128_MAX_PRECISION,
     },
-    util::decimal::{BasicDecimal, Decimal128},
+    util::decimal::Decimal128,
 };
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;

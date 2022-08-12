@@ -464,7 +464,7 @@ fn build_row_filter(
         create_physical_expr(expr, &df_schema, filter_schema.as_ref(), &props)?;
 
     let predicate = ArrowPredicateFn::new(projection, move |batch| {
-        let adapted = schema_adapter.adapt_batch(batch.clone(), &column_indices)?;
+        let adapted = schema_adapter.adapt_batch(batch, &column_indices)?;
 
         match physical_expr
             .evaluate(&adapted)
@@ -1924,7 +1924,7 @@ mod tests {
             Option<i32>, // length of bytes
         )>,
     ) -> SchemaDescPtr {
-        use parquet::schema::types::{SchemaDescriptor, Type as SchemaType};
+        use parquet::schema::types::Type as SchemaType;
         let mut schema_fields = fields
             .iter()
             .map(|(n, t, logical, precision, scale, length)| {
