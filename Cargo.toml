@@ -34,3 +34,13 @@ exclude = ["datafusion-cli"]
 [profile.release]
 codegen-units = 1
 lto = true
+
+[patch.crates-io]
+#arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "turbo-mode" }
+#arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "turbo-mode" }
+#parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "turbo-mode" }
+arrow = { path = "../arrow-rs/arrow" }
+arrow-flight = { path = "../arrow-rs/arrow-flight" }
+parquet = { path = "../arrow-rs/parquet" }
+
+
