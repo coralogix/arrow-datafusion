@@ -758,6 +758,7 @@ mod tests {
     use crate::expressions::col;
     use crate::expressions::tests::aggregate;
     use crate::generic_test_op;
+    use arrow::array::new_null_array;
     use arrow::datatypes::*;
     use arrow::record_batch::RecordBatch;
     use datafusion_common::Result;
@@ -784,12 +785,8 @@ mod tests {
         assert_eq!(result, ScalarValue::Decimal128(Some(1), 10, 0));
 
         // min batch without values
-        let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
-                .take(0)
-                .collect::<Decimal128Array>()
-                .with_precision_and_scale(10, 0)?,
-        );
+        let array = new_null_array(&DataType::Decimal128(10, 0), 0);
+
         let result = min_batch(&array)?;
         assert_eq!(ScalarValue::Decimal128(None, 10, 0), result);
 
@@ -812,12 +809,8 @@ mod tests {
     #[test]
     fn min_decimal_all_nulls() -> Result<()> {
         // min batch all nulls
-        let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
-                .take(6)
-                .collect::<Decimal128Array>()
-                .with_precision_and_scale(10, 0)?,
-        );
+        let array = new_null_array(&DataType::Decimal128(10, 0), 6);
+
         generic_test_op!(
             array,
             DataType::Decimal128(10, 0),
@@ -873,12 +866,8 @@ mod tests {
         assert_eq!(result, ScalarValue::Decimal128(Some(5), 10, 5));
 
         // max batch without values
-        let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
-                .take(0)
-                .collect::<Decimal128Array>()
-                .with_precision_and_scale(10, 0)?,
-        );
+        let array = new_null_array(&DataType::Decimal128(10, 0), 0);
+
         let result = max_batch(&array)?;
         assert_eq!(ScalarValue::Decimal128(None, 10, 0), result);
 
@@ -917,12 +906,8 @@ mod tests {
 
     #[test]
     fn max_decimal_all_nulls() -> Result<()> {
-        let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
-                .take(6)
-                .collect::<Decimal128Array>()
-                .with_precision_and_scale(10, 0)?,
-        );
+        let array = new_null_array(&DataType::Decimal128(10, 0), 0);
+
         generic_test_op!(
             array,
             DataType::Decimal128(10, 0),

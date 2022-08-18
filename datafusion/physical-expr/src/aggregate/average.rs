@@ -328,12 +328,8 @@ mod tests {
     #[test]
     fn avg_decimal_all_nulls() -> Result<()> {
         // test agg
-        let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
-                .take(6)
-                .collect::<Decimal128Array>()
-                .with_precision_and_scale(10, 0)?,
-        );
+        let array = new_null_array(&DataType::Decimal128(10, 0), 6);
+
         generic_test_op!(
             array,
             DataType::Decimal128(10, 0),

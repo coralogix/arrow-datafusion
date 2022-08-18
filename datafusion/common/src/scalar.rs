@@ -1219,7 +1219,7 @@ impl ScalarValue {
         scale: &usize,
         size: usize,
     ) -> Decimal128Array {
-        std::iter::repeat(value)
+        std::iter::repeat(value.as_ref().map(|i| *i))
             .take(size)
             .collect::<Decimal128Array>()
             .with_precision_and_scale(*precision, *scale)
