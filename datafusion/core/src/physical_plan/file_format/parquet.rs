@@ -61,7 +61,9 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use log::debug;
 use object_store::{ObjectMeta, ObjectStore};
-use parquet::arrow::arrow_reader::{ArrowPredicate, ArrowPredicateFn, RowFilter};
+use parquet::arrow::arrow_reader::{
+    ArrowPredicate, ArrowPredicateFn, ArrowReaderOptions, RowFilter,
+};
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask};
 use parquet::basic::{ConvertedType, LogicalType};
@@ -357,7 +359,13 @@ impl FileOpener for ParquetOpener {
         let table_schema = self.table_schema.clone();
 
         Ok(Box::pin(async move {
-            let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+            let builder = if pruning_predicate.is_some() {
+                let options = ArrowReaderOptions::new().with_page_index(true);
+                ParquetRecordBatchStreamBuilder::new_with_options(reader, options).await?
+            } else {
+                ParquetRecordBatchStreamBuilder::new(reader).await?
+            };
+
             let adapted_projections =
                 schema_adapter.map_projections(builder.schema(), &projection)?;
 
