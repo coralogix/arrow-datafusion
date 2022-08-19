@@ -34,3 +34,9 @@ exclude = ["datafusion-cli"]
 [profile.release]
 codegen-units = 1
 lto = true
+
+[patch.crates-io]
+arrow = { git = "https://github.com/coralogix/arrow-rs", rev = "6304227b67962c281b52da63677d4f4aa4f34a2f" }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs", rev = "6304227b67962c281b52da63677d4f4aa4f34a2f" }
+parquet = { git = "https://github.com/coralogix/arrow-rs", rev = "6304227b67962c281b52da63677d4f4aa4f34a2f" }
+
