@@ -550,6 +550,8 @@ impl AsyncFileReader for ParquetFileReader {
         let mut groups = vec![];
 
         while start_idx != ranges.len() {
+            let mut range_end = ranges[start_idx].end;
+
             while end_idx != ranges.len()
                 && ranges[end_idx]
                     .start
@@ -558,15 +560,17 @@ impl AsyncFileReader for ParquetFileReader {
                     .unwrap_or(false)
                 && ranges[end_idx].end - ranges[start_idx].start < MAX_CHUNK_SIZE
             {
+                if ranges[end_idx].end > range_end {
+                    range_end = ranges[end_idx].end;
+                }
                 end_idx += 1;
             }
 
             let start = ranges[start_idx].start;
-            let end = ranges[end_idx - 1].end;
 
             groups.push((start_idx, end_idx));
 
-            let task = self.store.get_range(&self.meta.location, start..end);
+            let task = self.store.get_range(&self.meta.location, start..range_end);
 
             tasks.push(task);
             start_idx = end_idx;
