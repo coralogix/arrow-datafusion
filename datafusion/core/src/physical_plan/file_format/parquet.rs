@@ -566,8 +566,6 @@ impl AsyncFileReader for ParquetFileReader {
 
             groups.push((start_idx, end_idx));
 
-            println!("Fetching range {:?}", start..end);
-
             let task = self.store.get_range(&self.meta.location, start..end);
 
             tasks.push(task);
