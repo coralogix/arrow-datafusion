@@ -479,6 +479,13 @@ struct ParquetFileReader {
     metadata_size_hint: Option<usize>,
 }
 
+/// Range requests with a gap less than or equal to this,
+/// will be coalesced into a single request by [`coalesce_ranges`]
+const COALESCE_DEFAULT: usize = 1024 * 1024;
+
+/// Max size of an individual range request (16MiB)
+pub const MAX_CHUNK_SIZE: usize = 16 * 1024 * 1024;
+
 impl AsyncFileReader for ParquetFileReader {
     fn get_bytes(
         &mut self,
@@ -504,16 +511,63 @@ impl AsyncFileReader for ParquetFileReader {
         let total = ranges.iter().map(|r| r.end - r.start).sum();
         self.metrics.bytes_scanned.add(total);
 
+        let mut ret = Vec::with_capacity(ranges.len());
+        let mut tasks = Vec::with_capacity(ranges.len());
+        let mut start_idx = 0;
+        let mut end_idx = 1;
+
+        let mut groups = vec![];
+
+        while start_idx != ranges.len() {
+            while end_idx != ranges.len()
+                && ranges[end_idx]
+                    .start
+                    .checked_sub(ranges[end_idx - 1].end)
+                    .map(|delta| delta <= COALESCE_DEFAULT)
+                    .unwrap_or(false)
+                && ranges[end_idx].end - ranges[start_idx].start < MAX_CHUNK_SIZE
+            {
+                end_idx += 1;
+            }
+
+            let start = ranges[start_idx].start;
+            let end = ranges[end_idx - 1].end;
+
+            groups.push((start_idx, end_idx));
+
+            println!("Fetching range {:?}", start..end);
+
+            let task = self.store.get_range(&self.meta.location, start..end);
+
+            tasks.push(task);
+            start_idx = end_idx;
+            end_idx += 1;
+        }
+
         async move {
-            self.store
-                .get_ranges(&self.meta.location, &ranges)
+            let chunks = futures::future::join_all(tasks)
                 .await
+                .into_iter()
+                .collect::<object_store::Result<Vec<Bytes>>>()
                 .map_err(|e| {
                     ParquetError::General(format!(
                         "AsyncChunkReader::get_byte_ranges error: {}",
                         e
                     ))
-                })
+                })?
+                .into_iter()
+                .zip(groups.into_iter());
+
+            for (chunk, (start_idx, end_idx)) in chunks {
+                let chunk_offset = ranges[start_idx].start;
+                for range in &ranges[start_idx..end_idx] {
+                    ret.push(
+                        chunk.slice(range.start - chunk_offset..range.end - chunk_offset),
+                    );
+                }
+            }
+
+            Ok(ret)
         }
         .boxed()
     }
