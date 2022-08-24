@@ -335,6 +335,7 @@ impl FileOpener for ParquetOpener {
         file_meta: FileMeta,
     ) -> Result<FileOpenFuture> {
         let file_range = file_meta.range.clone();
+        let file_location = file_meta.location().to_string();
 
         let metrics = ParquetFileMetrics::new(
             self.partition_index,
@@ -397,7 +398,13 @@ impl FileOpener for ParquetOpener {
             };
 
             let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+                .map_err(move |e| {
+                    let error = ParquetError::General(format!(
+                        "Error reading file {}: {:?}",
+                        file_location, e
+                    ));
+                    ArrowError::ExternalError(Box::new(error))
+                })
                 .map(move |maybe_batch| {
                     maybe_batch.and_then(|b| {
                         schema_adapter
