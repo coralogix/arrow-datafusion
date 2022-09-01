@@ -22,6 +22,7 @@ use std::fmt;
 use std::fs;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use std::{any::Any, convert::TryInto};
 
 use crate::datasource::file_format::parquet::fetch_parquet_metadata;
@@ -199,6 +200,8 @@ pub struct ParquetFileMetrics {
     pub row_groups_pruned: metrics::Count,
     /// Total number of bytes scanned
     pub bytes_scanned: metrics::Count,
+    /// Time spent parsing metadata
+    pub metadata_processing_time: metrics::Time,
 }
 
 impl ParquetFileMetrics {
@@ -220,10 +223,15 @@ impl ParquetFileMetrics {
             .with_new_label("filename", filename.to_string())
             .counter("bytes_scanned", partition);
 
+        let metadata_processing_time = MetricBuilder::new(metrics)
+            .with_new_label("filename", filename.to_string())
+            .subset_time("metadata_processing", partition);
+
         Self {
             predicate_evaluation_errors,
             row_groups_pruned,
             bytes_scanned,
+            metadata_processing_time,
         }
     }
 }
@@ -585,6 +593,7 @@ impl AsyncFileReader for ParquetFileReader {
         &mut self,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         Box::pin(async move {
+            let start = Instant::now();
             let metadata = fetch_parquet_metadata(
                 self.store.as_ref(),
                 &self.meta,
@@ -597,6 +606,7 @@ impl AsyncFileReader for ParquetFileReader {
                     e
                 ))
             })?;
+            self.metrics.metadata_processing_time.add_elapsed(start);
             Ok(Arc::new(metadata))
         })
     }
