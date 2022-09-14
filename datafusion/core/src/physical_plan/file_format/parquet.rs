@@ -58,9 +58,7 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use log::debug;
 use object_store::{ObjectMeta, ObjectStore};
-use parquet::arrow::arrow_reader::{
-    ArrowPredicate, ArrowPredicateFn, ArrowReaderOptions, RowFilter,
-};
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask};
 use parquet::basic::{ConvertedType, LogicalType};
