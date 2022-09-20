@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 #![warn(missing_docs, clippy::needless_borrow)]
+// TODO: Temporary workaround for https://github.com/apache/arrow-rs/issues/2372 (#3081)
+#![allow(where_clauses_object_safety)]
 
 //! [DataFusion](https://github.com/apache/arrow-datafusion)
 //! is an extensible query execution framework that uses
@@ -42,7 +44,7 @@
 //! // create a plan
 //! let df = df.filter(col("a").lt_eq(col("b")))?
 //!            .aggregate(vec![col("a")], vec![min(col("b"))])?
-//!            .limit(None, Some(100))?;
+//!            .limit(0, Some(100))?;
 //!
 //! // execute the plan
 //! let results: Vec<RecordBatch> = df.collect().await?;
@@ -213,6 +215,9 @@ pub mod dataframe;
 pub mod datasource;
 pub mod error;
 pub mod execution;
+#[deprecated]
+// logical_plan module just contains re-exports and will be removed in a future release
+// https://github.com/apache/arrow-datafusion/issues/2683
 pub mod logical_plan;
 pub mod physical_optimizer;
 pub mod physical_plan;

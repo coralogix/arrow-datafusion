@@ -625,8 +625,7 @@ impl ContextWithParquet {
             .sql(sql)
             .await
             .expect("planning")
-            .to_logical_plan()
-            .unwrap();
+            .to_unoptimized_plan();
         self.run_test(logical_plan, sql).await
     }
 
@@ -647,6 +646,7 @@ impl ContextWithParquet {
         let pretty_input = pretty_format_batches(&input).unwrap().to_string();
 
         let logical_plan = self.ctx.optimize(&logical_plan).expect("optimizing plan");
+
         let physical_plan = self
             .ctx
             .create_physical_plan(&logical_plan)
@@ -878,10 +878,10 @@ fn make_f64_batch(v: Vec<f64>) -> RecordBatch {
 ///
 /// Columns are named
 /// "decimal_col" -> DecimalArray
-fn make_decimal_batch(v: Vec<i128>, precision: usize, scale: usize) -> RecordBatch {
+fn make_decimal_batch(v: Vec<i128>, precision: u8, scale: u8) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "decimal_col",
-        DataType::Decimal(precision, scale),
+        DataType::Decimal128(precision, scale),
         true,
     )]));
     let array = Arc::new(

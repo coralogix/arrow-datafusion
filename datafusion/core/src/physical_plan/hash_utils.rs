@@ -18,11 +18,11 @@
 //! Functionality used both on logical and physical plans
 
 use crate::error::{DataFusionError, Result};
-use ahash::{CallHasher, RandomState};
+use ahash::RandomState;
 use arrow::array::{
-    Array, ArrayRef, BasicDecimalArray, BooleanArray, Date32Array, Date64Array,
-    Decimal128Array, DictionaryArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, Int8Array, LargeStringArray, StringArray, TimestampMicrosecondArray,
+    Array, ArrayRef, BooleanArray, Date32Array, Date64Array, Decimal128Array,
+    DictionaryArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    Int8Array, LargeStringArray, StringArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
     UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
@@ -43,11 +43,11 @@ fn hash_null(random_state: &RandomState, hashes_buffer: &'_ mut [u64], mul_col: 
     if mul_col {
         hashes_buffer.iter_mut().for_each(|hash| {
             // stable hash for null value
-            *hash = combine_hashes(i128::get_hash(&1, random_state), *hash);
+            *hash = combine_hashes(random_state.hash_one(&1), *hash);
         })
     } else {
         hashes_buffer.iter_mut().for_each(|hash| {
-            *hash = i128::get_hash(&1, random_state);
+            *hash = random_state.hash_one(&1);
         })
     }
 }
@@ -63,20 +63,20 @@ fn hash_decimal128<'a>(
         if mul_col {
             for (i, hash) in hashes_buffer.iter_mut().enumerate() {
                 *hash = combine_hashes(
-                    i128::get_hash(&array.value(i).as_i128(), random_state),
+                    random_state.hash_one(&array.value(i).as_i128()),
                     *hash,
                 );
             }
         } else {
             for (i, hash) in hashes_buffer.iter_mut().enumerate() {
-                *hash = i128::get_hash(&array.value(i).as_i128(), random_state);
+                *hash = random_state.hash_one(&array.value(i).as_i128());
             }
         }
     } else if mul_col {
         for (i, hash) in hashes_buffer.iter_mut().enumerate() {
             if !array.is_null(i) {
                 *hash = combine_hashes(
-                    i128::get_hash(&array.value(i).as_i128(), random_state),
+                    random_state.hash_one(&array.value(i).as_i128()),
                     *hash,
                 );
             }
@@ -84,26 +84,24 @@ fn hash_decimal128<'a>(
     } else {
         for (i, hash) in hashes_buffer.iter_mut().enumerate() {
             if !array.is_null(i) {
-                *hash = i128::get_hash(&array.value(i).as_i128(), random_state);
+                *hash = random_state.hash_one(&array.value(i).as_i128());
             }
         }
     }
 }
 
 macro_rules! hash_array {
-    ($array_type:ident, $column: ident, $ty: ident, $hashes: ident, $random_state: ident, $multi_col: ident) => {
+    ($array_type:ident, $column: ident, $ty: ty, $hashes: ident, $random_state: ident, $multi_col: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
         if array.null_count() == 0 {
             if $multi_col {
                 for (i, hash) in $hashes.iter_mut().enumerate() {
-                    *hash = combine_hashes(
-                        $ty::get_hash(&array.value(i), $random_state),
-                        *hash,
-                    );
+                    *hash =
+                        combine_hashes($random_state.hash_one(&array.value(i)), *hash);
                 }
             } else {
                 for (i, hash) in $hashes.iter_mut().enumerate() {
-                    *hash = $ty::get_hash(&array.value(i), $random_state);
+                    *hash = $random_state.hash_one(&array.value(i));
                 }
             }
         } else {
@@ -111,7 +109,7 @@ macro_rules! hash_array {
                 for (i, hash) in $hashes.iter_mut().enumerate() {
                     if !array.is_null(i) {
                         *hash = combine_hashes(
-                            $ty::get_hash(&array.value(i), $random_state),
+                            $random_state.hash_one(&array.value(i)),
                             *hash,
                         );
                     }
@@ -119,7 +117,7 @@ macro_rules! hash_array {
             } else {
                 for (i, hash) in $hashes.iter_mut().enumerate() {
                     if !array.is_null(i) {
-                        *hash = $ty::get_hash(&array.value(i), $random_state);
+                        *hash = $random_state.hash_one(&array.value(i));
                     }
                 }
             }
@@ -135,11 +133,11 @@ macro_rules! hash_array_primitive {
         if array.null_count() == 0 {
             if $multi_col {
                 for (hash, value) in $hashes.iter_mut().zip(values.iter()) {
-                    *hash = combine_hashes($ty::get_hash(value, $random_state), *hash);
+                    *hash = combine_hashes($random_state.hash_one(value), *hash);
                 }
             } else {
                 for (hash, value) in $hashes.iter_mut().zip(values.iter()) {
-                    *hash = $ty::get_hash(value, $random_state)
+                    *hash = $random_state.hash_one(value)
                 }
             }
         } else {
@@ -148,8 +146,7 @@ macro_rules! hash_array_primitive {
                     $hashes.iter_mut().zip(values.iter()).enumerate()
                 {
                     if !array.is_null(i) {
-                        *hash =
-                            combine_hashes($ty::get_hash(value, $random_state), *hash);
+                        *hash = combine_hashes($random_state.hash_one(value), *hash);
                     }
                 }
             } else {
@@ -157,7 +154,7 @@ macro_rules! hash_array_primitive {
                     $hashes.iter_mut().zip(values.iter()).enumerate()
                 {
                     if !array.is_null(i) {
-                        *hash = $ty::get_hash(value, $random_state);
+                        *hash = $random_state.hash_one(value);
                     }
                 }
             }
@@ -174,19 +171,14 @@ macro_rules! hash_array_float {
             if $multi_col {
                 for (hash, value) in $hashes.iter_mut().zip(values.iter()) {
                     *hash = combine_hashes(
-                        $ty::get_hash(
-                            &$ty::from_le_bytes(value.to_le_bytes()),
-                            $random_state,
-                        ),
+                        $random_state.hash_one(&$ty::from_le_bytes(value.to_le_bytes())),
                         *hash,
                     );
                 }
             } else {
                 for (hash, value) in $hashes.iter_mut().zip(values.iter()) {
-                    *hash = $ty::get_hash(
-                        &$ty::from_le_bytes(value.to_le_bytes()),
-                        $random_state,
-                    )
+                    *hash =
+                        $random_state.hash_one(&$ty::from_le_bytes(value.to_le_bytes()))
                 }
             }
         } else {
@@ -196,10 +188,8 @@ macro_rules! hash_array_float {
                 {
                     if !array.is_null(i) {
                         *hash = combine_hashes(
-                            $ty::get_hash(
-                                &$ty::from_le_bytes(value.to_le_bytes()),
-                                $random_state,
-                            ),
+                            $random_state
+                                .hash_one(&$ty::from_le_bytes(value.to_le_bytes())),
                             *hash,
                         );
                     }
@@ -209,10 +199,8 @@ macro_rules! hash_array_float {
                     $hashes.iter_mut().zip(values.iter()).enumerate()
                 {
                     if !array.is_null(i) {
-                        *hash = $ty::get_hash(
-                            &$ty::from_le_bytes(value.to_le_bytes()),
-                            $random_state,
-                        );
+                        *hash = $random_state
+                            .hash_one(&$ty::from_le_bytes(value.to_le_bytes()));
                     }
                 }
             }
@@ -312,7 +300,7 @@ pub fn create_row_hashes<'a>(
         *hash = 0
     }
     for (i, hash) in hashes_buffer.iter_mut().enumerate() {
-        *hash = <Vec<u8>>::get_hash(&rows[i], random_state);
+        *hash = random_state.hash_one(&rows[i]);
     }
     Ok(hashes_buffer)
 }
@@ -329,6 +317,8 @@ pub fn create_hashes<'a>(
     hashes_buffer: &'a mut Vec<u64>,
 ) -> Result<&'a mut Vec<u64>> {
     // combine hashes with `combine_hashes` if we have more than 1 column
+
+    use arrow::array::{BinaryArray, LargeBinaryArray};
     let multi_col = arrays.len() > 1;
 
     for col in arrays {
@@ -336,7 +326,7 @@ pub fn create_hashes<'a>(
             DataType::Null => {
                 hash_null(random_state, hashes_buffer, multi_col);
             }
-            DataType::Decimal(_, _) => {
+            DataType::Decimal128(_, _) => {
                 hash_decimal128(col, random_state, hashes_buffer, multi_col);
             }
             DataType::UInt8 => {
@@ -529,6 +519,26 @@ pub fn create_hashes<'a>(
                     multi_col
                 );
             }
+            DataType::Binary => {
+                hash_array!(
+                    BinaryArray,
+                    col,
+                    &[u8],
+                    hashes_buffer,
+                    random_state,
+                    multi_col
+                );
+            }
+            DataType::LargeBinary => {
+                hash_array!(
+                    LargeBinaryArray,
+                    col,
+                    &[u8],
+                    hashes_buffer,
+                    random_state,
+                    multi_col
+                );
+            }
             DataType::Dictionary(index_type, _) => match **index_type {
                 DataType::Int8 => {
                     create_hashes_dictionary::<Int8Type>(
@@ -616,7 +626,10 @@ pub fn create_hashes<'a>(
 #[cfg(test)]
 mod tests {
     use crate::from_slice::FromSlice;
-    use arrow::{array::DictionaryArray, datatypes::Int8Type};
+    use arrow::{
+        array::{BinaryArray, DictionaryArray},
+        datatypes::Int8Type,
+    };
     use std::sync::Arc;
 
     use super::*;
@@ -649,6 +662,22 @@ mod tests {
 
         let hashes = create_hashes(&[f64_arr], &random_state, hashes_buff)?;
         assert_eq!(hashes.len(), 4,);
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_hashes_binary() -> Result<()> {
+        let byte_array = Arc::new(BinaryArray::from_vec(vec![
+            &[4, 3, 2],
+            &[4, 3, 2],
+            &[1, 2, 3],
+        ]));
+
+        let random_state = RandomState::with_seeds(0, 0, 0, 0);
+        let hashes_buff = &mut vec![0; byte_array.len()];
+        let hashes = create_hashes(&[byte_array], &random_state, hashes_buff)?;
+        assert_eq!(hashes.len(), 3,);
 
         Ok(())
     }

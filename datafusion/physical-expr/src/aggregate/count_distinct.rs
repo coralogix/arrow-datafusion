@@ -183,20 +183,21 @@ impl Accumulator for DistinctCountAccumulator {
             .iter()
             .map(|state_data_type| {
                 let values = Box::new(Vec::new());
-                ScalarValue::List(
-                    Some(*values),
-                    Box::new(Field::new("item", state_data_type.clone(), true)),
-                )
+                ScalarValue::new_list(Some(*values), state_data_type.clone())
             })
             .collect::<Vec<_>>();
 
         let mut cols_vec = cols_out
             .iter_mut()
             .map(|c| match c {
-                ScalarValue::List(Some(ref mut v), _) => v,
-                _ => unreachable!(),
+                ScalarValue::List(Some(ref mut v), _) => Ok(v),
+                t => Err(DataFusionError::Internal(format!(
+                    "cols_out should only consist of ScalarValue::List. {:?} is found",
+                    t
+                ))),
             })
-            .collect::<Vec<_>>();
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         self.values.iter().for_each(|distinct_values| {
             distinct_values.0.iter().enumerate().for_each(
@@ -262,7 +263,7 @@ mod tests {
 
     macro_rules! build_list {
         ($LISTS:expr, $BUILDER_TYPE:ident) => {{
-            let mut builder = ListBuilder::new($BUILDER_TYPE::new(0));
+            let mut builder = ListBuilder::new($BUILDER_TYPE::with_capacity(0));
             for list in $LISTS.iter() {
                 match list {
                     Some(values) => {

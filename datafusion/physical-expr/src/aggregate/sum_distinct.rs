@@ -136,9 +136,9 @@ impl Accumulator for DistinctSumAccumulator {
             self.hash_values
                 .iter()
                 .for_each(|distinct_value| distinct_values.push(distinct_value.clone()));
-            vec![AggregateState::Scalar(ScalarValue::List(
+            vec![AggregateState::Scalar(ScalarValue::new_list(
                 Some(distinct_values),
-                Box::new(Field::new("item", self.data_type.clone(), true)),
+                self.data_type.clone(),
             ))]
         };
         Ok(state_out)
@@ -171,9 +171,9 @@ impl Accumulator for DistinctSumAccumulator {
 
     fn evaluate(&self) -> Result<ScalarValue> {
         let mut sum_value = ScalarValue::try_from(&self.data_type)?;
-        self.hash_values.iter().for_each(|distinct_value| {
-            sum_value = sum::sum(&sum_value, distinct_value).unwrap()
-        });
+        for distinct_value in self.hash_values.iter() {
+            sum_value = sum::sum(&sum_value, distinct_value)?;
+        }
         Ok(sum_value)
     }
 }
@@ -289,9 +289,9 @@ mod tests {
         );
         generic_test_sum_distinct!(
             array,
-            DataType::Decimal(35, 0),
+            DataType::Decimal128(35, 0),
             ScalarValue::Decimal128(Some(1), 38, 0),
-            DataType::Decimal(38, 0)
+            DataType::Decimal128(38, 0)
         )
     }
 }

@@ -169,6 +169,15 @@ pub fn create_physical_expr(
                 }
             }
         }),
+        BuiltinScalarFunction::ArrowTypeof => {
+            let input_data_type = coerced_phy_exprs[0].data_type(input_schema)?;
+            Arc::new(move |_| {
+                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(format!(
+                    "{}",
+                    input_data_type
+                )))))
+            })
+        }
         // These don't need args and input schema
         _ => create_physical_fun(fun, execution_props)?,
     };
@@ -313,7 +322,7 @@ pub fn create_physical_fun(
         }
 
         // string functions
-        BuiltinScalarFunction::Array => Arc::new(array_expressions::array),
+        BuiltinScalarFunction::MakeArray => Arc::new(array_expressions::array),
         BuiltinScalarFunction::Struct => Arc::new(struct_expressions::struct_expr),
         BuiltinScalarFunction::Ascii => Arc::new(|args| match args[0].data_type() {
             DataType::Utf8 => {
@@ -385,6 +394,7 @@ pub fn create_physical_fun(
         }
         BuiltinScalarFunction::DatePart => Arc::new(datetime_expressions::date_part),
         BuiltinScalarFunction::DateTrunc => Arc::new(datetime_expressions::date_trunc),
+        BuiltinScalarFunction::DateBin => Arc::new(datetime_expressions::date_bin),
         BuiltinScalarFunction::Now => {
             // bind value for now at plan time
             Arc::new(datetime_expressions::make_now(
@@ -1644,7 +1654,7 @@ mod tests {
         test_function!(
             Reverse,
             &[lit("loẅks")],
-            Ok(Some("skẅol")),
+            Ok(Some("sk̈wol")),
             &str,
             Utf8,
             StringArray
@@ -1653,7 +1663,7 @@ mod tests {
         test_function!(
             Reverse,
             &[lit("loẅks")],
-            Ok(Some("skẅol")),
+            Ok(Some("sk̈wol")),
             &str,
             Utf8,
             StringArray
@@ -2727,7 +2737,7 @@ mod tests {
         let execution_props = ExecutionProps::new();
 
         let expr = create_physical_expr(
-            &BuiltinScalarFunction::Array,
+            &BuiltinScalarFunction::MakeArray,
             &[col("a", &schema)?, col("b", &schema)?],
             &schema,
             &execution_props,

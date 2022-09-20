@@ -33,6 +33,7 @@ use datafusion::prelude::*;
 use datafusion::execution::context::SessionContext;
 
 use datafusion::assert_batches_eq;
+use datafusion_expr::{approx_median, cast};
 
 fn create_test_table() -> Result<Arc<DataFrame>> {
     let schema = Arc::new(Schema::new(vec![
@@ -72,7 +73,7 @@ macro_rules! assert_fn_batches {
     };
     ($EXPR:expr, $EXPECTED: expr, $LIMIT: expr) => {
         let df = create_test_table()?;
-        let df = df.select(vec![$EXPR])?.limit(None, Some($LIMIT))?;
+        let df = df.select(vec![$EXPR])?.limit(0, Some($LIMIT))?;
         let batches = df.collect().await?;
 
         assert_batches_eq!($EXPECTED, &batches);
@@ -148,6 +149,26 @@ async fn test_fn_btrim_with_chars() -> Result<()> {
     ];
 
     assert_fn_batches!(expr, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_fn_approx_median() -> Result<()> {
+    let expr = approx_median(col("b"));
+
+    let expected = vec![
+        "+----------------------+",
+        "| APPROXMEDIAN(test.b) |",
+        "+----------------------+",
+        "| 10                   |",
+        "+----------------------+",
+    ];
+
+    let df = create_test_table()?;
+    let batches = df.aggregate(vec![], vec![expr]).unwrap().collect().await?;
+
+    assert_batches_eq!(expected, &batches);
 
     Ok(())
 }
@@ -637,6 +658,25 @@ async fn test_fn_substr() -> Result<()> {
         "| 23AbcDef                |",
         "+-------------------------+",
     ];
+    assert_fn_batches!(expr, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cast() -> Result<()> {
+    let expr = cast(col("b"), DataType::Float64);
+    let expected = vec![
+        "+--------+",
+        "| test.b |",
+        "+--------+",
+        "| 1      |",
+        "| 10     |",
+        "| 10     |",
+        "| 100    |",
+        "+--------+",
+    ];
+
     assert_fn_batches!(expr, expected);
 
     Ok(())

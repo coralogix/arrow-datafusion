@@ -159,25 +159,18 @@ fn is_false(expr: &Expr) -> bool {
 
 /// returns true if `haystack` looks like (needle OP X) or (X OP needle)
 fn is_op_with(target_op: Operator, haystack: &Expr, needle: &Expr) -> bool {
-    match haystack {
-        Expr::BinaryExpr { left, op, right }
-            if op == &target_op
-                && (needle == left.as_ref() || needle == right.as_ref()) =>
-        {
-            true
-        }
-        _ => false,
-    }
+    matches!(haystack, Expr::BinaryExpr { left, op, right } if op == &target_op && (needle == left.as_ref() || needle == right.as_ref()))
 }
 
 /// returns the contained boolean value in `expr` as
 /// `Expr::Literal(ScalarValue::Boolean(v))`.
-///
-/// panics if expr is not a literal boolean
-fn as_bool_lit(expr: Expr) -> Option<bool> {
+fn as_bool_lit(expr: Expr) -> Result<Option<bool>> {
     match expr {
-        Expr::Literal(ScalarValue::Boolean(v)) => v,
-        _ => panic!("Expected boolean literal, got {:?}", expr),
+        Expr::Literal(ScalarValue::Boolean(v)) => Ok(v),
+        _ => Err(DataFusionError::Internal(format!(
+            "Expected boolean literal, got {:?}",
+            expr
+        ))),
     }
 }
 
@@ -198,67 +191,14 @@ fn as_bool_lit(expr: Expr) -> Option<bool> {
 fn negate_clause(expr: Expr) -> Expr {
     match expr {
         Expr::BinaryExpr { left, op, right } => {
+            if let Some(negated_op) = op.negate() {
+                return Expr::BinaryExpr {
+                    left,
+                    op: negated_op,
+                    right,
+                };
+            }
             match op {
-                // not (A = B) ===> (A <> B)
-                Operator::Eq => Expr::BinaryExpr {
-                    left,
-                    op: Operator::NotEq,
-                    right,
-                },
-                // not (A <> B) ===> (A = B)
-                Operator::NotEq => Expr::BinaryExpr {
-                    left,
-                    op: Operator::Eq,
-                    right,
-                },
-                // not (A < B) ===> (A >= B)
-                Operator::Lt => Expr::BinaryExpr {
-                    left,
-                    op: Operator::GtEq,
-                    right,
-                },
-                // not (A <= B) ===> (A > B)
-                Operator::LtEq => Expr::BinaryExpr {
-                    left,
-                    op: Operator::Gt,
-                    right,
-                },
-                // not (A > B) ===> (A <= B)
-                Operator::Gt => Expr::BinaryExpr {
-                    left,
-                    op: Operator::LtEq,
-                    right,
-                },
-                // not (A >= B) ===> (A < B)
-                Operator::GtEq => Expr::BinaryExpr {
-                    left,
-                    op: Operator::Lt,
-                    right,
-                },
-                // not (A like 'B') ===> (A not like 'B')
-                Operator::Like => Expr::BinaryExpr {
-                    left,
-                    op: Operator::NotLike,
-                    right,
-                },
-                // not (A not like 'B') ===> (A like 'B')
-                Operator::NotLike => Expr::BinaryExpr {
-                    left,
-                    op: Operator::Like,
-                    right,
-                },
-                // not (A is distinct from B) ===> (A is not distinct from B)
-                Operator::IsDistinctFrom => Expr::BinaryExpr {
-                    left,
-                    op: Operator::IsNotDistinctFrom,
-                    right,
-                },
-                // not (A is not distinct from B) ===> (A is distinct from B)
-                Operator::IsNotDistinctFrom => Expr::BinaryExpr {
-                    left,
-                    op: Operator::IsDistinctFrom,
-                    right,
-                },
                 // not (A and B) ===> (not A) or (not B)
                 Operator::And => {
                     let left = negate_clause(*left);
@@ -350,12 +290,12 @@ impl SimplifyExpressions {
             .map(|e| {
                 // We need to keep original expression name, if any.
                 // Constant folding should not change expression name.
-                let name = &e.name(plan.schema());
+                let name = &e.name();
 
                 // Apply the actual simplification logic
                 let new_e = e.simplify(&info)?;
 
-                let new_name = &new_e.name(plan.schema());
+                let new_name = &new_e.name();
 
                 if let (Ok(expr_name), Ok(new_expr_name)) = (name, new_name) {
                     if expr_name != new_expr_name {
@@ -393,7 +333,7 @@ impl SimplifyExpressions {
 /// # use datafusion_expr::expr_rewriter::ExprRewritable;
 ///
 /// let execution_props = ExecutionProps::new();
-/// let mut const_evaluator = ConstEvaluator::new(&execution_props);
+/// let mut const_evaluator = ConstEvaluator::try_new(&execution_props).unwrap();
 ///
 /// // (1 + 2) + a
 /// let expr = (lit(1) + lit(2)) + col("a");
@@ -451,11 +391,12 @@ impl<'a> ExprRewriter for ConstEvaluator<'a> {
     }
 
     fn mutate(&mut self, expr: Expr) -> Result<Expr> {
-        if self.can_evaluate.pop().unwrap() {
-            let scalar = self.evaluate_to_scalar(expr)?;
-            Ok(Expr::Literal(scalar))
-        } else {
-            Ok(expr)
+        match self.can_evaluate.pop() {
+            Some(true) => Ok(Expr::Literal(self.evaluate_to_scalar(expr)?)),
+            Some(false) => Ok(expr),
+            _ => Err(DataFusionError::Internal(
+                "Failed to pop can_evaluate".to_string(),
+            )),
         }
     }
 }
@@ -464,25 +405,23 @@ impl<'a> ConstEvaluator<'a> {
     /// Create a new `ConstantEvaluator`. Session constants (such as
     /// the time for `now()` are taken from the passed
     /// `execution_props`.
-    pub fn new(execution_props: &'a ExecutionProps) -> Self {
-        let input_schema = DFSchema::empty();
-
+    pub fn try_new(execution_props: &'a ExecutionProps) -> Result<Self> {
         // The dummy column name is unused and doesn't matter as only
         // expressions without column references can be evaluated
         static DUMMY_COL_NAME: &str = ".";
         let schema = Schema::new(vec![Field::new(DUMMY_COL_NAME, DataType::Null, true)]);
+        let input_schema = DFSchema::try_from(schema.clone())?;
 
         // Need a single "input" row to produce a single output row
         let col = new_null_array(&DataType::Null, 1);
-        let input_batch =
-            RecordBatch::try_new(std::sync::Arc::new(schema), vec![col]).unwrap();
+        let input_batch = RecordBatch::try_new(std::sync::Arc::new(schema), vec![col])?;
 
-        Self {
+        Ok(Self {
             can_evaluate: vec![],
             execution_props,
             input_schema,
             input_batch,
-        }
+        })
     }
 
     /// Can a function of the specified volatility be evaluated?
@@ -525,8 +464,17 @@ impl<'a> ConstEvaluator<'a> {
             | Expr::Not(_)
             | Expr::IsNotNull(_)
             | Expr::IsNull(_)
+            | Expr::IsTrue(_)
+            | Expr::IsFalse(_)
+            | Expr::IsUnknown(_)
+            | Expr::IsNotTrue(_)
+            | Expr::IsNotFalse(_)
+            | Expr::IsNotUnknown(_)
             | Expr::Negative(_)
             | Expr::Between { .. }
+            | Expr::Like { .. }
+            | Expr::ILike { .. }
+            | Expr::SimilarTo { .. }
             | Expr::Case { .. }
             | Expr::Cast { .. }
             | Expr::TryCast { .. }
@@ -552,7 +500,7 @@ impl<'a> ConstEvaluator<'a> {
             ColumnarValue::Array(a) => {
                 if a.len() != 1 {
                     Err(DataFusionError::Execution(format!(
-                        "Could not evaluate the expressison, found a result of length {}",
+                        "Could not evaluate the expression, found a result of length {}",
                         a.len()
                     )))
                 } else {
@@ -603,7 +551,7 @@ impl<'a, S: SimplifyInfo> ExprRewriter for Simplifier<'a, S> {
                 op: Eq,
                 right,
             } if is_bool_lit(&left) && info.is_boolean_type(&right)? => {
-                match as_bool_lit(*left) {
+                match as_bool_lit(*left)? {
                     Some(true) => *right,
                     Some(false) => Not(right),
                     None => lit_bool_null(),
@@ -617,7 +565,7 @@ impl<'a, S: SimplifyInfo> ExprRewriter for Simplifier<'a, S> {
                 op: Eq,
                 right,
             } if is_bool_lit(&right) && info.is_boolean_type(&left)? => {
-                match as_bool_lit(*right) {
+                match as_bool_lit(*right)? {
                     Some(true) => *left,
                     Some(false) => Not(left),
                     None => lit_bool_null(),
@@ -636,7 +584,7 @@ impl<'a, S: SimplifyInfo> ExprRewriter for Simplifier<'a, S> {
                 op: NotEq,
                 right,
             } if is_bool_lit(&left) && info.is_boolean_type(&right)? => {
-                match as_bool_lit(*left) {
+                match as_bool_lit(*left)? {
                     Some(true) => Not(right),
                     Some(false) => *right,
                     None => lit_bool_null(),
@@ -650,7 +598,7 @@ impl<'a, S: SimplifyInfo> ExprRewriter for Simplifier<'a, S> {
                 op: NotEq,
                 right,
             } if is_bool_lit(&right) && info.is_boolean_type(&left)? => {
-                match as_bool_lit(*right) {
+                match as_bool_lit(*right)? {
                     Some(true) => Not(left),
                     Some(false) => *left,
                     None => lit_bool_null(),
@@ -851,6 +799,27 @@ impl<'a, S: SimplifyInfo> ExprRewriter for Simplifier<'a, S> {
 
                 // Do a first pass at simplification
                 out_expr.rewrite(self)?
+            }
+
+            //
+            // Rules for Between
+            //
+
+            // a between 3 and 5  -->  a >= 3 AND a <=5
+            // a not between 3 and 5  -->  a < 3 OR a > 5
+            Between {
+                expr,
+                low,
+                high,
+                negated,
+            } => {
+                if negated {
+                    let l = *expr.clone();
+                    let r = *expr;
+                    or(l.lt(*low), r.gt(*high))
+                } else {
+                    and(expr.clone().gt_eq(*low), expr.lt_eq(*high))
+                }
             }
 
             expr => {
@@ -1334,7 +1303,7 @@ mod tests {
             var_providers: None,
         };
 
-        let mut const_evaluator = ConstEvaluator::new(&execution_props);
+        let mut const_evaluator = ConstEvaluator::try_new(&execution_props).unwrap();
         let evaluated_expr = input_expr
             .clone()
             .rewrite(&mut const_evaluator)
@@ -1605,8 +1574,13 @@ mod tests {
             high: Box::new(lit(10)),
         };
         let expr = expr.or(lit_bool_null());
-        let result = simplify(expr.clone());
-        assert_eq!(expr, result);
+        let result = simplify(expr);
+
+        let expected_expr = or(
+            and(col("c1").gt_eq(lit(0)), col("c1").lt_eq(lit(10))),
+            lit_bool_null(),
+        );
+        assert_eq!(expected_expr, result);
     }
 
     #[test]
@@ -1629,8 +1603,8 @@ mod tests {
         assert_eq!(simplify(lit_bool_null().and(lit(false))), lit(false),);
 
         // c1 BETWEEN Int32(0) AND Int32(10) AND Boolean(NULL)
-        // it can be either NULL or FALSE depending on the value of `c1 BETWEEN Int32(0) AND Int32(10`
-        // and should not be rewritten
+        // it can be either NULL or FALSE depending on the value of `c1 BETWEEN Int32(0) AND Int32(10)`
+        // and the Boolean(NULL) should remain
         let expr = Expr::Between {
             expr: Box::new(col("c1")),
             negated: false,
@@ -1638,8 +1612,40 @@ mod tests {
             high: Box::new(lit(10)),
         };
         let expr = expr.and(lit_bool_null());
-        let result = simplify(expr.clone());
-        assert_eq!(expr, result);
+        let result = simplify(expr);
+
+        let expected_expr = and(
+            and(col("c1").gt_eq(lit(0)), col("c1").lt_eq(lit(10))),
+            lit_bool_null(),
+        );
+        assert_eq!(expected_expr, result);
+    }
+
+    #[test]
+    fn simplify_expr_between() {
+        // c2 between 3 and 4 is c2 >= 3 and c2 <= 4
+        let expr = Expr::Between {
+            expr: Box::new(col("c2")),
+            negated: false,
+            low: Box::new(lit(3)),
+            high: Box::new(lit(4)),
+        };
+        assert_eq!(
+            simplify(expr),
+            and(col("c2").gt_eq(lit(3)), col("c2").lt_eq(lit(4)))
+        );
+
+        // c2 not between 3 and 4 is c2 < 3 or c2 > 4
+        let expr = Expr::Between {
+            expr: Box::new(col("c2")),
+            negated: true,
+            low: Box::new(lit(3)),
+            high: Box::new(lit(4)),
+        };
+        assert_eq!(
+            simplify(expr),
+            or(col("c2").lt(lit(3)), col("c2").gt(lit(4)))
+        );
     }
 
     // ------------------------------
@@ -1743,7 +1749,7 @@ mod tests {
             .unwrap()
             .filter(col("c").not_eq(lit(false)))
             .unwrap()
-            .limit(None, Some(1))
+            .limit(0, Some(1))
             .unwrap()
             .project(vec![col("a")])
             .unwrap()
@@ -1752,7 +1758,7 @@ mod tests {
 
         let expected = "\
         Projection: #test.a\
-        \n  Limit: skip=None, fetch=1\
+        \n  Limit: skip=0, fetch=1\
         \n    Filter: #test.c AS test.c != Boolean(false)\
         \n      Filter: NOT #test.b AS test.b != Boolean(true)\
         \n        TableScan: test";
@@ -1903,7 +1909,7 @@ mod tests {
         let optimized_plan = rule
             .optimize(plan, &mut config)
             .expect("failed to optimize plan");
-        return format!("{:?}", optimized_plan);
+        format!("{:?}", optimized_plan)
     }
 
     #[test]
@@ -1952,7 +1958,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let expected = "Projection: Int32(0) AS CAST(Utf8(\"0\") AS Int32)\
+        let expected = "Projection: Int32(0) AS Utf8(\"0\")\
             \n  TableScan: test";
         let actual = get_optimized_plan_formatted(&plan, &Utc::now());
         assert_eq!(expected, actual);
@@ -1971,8 +1977,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let expected =
-            "Cannot cast string '' to value of arrow::datatypes::types::Int32Type type";
+        let expected = "Cannot cast string '' to value of Int32 type";
         let actual = get_optimized_plan_err(&plan, &Utc::now());
         assert_contains!(actual, expected);
     }
@@ -2000,7 +2005,7 @@ mod tests {
             time.timestamp_nanos()
         );
 
-        assert_eq!(actual, expected);
+        assert_eq!(expected, actual);
     }
 
     #[test]
@@ -2022,7 +2027,7 @@ mod tests {
             "Projection: NOT #test.a AS Boolean(true) OR Boolean(false) != test.a\
                         \n  TableScan: test";
 
-        assert_eq!(actual, expected);
+        assert_eq!(expected, actual);
     }
 
     #[test]
@@ -2044,7 +2049,7 @@ mod tests {
 
         // Note that constant folder runs and folds the entire
         // expression down to a single constant (true)
-        let expected = "Filter: Boolean(true) AS CAST(now() AS Int64) < CAST(totimestamp(Utf8(\"2020-09-08T12:05:00+00:00\")) AS Int64) + Int32(50000)\
+        let expected = "Filter: Boolean(true) AS now() < totimestamp(Utf8(\"2020-09-08T12:05:00+00:00\")) + Int32(50000)\
                         \n  TableScan: test";
         let actual = get_optimized_plan_formatted(&plan, &time);
 
@@ -2076,11 +2081,11 @@ mod tests {
 
         // Note that constant folder runs and folds the entire
         // expression down to a single constant (true)
-        let expected = r#"Projection: Date32("18636") AS CAST(totimestamp(Utf8("2020-09-08T12:05:00+00:00")) AS Date32) + IntervalDayTime("528280977408")
+        let expected = r#"Projection: Date32("18636") AS totimestamp(Utf8("2020-09-08T12:05:00+00:00")) + IntervalDayTime("528280977408")
   TableScan: test"#;
         let actual = get_optimized_plan_formatted(&plan, &time);
 
-        assert_eq!(actual, expected);
+        assert_eq!(expected, actual);
     }
 
     #[test]
@@ -2218,7 +2223,7 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
-        let expected = "Filter: #test.d NOT BETWEEN Int32(1) AND Int32(10) AS NOT test.d BETWEEN Int32(1) AND Int32(10)\
+        let expected = "Filter: #test.d < Int32(1) OR #test.d > Int32(10) AS NOT test.d BETWEEN Int32(1) AND Int32(10)\
         \n  TableScan: test";
 
         assert_optimized_plan_eq(&plan, expected);
@@ -2239,7 +2244,7 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
-        let expected = "Filter: #test.d BETWEEN Int32(1) AND Int32(10) AS NOT test.d NOT BETWEEN Int32(1) AND Int32(10)\
+        let expected = "Filter: #test.d >= Int32(1) AND #test.d <= Int32(10) AS NOT test.d NOT BETWEEN Int32(1) AND Int32(10)\
         \n  TableScan: test";
 
         assert_optimized_plan_eq(&plan, expected);

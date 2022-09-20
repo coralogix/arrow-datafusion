@@ -19,7 +19,7 @@
 
 use crate::{Signature, TypeSignature, Volatility};
 use arrow::datatypes::{
-    DataType, Field, TimeUnit, DECIMAL_MAX_PRECISION, DECIMAL_MAX_SCALE,
+    DataType, Field, TimeUnit, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE,
 };
 use datafusion_common::{DataFusionError, Result};
 use std::ops::Deref;
@@ -48,6 +48,13 @@ pub static TIMESTAMPS: &[DataType] = &[
 ];
 
 pub static DATES: &[DataType] = &[DataType::Date32, DataType::Date64];
+
+pub static TIMES: &[DataType] = &[
+    DataType::Time32(TimeUnit::Second),
+    DataType::Time32(TimeUnit::Millisecond),
+    DataType::Time64(TimeUnit::Microsecond),
+    DataType::Time64(TimeUnit::Nanosecond),
+];
 
 /// Enum of all built-in aggregate functions
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
@@ -303,6 +310,12 @@ pub fn coerce_types(
                     agg_fun, input_types[1]
                 )));
             }
+            if input_types.len() == 3 && !is_integer_arg_type(&input_types[2]) {
+                return Err(DataFusionError::Plan(format!(
+                        "The percentile sample points count for {:?} must be integer, not {:?}.",
+                        agg_fun, input_types[2]
+                    )));
+            }
             Ok(input_types.to_vec())
         }
         AggregateFunction::ApproxPercentileContWithWeight => {
@@ -354,6 +367,7 @@ pub fn signature(fun: &AggregateFunction) -> Signature {
                 .chain(NUMERICS.iter())
                 .chain(TIMESTAMPS.iter())
                 .chain(DATES.iter())
+                .chain(TIMES.iter())
                 .cloned()
                 .collect::<Vec<_>>();
             Signature::uniform(1, valid, Volatility::Immutable)
@@ -374,14 +388,20 @@ pub fn signature(fun: &AggregateFunction) -> Signature {
         AggregateFunction::Correlation => {
             Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable)
         }
-        AggregateFunction::ApproxPercentileCont => Signature::one_of(
+        AggregateFunction::ApproxPercentileCont => {
             // Accept any numeric value paired with a float64 percentile
-            NUMERICS
-                .iter()
-                .map(|t| TypeSignature::Exact(vec![t.clone(), DataType::Float64]))
-                .collect(),
-            Volatility::Immutable,
-        ),
+            let with_tdigest_size = NUMERICS.iter().map(|t| {
+                TypeSignature::Exact(vec![t.clone(), DataType::Float64, t.clone()])
+            });
+            Signature::one_of(
+                NUMERICS
+                    .iter()
+                    .map(|t| TypeSignature::Exact(vec![t.clone(), DataType::Float64]))
+                    .chain(with_tdigest_size)
+                    .collect(),
+                Volatility::Immutable,
+            )
+        }
         AggregateFunction::ApproxPercentileContWithWeight => Signature::one_of(
             // Accept any numeric value paired with a float64 percentile
             NUMERICS
@@ -407,11 +427,11 @@ pub fn sum_return_type(arg_type: &DataType) -> Result<DataType> {
         // In the https://www.postgresql.org/docs/current/functions-aggregate.html doc,
         // the result type of floating-point is FLOAT64 with the double precision.
         DataType::Float64 | DataType::Float32 => Ok(DataType::Float64),
-        DataType::Decimal(precision, scale) => {
+        DataType::Decimal128(precision, scale) => {
             // in the spark, the result type is DECIMAL(min(38,precision+10), s)
             // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
-            let new_precision = DECIMAL_MAX_PRECISION.min(*precision + 10);
-            Ok(DataType::Decimal(new_precision, *scale))
+            let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 10);
+            Ok(DataType::Decimal128(new_precision, *scale))
         }
         other => Err(DataFusionError::Plan(format!(
             "SUM does not support type \"{:?}\"",
@@ -503,12 +523,12 @@ pub fn stddev_return_type(arg_type: &DataType) -> Result<DataType> {
 /// function return type of an average
 pub fn avg_return_type(arg_type: &DataType) -> Result<DataType> {
     match arg_type {
-        DataType::Decimal(precision, scale) => {
+        DataType::Decimal128(precision, scale) => {
             // in the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
             // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
-            let new_precision = DECIMAL_MAX_PRECISION.min(*precision + 4);
-            let new_scale = DECIMAL_MAX_SCALE.min(*scale + 4);
-            Ok(DataType::Decimal(new_precision, new_scale))
+            let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 4);
+            let new_scale = DECIMAL128_MAX_SCALE.min(*scale + 4);
+            Ok(DataType::Decimal128(new_precision, new_scale))
         }
         DataType::Int8
         | DataType::Int16
@@ -609,7 +629,7 @@ pub fn is_sum_support_arg_type(arg_type: &DataType) -> bool {
             | DataType::Int64
             | DataType::Float32
             | DataType::Float64
-            | DataType::Decimal(_, _)
+            | DataType::Decimal128(_, _)
     )
 }
 
@@ -626,7 +646,7 @@ pub fn is_avg_support_arg_type(arg_type: &DataType) -> bool {
             | DataType::Int64
             | DataType::Float32
             | DataType::Float64
-            | DataType::Decimal(_, _)
+            | DataType::Decimal128(_, _)
     )
 }
 
@@ -694,6 +714,20 @@ pub fn is_correlation_support_arg_type(arg_type: &DataType) -> bool {
     )
 }
 
+pub fn is_integer_arg_type(arg_type: &DataType) -> bool {
+    matches!(
+        arg_type,
+        DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+    )
+}
+
 /// Return `true` if `arg_type` is of a [`DataType`] that the
 /// [`AggregateFunction::ApproxPercentileCont`] aggregation can operate on.
 pub fn is_approx_percentile_cont_supported_arg_type(arg_type: &DataType) -> bool {
@@ -755,7 +789,7 @@ mod tests {
         ];
         let input_types = vec![
             vec![DataType::Int32],
-            vec![DataType::Decimal(10, 2)],
+            vec![DataType::Decimal128(10, 2)],
             vec![DataType::Utf8],
         ];
         for fun in funs {
@@ -770,7 +804,7 @@ mod tests {
         let input_types = vec![
             vec![DataType::Int32],
             vec![DataType::Float32],
-            vec![DataType::Decimal(20, 3)],
+            vec![DataType::Decimal128(20, 3)],
         ];
         for fun in funs {
             for input_type in &input_types {
@@ -807,13 +841,13 @@ mod tests {
 
     #[test]
     fn test_avg_return_data_type() -> Result<()> {
-        let data_type = DataType::Decimal(10, 5);
+        let data_type = DataType::Decimal128(10, 5);
         let result_type = avg_return_type(&data_type)?;
-        assert_eq!(DataType::Decimal(14, 9), result_type);
+        assert_eq!(DataType::Decimal128(14, 9), result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         let result_type = avg_return_type(&data_type)?;
-        assert_eq!(DataType::Decimal(38, 14), result_type);
+        assert_eq!(DataType::Decimal128(38, 14), result_type);
         Ok(())
     }
 
@@ -823,20 +857,20 @@ mod tests {
         let result_type = variance_return_type(&data_type)?;
         assert_eq!(DataType::Float64, result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         assert!(variance_return_type(&data_type).is_err());
         Ok(())
     }
 
     #[test]
     fn test_sum_return_data_type() -> Result<()> {
-        let data_type = DataType::Decimal(10, 5);
+        let data_type = DataType::Decimal128(10, 5);
         let result_type = sum_return_type(&data_type)?;
-        assert_eq!(DataType::Decimal(20, 5), result_type);
+        assert_eq!(DataType::Decimal128(20, 5), result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         let result_type = sum_return_type(&data_type)?;
-        assert_eq!(DataType::Decimal(38, 10), result_type);
+        assert_eq!(DataType::Decimal128(38, 10), result_type);
         Ok(())
     }
 
@@ -846,7 +880,7 @@ mod tests {
         let result_type = stddev_return_type(&data_type)?;
         assert_eq!(DataType::Float64, result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         assert!(stddev_return_type(&data_type).is_err());
         Ok(())
     }
@@ -857,7 +891,7 @@ mod tests {
         let result_type = covariance_return_type(&data_type)?;
         assert_eq!(DataType::Float64, result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         assert!(covariance_return_type(&data_type).is_err());
         Ok(())
     }
@@ -868,7 +902,7 @@ mod tests {
         let result_type = correlation_return_type(&data_type)?;
         assert_eq!(DataType::Float64, result_type);
 
-        let data_type = DataType::Decimal(36, 10);
+        let data_type = DataType::Decimal128(36, 10);
         assert!(correlation_return_type(&data_type).is_err());
         Ok(())
     }

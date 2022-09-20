@@ -462,11 +462,11 @@ async fn csv_query_external_table_sum() {
         "SELECT SUM(CAST(c7 AS BIGINT)), SUM(CAST(c8 AS BIGINT)) FROM aggregate_test_100";
     let actual = execute_to_batches(&ctx, sql).await;
     let expected = vec![
-        "+-------------------------------------------+-------------------------------------------+",
-        "| SUM(CAST(aggregate_test_100.c7 AS Int64)) | SUM(CAST(aggregate_test_100.c8 AS Int64)) |",
-        "+-------------------------------------------+-------------------------------------------+",
-        "| 13060                                     | 3017641                                   |",
-        "+-------------------------------------------+-------------------------------------------+",
+        "+----------------------------+----------------------------+",
+        "| SUM(aggregate_test_100.c7) | SUM(aggregate_test_100.c8) |",
+        "+----------------------------+----------------------------+",
+        "| 13060                      | 3017641                    |",
+        "+----------------------------+----------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 }
@@ -555,6 +555,7 @@ async fn csv_query_count_one() {
 }
 
 #[tokio::test]
+#[ignore] // https://github.com/apache/arrow-datafusion/issues/3353
 async fn csv_query_approx_count() -> Result<()> {
     let ctx = SessionContext::new();
     register_aggregate_csv(&ctx).await?;
@@ -566,6 +567,24 @@ async fn csv_query_approx_count() -> Result<()> {
         "+----------+--------------+",
         "| 100      | 99           |",
         "+----------+--------------+",
+    ];
+    assert_batches_eq!(expected, &actual);
+    Ok(())
+}
+
+#[tokio::test]
+async fn csv_query_approx_count_dupe_expr_aliased() -> Result<()> {
+    let ctx = SessionContext::new();
+    register_aggregate_csv(&ctx).await?;
+    let sql =
+        "SELECT approx_distinct(c9) a, approx_distinct(c9) b FROM aggregate_test_100";
+    let actual = execute_to_batches(&ctx, sql).await;
+    let expected = vec![
+        "+-----+-----+",
+        "| a   | b   |",
+        "+-----+-----+",
+        "| 100 | 100 |",
+        "+-----+-----+",
     ];
     assert_batches_eq!(expected, &actual);
     Ok(())
@@ -921,6 +940,54 @@ async fn csv_query_approx_percentile_cont_with_weight() -> Result<()> {
     .await
     .unwrap_err();
     assert_eq!(results.to_string(), "Error during planning: The percentile argument for ApproxPercentileContWithWeight must be Float64, not Utf8.");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn csv_query_approx_percentile_cont_with_histogram_bins() -> Result<()> {
+    let ctx = SessionContext::new();
+    register_aggregate_csv(&ctx).await?;
+
+    // compare approx_percentile_cont and approx_percentile_cont_with_weight
+    let sql = "SELECT c1, approx_percentile_cont(c3, 0.95, 200) AS c3_p95 FROM aggregate_test_100 GROUP BY 1 ORDER BY 1";
+    let actual = execute_to_batches(&ctx, sql).await;
+    let expected = vec![
+        "+----+--------+",
+        "| c1 | c3_p95 |",
+        "+----+--------+",
+        "| a  | 73     |",
+        "| b  | 68     |",
+        "| c  | 122    |",
+        "| d  | 124    |",
+        "| e  | 115    |",
+        "+----+--------+",
+    ];
+    assert_batches_eq!(expected, &actual);
+
+    let results = plan_and_collect(
+        &ctx,
+        "SELECT c1, approx_percentile_cont(c3, 0.95, -1000) AS c3_p95 FROM aggregate_test_100 GROUP BY 1 ORDER BY 1",
+    )
+        .await
+        .unwrap_err();
+    assert_eq!(results.to_string(), "This feature is not implemented: Tdigest max_size value for 'APPROX_PERCENTILE_CONT' must be UInt > 0 literal (got data type Int64).");
+
+    let results = plan_and_collect(
+        &ctx,
+        "SELECT approx_percentile_cont(c3, 0.95, c1) FROM aggregate_test_100",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(results.to_string(), "Error during planning: The percentile sample points count for ApproxPercentileCont must be integer, not Utf8.");
+
+    let results = plan_and_collect(
+        &ctx,
+        "SELECT approx_percentile_cont(c3, 0.95, 111.1) FROM aggregate_test_100",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(results.to_string(), "Error during planning: The percentile sample points count for ApproxPercentileCont must be integer, not Float64.");
 
     Ok(())
 }
@@ -1457,6 +1524,25 @@ async fn aggregate_timestamps_avg() -> Result<()> {
 }
 
 #[tokio::test]
+async fn aggregate_time_min_and_max() -> Result<()> {
+    let ctx = SessionContext::new();
+
+    let sql = "select min(t), max(t) from  (select '00:00:00' as t union select '00:00:01' union select '00:00:02');";
+    let results = execute_to_batches(&ctx, sql).await;
+    let expected = vec![
+        "+----------+----------+",
+        "| MIN(t)   | MAX(t)   |",
+        "+----------+----------+",
+        "| 00:00:00 | 00:00:02 |",
+        "+----------+----------+",
+    ];
+
+    assert_batches_eq!(expected, &results);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn aggregate_decimal_min() -> Result<()> {
     let ctx = SessionContext::new();
     // the data type of c1 is decimal(10,3)
@@ -1472,7 +1558,7 @@ async fn aggregate_decimal_min() -> Result<()> {
         "+-----------------+",
     ];
     assert_eq!(
-        &DataType::Decimal(10, 3),
+        &DataType::Decimal128(10, 3),
         result[0].schema().field(0).data_type()
     );
     assert_batches_sorted_eq!(expected, &result);
@@ -1496,7 +1582,7 @@ async fn aggregate_decimal_max() -> Result<()> {
         "+-----------------+",
     ];
     assert_eq!(
-        &DataType::Decimal(10, 3),
+        &DataType::Decimal128(10, 3),
         result[0].schema().field(0).data_type()
     );
     assert_batches_sorted_eq!(expected, &result);
@@ -1519,7 +1605,7 @@ async fn aggregate_decimal_sum() -> Result<()> {
         "+-----------------+",
     ];
     assert_eq!(
-        &DataType::Decimal(20, 3),
+        &DataType::Decimal128(20, 3),
         result[0].schema().field(0).data_type()
     );
     assert_batches_sorted_eq!(expected, &result);
@@ -1542,7 +1628,7 @@ async fn aggregate_decimal_avg() -> Result<()> {
         "+-----------------+",
     ];
     assert_eq!(
-        &DataType::Decimal(14, 7),
+        &DataType::Decimal128(14, 7),
         result[0].schema().field(0).data_type()
     );
     assert_batches_sorted_eq!(expected, &result);
@@ -1748,11 +1834,11 @@ async fn aggregate_avg_add() -> Result<()> {
     assert_eq!(results.len(), 1);
 
     let expected = vec![
-        "+--------------+----------------------------+----------------------------+----------------------------+",
-        "| AVG(test.c1) | AVG(test.c1) Plus Int64(1) | AVG(test.c1) Plus Int64(2) | Int64(1) Plus AVG(test.c1) |",
-        "+--------------+----------------------------+----------------------------+----------------------------+",
-        "| 1.5          | 2.5                        | 3.5                        | 2.5                        |",
-        "+--------------+----------------------------+----------------------------+----------------------------+",
+        "+--------------+---------------------------+---------------------------+---------------------------+",
+        "| AVG(test.c1) | AVG(test.c1) + Float64(1) | AVG(test.c1) + Float64(2) | Float64(1) + AVG(test.c1) |",
+        "+--------------+---------------------------+---------------------------+---------------------------+",
+        "| 1.5          | 2.5                       | 3.5                       | 2.5                       |",
+        "+--------------+---------------------------+---------------------------+---------------------------+",
     ];
     assert_batches_sorted_eq!(expected, &results);
 

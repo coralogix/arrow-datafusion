@@ -18,27 +18,26 @@
 name: Rust
 
 on:
-  # always trigger
+  # always trigger on PR
   push:
   pull_request:
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
 
 jobs:
   # Check crate compiles
   linux-build-lib:
-    name: Build Libraries on AMD64 Rust ${{ matrix.rust }}
+    name: cargo check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Cache Cargo
         uses: actions/cache@v3
         with:
@@ -49,7 +48,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Check workspace in debug mode
         run: |
           cargo check
@@ -65,23 +64,29 @@ jobs:
 
   # test the crate
   linux-test:
-    name: Test Workspace on AMD64 Rust ${{ matrix.rust }}
+    name: cargo test (amd64)
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          mkdir -p $HOME/d/protoc
+          cd $HOME/d/protoc
+          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+          unzip $PROTO_ZIP
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc --version
       - name: Cache Cargo
         uses: actions/cache@v3
         with:
@@ -91,9 +96,10 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Run tests
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
           cargo test --features avro,jit,scheduler,json
           # test datafusion-sql examples
           cargo run --example sql
@@ -104,7 +110,7 @@ jobs:
           cargo run --example avro_sql --features=datafusion/avro
 
   integration-test:
-    name: "Integration Test"
+    name: "Compare to postgres"
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
     services:
@@ -121,14 +127,14 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: "3.10"
       - name: Install Python dependencies
@@ -159,23 +165,63 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
 
-  windows-and-macos:
-    name: Test on ${{ matrix.os }} Rust ${{ matrix.rust }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-        rust: [stable]
+  windows:
+    name: cargo test (win64)
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          mkdir -p $HOME/d/protoc
+          cd $HOME/d/protoc
+          export PROTO_ZIP="protoc-21.4-win64.zip"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+          unzip $PROTO_ZIP
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc.exe --version
       # TODO: this won't cache anything, which is expensive. Setup this action
       # with a OS-dependent path.
       - name: Setup Rust toolchain
         run: |
-          rustup toolchain install ${{ matrix.rust }}
-          rustup default ${{ matrix.rust }}
+          rustup toolchain install stable
+          rustup default stable
+          rustup component add rustfmt
+      - name: Run tests
+        shell: bash
+        run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
+          cargo test
+        env:
+          # do not produce debug symbols to keep memory usage down
+          RUSTFLAGS: "-C debuginfo=0"
+
+  macos:
+    name: cargo test (mac)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          mkdir -p $HOME/d/protoc
+          cd $HOME/d/protoc
+          export PROTO_ZIP="protoc-21.4-osx-x86_64.zip"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+          unzip $PROTO_ZIP
+          echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc --version
+      # TODO: this won't cache anything, which is expensive. Setup this action
+      # with a OS-dependent path.
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
           rustup component add rustfmt
       - name: Run tests
         shell: bash
@@ -186,20 +232,17 @@ jobs:
           RUSTFLAGS: "-C debuginfo=0"
 
   test-datafusion-pyarrow:
+    name: cargo test pyarrow (amd64)
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - name: Cache Cargo
@@ -208,7 +251,7 @@ jobs:
           path: /github/home/.cargo
           # this key equals the ones on `linux-build-lib` for re-use
           key: cargo-cache-
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: "3.8"
       - name: Install PyArrow
@@ -218,7 +261,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Run tests
         run: |
           cd datafusion
@@ -230,30 +273,38 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
       - name: Run
-        run: ci/scripts/rust_fmt.sh
+        run: |
+          echo '' > datafusion/proto/src/generated/datafusion.rs
+          ci/scripts/rust_fmt.sh
 
   coverage:
-    name: Coverage
+    name: coverage
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [ amd64 ]
-        rust: [ stable ]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          mkdir -p $HOME/d/protoc
+          cd $HOME/d/protoc
+          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+          unzip $PROTO_ZIP
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc --version
       - name: Setup Rust toolchain
         run: |
-          rustup toolchain install ${{ matrix.rust }}
-          rustup default ${{ matrix.rust }}
+          rustup toolchain install stable
+          rustup default stable
           rustup component add rustfmt clippy
       - name: Cache Cargo
         uses: actions/cache@v3
@@ -263,6 +314,7 @@ jobs:
           key: cargo-coverage-cache3-
       - name: Run coverage
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
           rustup toolchain install stable
           rustup default stable
           cargo install --version 0.20.1 cargo-tarpaulin
@@ -272,21 +324,17 @@ jobs:
         run: bash <(curl -s https://codecov.io/bash)
 
   clippy:
-    name: Clippy
+    name: clippy
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - name: Cache Cargo
@@ -298,7 +346,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Install Clippy
         run: |
           rustup component add clippy
@@ -306,14 +354,10 @@ jobs:
         run: ci/scripts/rust_clippy.sh
 
   miri-checks:
-    name: MIRI
+    name: cargo miri test (amd64)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [nightly-2022-01-17]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - uses: actions/cache@v3
@@ -325,8 +369,8 @@ jobs:
           key: ${{ runner.os }}-cargo-miri-${{ hashFiles('**/Cargo.lock') }}
       - name: Setup Rust toolchain
         run: |
-          rustup toolchain install ${{ matrix.rust }}
-          rustup default ${{ matrix.rust }}
+          rustup toolchain install nightly-2022-01-17
+          rustup default nightly-2022-01-17
           rustup component add rustfmt clippy miri
       - name: Run Miri Checks
         env:
@@ -341,21 +385,17 @@ jobs:
 
   # Check answers are correct when hash values collide
   hash-collisions:
-    name: Test Hash Collisions on AMD64 Rust ${{ matrix.rust }}
+    name: cargo test hash collisions (amd64)
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - name: Cache Cargo
@@ -367,7 +407,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Run tests
         run: |
           cd datafusion
@@ -375,21 +415,17 @@ jobs:
           cargo test --all --features=force_hash_collisions
 
   cargo-toml-formatting-checks:
-    name: Check Cargo.toml formatting
+    name: check Cargo.toml formatting
     needs: [linux-build-lib]
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
     container:
-      image: ${{ matrix.arch }}/rust
+      image: amd64/rust
       env:
         # Disable full debug symbol generation to speed up CI build and keep memory down
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           submodules: true
       - name: Cache Cargo
@@ -401,7 +437,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: stable
       - name: Install cargo-tomlfmt
         run: |
           which cargo-tomlfmt || cargo install cargo-tomlfmt

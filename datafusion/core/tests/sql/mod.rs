@@ -82,6 +82,7 @@ macro_rules! test_expression {
 pub mod aggregates;
 #[cfg(feature = "avro")]
 pub mod avro;
+pub mod cast;
 pub mod create_drop;
 pub mod errors;
 pub mod explain_analyze;
@@ -105,13 +106,14 @@ pub mod union;
 pub mod wildcard;
 pub mod window;
 
+pub mod arrow_typeof;
 pub mod decimal;
-mod explain;
-mod idenfifers;
+pub mod explain;
+pub mod idenfifers;
 pub mod information_schema;
-mod parquet_schema;
-mod partitioned_csv;
-mod subqueries;
+pub mod parquet_schema;
+pub mod partitioned_csv;
+pub mod subqueries;
 #[cfg(feature = "unicode_expressions")]
 pub mod unicode;
 
@@ -279,7 +281,7 @@ fn create_hashjoin_datatype_context() -> Result<SessionContext> {
     let t1_schema = Schema::new(vec![
         Field::new("c1", DataType::Date32, true),
         Field::new("c2", DataType::Date64, true),
-        Field::new("c3", DataType::Decimal(5, 2), true),
+        Field::new("c3", DataType::Decimal128(5, 2), true),
         Field::new(
             "c4",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -312,7 +314,7 @@ fn create_hashjoin_datatype_context() -> Result<SessionContext> {
     let t2_schema = Schema::new(vec![
         Field::new("c1", DataType::Date32, true),
         Field::new("c2", DataType::Date64, true),
-        Field::new("c3", DataType::Decimal(10, 2), true),
+        Field::new("c3", DataType::Decimal128(10, 2), true),
         Field::new(
             "c4",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -451,7 +453,7 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("c_address", DataType::Utf8, false),
             Field::new("c_nationkey", DataType::Int64, false),
             Field::new("c_phone", DataType::Utf8, false),
-            Field::new("c_acctbal", DataType::Float64, false),
+            Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("c_mktsegment", DataType::Utf8, false),
             Field::new("c_comment", DataType::Utf8, false),
         ]),
@@ -460,7 +462,7 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("o_orderkey", DataType::Int64, false),
             Field::new("o_custkey", DataType::Int64, false),
             Field::new("o_orderstatus", DataType::Utf8, false),
-            Field::new("o_totalprice", DataType::Float64, false),
+            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
             Field::new("o_orderdate", DataType::Date32, false),
             Field::new("o_orderpriority", DataType::Utf8, false),
             Field::new("o_clerk", DataType::Utf8, false),
@@ -473,10 +475,10 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("l_partkey", DataType::Int64, false),
             Field::new("l_suppkey", DataType::Int64, false),
             Field::new("l_linenumber", DataType::Int32, false),
-            Field::new("l_quantity", DataType::Float64, false),
-            Field::new("l_extendedprice", DataType::Float64, false),
-            Field::new("l_discount", DataType::Float64, false),
-            Field::new("l_tax", DataType::Float64, false),
+            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+            Field::new("l_tax", DataType::Decimal128(15, 2), false),
             Field::new("l_returnflag", DataType::Utf8, false),
             Field::new("l_linestatus", DataType::Utf8, false),
             Field::new("l_shipdate", DataType::Date32, false),
@@ -500,7 +502,7 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("s_address", DataType::Utf8, false),
             Field::new("s_nationkey", DataType::Int64, false),
             Field::new("s_phone", DataType::Utf8, false),
-            Field::new("s_acctbal", DataType::Float64, false),
+            Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("s_comment", DataType::Utf8, false),
         ]),
 
@@ -508,7 +510,7 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("ps_partkey", DataType::Int64, false),
             Field::new("ps_suppkey", DataType::Int64, false),
             Field::new("ps_availqty", DataType::Int32, false),
-            Field::new("ps_supplycost", DataType::Float64, false),
+            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
             Field::new("ps_comment", DataType::Utf8, false),
         ]),
 
@@ -520,7 +522,7 @@ fn get_tpch_table_schema(table: &str) -> Schema {
             Field::new("p_type", DataType::Utf8, false),
             Field::new("p_size", DataType::Int32, false),
             Field::new("p_container", DataType::Utf8, false),
-            Field::new("p_retailprice", DataType::Float64, false),
+            Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
             Field::new("p_comment", DataType::Utf8, false),
         ]),
 
@@ -561,11 +563,19 @@ async fn register_tpch_csv_data(
     let mut cols: Vec<Box<dyn ArrayBuilder>> = vec![];
     for field in schema.fields().iter() {
         match field.data_type() {
-            DataType::Utf8 => cols.push(Box::new(StringBuilder::new(records.len()))),
-            DataType::Date32 => cols.push(Box::new(Date32Builder::new(records.len()))),
-            DataType::Int32 => cols.push(Box::new(Int32Builder::new(records.len()))),
-            DataType::Int64 => cols.push(Box::new(Int64Builder::new(records.len()))),
-            DataType::Float64 => cols.push(Box::new(Float64Builder::new(records.len()))),
+            DataType::Utf8 => cols.push(Box::new(StringBuilder::new())),
+            DataType::Date32 => {
+                cols.push(Box::new(Date32Builder::with_capacity(records.len())))
+            }
+            DataType::Int32 => {
+                cols.push(Box::new(Int32Builder::with_capacity(records.len())))
+            }
+            DataType::Int64 => {
+                cols.push(Box::new(Int64Builder::with_capacity(records.len())))
+            }
+            DataType::Decimal128(p, s) => cols.push(Box::new(
+                Decimal128Builder::with_capacity(records.len(), *p, *s),
+            )),
             _ => {
                 let msg = format!("Not implemented: {}", field.data_type());
                 Err(DataFusionError::Plan(msg))?
@@ -596,9 +606,14 @@ async fn register_tpch_csv_data(
                     let sb = col.as_any_mut().downcast_mut::<Int64Builder>().unwrap();
                     sb.append_value(val.trim().parse().unwrap());
                 }
-                DataType::Float64 => {
-                    let sb = col.as_any_mut().downcast_mut::<Float64Builder>().unwrap();
-                    sb.append_value(val.trim().parse().unwrap());
+                DataType::Decimal128(_, _) => {
+                    let sb = col
+                        .as_any_mut()
+                        .downcast_mut::<Decimal128Builder>()
+                        .unwrap();
+                    let val = val.trim().replace('.', "");
+                    let value_i128 = val.parse::<i128>().unwrap();
+                    sb.append_value(value_i128)?;
                 }
                 _ => Err(DataFusionError::Plan(format!(
                     "Not implemented: {}",
@@ -620,22 +635,20 @@ async fn register_tpch_csv_data(
 async fn register_aggregate_csv_by_sql(ctx: &SessionContext) {
     let testdata = datafusion::test_util::arrow_test_data();
 
-    // TODO: The following c9 should be migrated to UInt32 and c10 should be UInt64 once
-    // unsigned is supported.
     let df = ctx
         .sql(&format!(
             "
     CREATE EXTERNAL TABLE aggregate_test_100 (
         c1  VARCHAR NOT NULL,
-        c2  INT NOT NULL,
+        c2  TINYINT NOT NULL,
         c3  SMALLINT NOT NULL,
         c4  SMALLINT NOT NULL,
-        c5  INT NOT NULL,
+        c5  INTEGER NOT NULL,
         c6  BIGINT NOT NULL,
         c7  SMALLINT NOT NULL,
         c8  INT NOT NULL,
-        c9  BIGINT NOT NULL,
-        c10 VARCHAR NOT NULL,
+        c9  INT UNSIGNED NOT NULL,
+        c10 BIGINT UNSIGNED NOT NULL,
         c11 FLOAT NOT NULL,
         c12 DOUBLE NOT NULL,
         c13 VARCHAR NOT NULL
@@ -728,6 +741,26 @@ async fn plan_and_collect(ctx: &SessionContext, sql: &str) -> Result<Vec<RecordB
     ctx.sql(sql).await?.collect().await
 }
 
+/// Execute query and return results as a Vec of RecordBatches or an error
+async fn try_execute_to_batches(
+    ctx: &SessionContext,
+    sql: &str,
+) -> Result<Vec<RecordBatch>> {
+    let plan = ctx.create_logical_plan(sql)?;
+    let logical_schema = plan.schema();
+
+    let plan = ctx.optimize(&plan)?;
+    let optimized_logical_schema = plan.schema();
+
+    let plan = ctx.create_physical_plan(&plan).await?;
+
+    let task_ctx = ctx.task_ctx();
+    let results = collect(plan, task_ctx).await?;
+
+    assert_eq!(logical_schema.as_ref(), optimized_logical_schema.as_ref());
+    Ok(results)
+}
+
 /// Execute query and return results as a Vec of RecordBatches
 async fn execute_to_batches(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
     let msg = format!("Creating logical plan for '{}'", sql);
@@ -737,14 +770,22 @@ async fn execute_to_batches(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch>
         .unwrap();
     let logical_schema = plan.schema();
 
+    // We are not really interested in the direct output of optimized_logical_plan
+    // since the physical plan construction already optimizes the given logical plan
+    // and we want to avoid double-optimization as a consequence. So we just construct
+    // it here to make sure that it doesn't fail at this step and get the optimized
+    // schema (to assert later that the logical and optimized schemas are the same).
     let msg = format!("Optimizing logical plan for '{}': {:?}", sql, plan);
-    let plan = ctx
+    let optimized_logical_plan = ctx
         .optimize(&plan)
         .map_err(|e| format!("{:?} at {}", e, msg))
         .unwrap();
-    let optimized_logical_schema = plan.schema();
+    let optimized_logical_schema = optimized_logical_plan.schema();
 
-    let msg = format!("Creating physical plan for '{}': {:?}", sql, plan);
+    let msg = format!(
+        "Creating physical plan for '{}': {:?}",
+        sql, optimized_logical_plan
+    );
     let plan = ctx
         .create_physical_plan(&plan)
         .await
@@ -836,7 +877,7 @@ pub fn table_with_decimal() -> Arc<dyn TableProvider> {
 }
 
 fn make_decimal() -> RecordBatch {
-    let mut decimal_builder = Decimal128Builder::new(20, 10, 3);
+    let mut decimal_builder = Decimal128Builder::with_capacity(20, 10, 3);
     for i in 110000..110010 {
         decimal_builder.append_value(i as i128).unwrap();
     }
@@ -864,21 +905,6 @@ pub fn make_partition(sz: i32) -> RecordBatch {
 fn col_str(column: &ArrayRef, row_index: usize) -> String {
     if column.is_null(row_index) {
         return "NULL".to_string();
-    }
-
-    // Special case ListArray as there is no pretty print support for it yet
-    if let DataType::FixedSizeList(_, n) = column.data_type() {
-        let array = column
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .unwrap()
-            .value(row_index);
-
-        let mut r = Vec::with_capacity(*n as usize);
-        for i in 0..*n {
-            r.push(col_str(&array, i as usize));
-        }
-        return format!("[{}]", r.join(","));
     }
 
     array_value_to_string(column, row_index)

@@ -299,7 +299,7 @@ impl LogicalPlanBuilder {
     ///
     /// `fetch` - Maximum number of rows to fetch, after skipping `skip` rows,
     ///          if specified.
-    pub fn limit(&self, skip: Option<usize>, fetch: Option<usize>) -> Result<Self> {
+    pub fn limit(&self, skip: usize, fetch: Option<usize>) -> Result<Self> {
         Ok(Self::from(LogicalPlan::Limit(Limit {
             skip,
             fetch,
@@ -335,16 +335,17 @@ impl LogicalPlanBuilder {
                 .iter()
                 .all(|c| input.schema().field_from_column(c).is_ok()) =>
             {
-                let missing_exprs = missing_cols
+                let mut missing_exprs = missing_cols
                     .iter()
                     .map(|c| normalize_col(Expr::Column(c.clone()), &input))
                     .collect::<Result<Vec<_>>>()?;
 
+                // Do not let duplicate columns to be added, some of the
+                // missing_cols may be already present but without the new
+                // projected alias.
+                missing_exprs.retain(|e| !expr.contains(e));
                 expr.extend(missing_exprs);
-
-                Ok(LogicalPlan::Projection(Projection::try_new(
-                    expr, input, alias,
-                )?))
+                Ok(project_with_alias((*input).clone(), expr, alias)?)
             }
             _ => {
                 let new_inputs = curr_plan
@@ -606,12 +607,12 @@ impl LogicalPlanBuilder {
         for (l, r) in &on {
             if self.plan.schema().field_from_column(l).is_ok()
                 && right.schema().field_from_column(r).is_ok()
-                && can_hash(self.plan.schema().field_from_column(l).unwrap().data_type())
+                && can_hash(self.plan.schema().field_from_column(l)?.data_type())
             {
                 join_on.push((l.clone(), r.clone()));
             } else if self.plan.schema().field_from_column(r).is_ok()
                 && right.schema().field_from_column(l).is_ok()
-                && can_hash(self.plan.schema().field_from_column(r).unwrap().data_type())
+                && can_hash(self.plan.schema().field_from_column(r)?.data_type())
             {
                 join_on.push((r.clone(), l.clone()));
             } else {
@@ -628,7 +629,9 @@ impl LogicalPlanBuilder {
         }
         if join_on.is_empty() {
             let join = Self::from(self.plan.clone()).cross_join(&right.clone())?;
-            join.filter(filters.unwrap())
+            join.filter(filters.ok_or_else(|| {
+                DataFusionError::Internal("filters should not be None here".to_string())
+            })?)
         } else {
             Ok(Self::from(LogicalPlan::Join(Join {
                 left: Arc::new(self.plan.clone()),
@@ -668,7 +671,7 @@ impl LogicalPlanBuilder {
     ) -> Result<Self> {
         let window_expr = normalize_cols(window_expr, &self.plan)?;
         let all_expr = window_expr.iter();
-        validate_unique_names("Windows", all_expr.clone(), self.plan.schema())?;
+        validate_unique_names("Windows", all_expr.clone())?;
         let mut window_fields: Vec<DFField> = exprlist_to_fields(all_expr, &self.plan)?;
         window_fields.extend_from_slice(self.plan.schema().fields());
         Ok(Self::from(LogicalPlan::Window(Window {
@@ -695,17 +698,17 @@ impl LogicalPlanBuilder {
         let grouping_expr: Vec<Expr> = grouping_set_to_exprlist(group_expr.as_slice())?;
 
         let all_expr = grouping_expr.iter().chain(aggr_expr.iter());
-        validate_unique_names("Aggregations", all_expr.clone(), self.plan.schema())?;
+        validate_unique_names("Aggregations", all_expr.clone())?;
         let aggr_schema = DFSchema::new_with_metadata(
             exprlist_to_fields(all_expr, &self.plan)?,
             self.plan.schema().metadata().clone(),
         )?;
-        Ok(Self::from(LogicalPlan::Aggregate(Aggregate {
-            input: Arc::new(self.plan.clone()),
+        Ok(Self::from(LogicalPlan::Aggregate(Aggregate::try_new(
+            Arc::new(self.plan.clone()),
             group_expr,
             aggr_expr,
-            schema: DFSchemaRef::new(aggr_schema),
-        })))
+            DFSchemaRef::new(aggr_schema),
+        )?)))
     }
 
     /// Create an expression to represent the explanation of the plan
@@ -831,11 +834,10 @@ pub fn build_join_schema(
 fn validate_unique_names<'a>(
     node_name: &str,
     expressions: impl IntoIterator<Item = &'a Expr>,
-    input_schema: &DFSchema,
 ) -> Result<()> {
     let mut unique_names = HashMap::new();
     expressions.into_iter().enumerate().try_for_each(|(position, expr)| {
-        let name = expr.name(input_schema)?;
+        let name = expr.name()?;
         match unique_names.get(&name) {
             None => {
                 unique_names.insert(name, (position, expr));
@@ -901,18 +903,16 @@ pub fn union_with_alias(
         .map(|p| match p.as_ref() {
             LogicalPlan::Projection(Projection {
                 expr, input, alias, ..
-            }) => Arc::new(
-                project_with_column_index_alias(
-                    expr.to_vec(),
-                    input.clone(),
-                    union_schema.clone(),
-                    alias.clone(),
-                )
-                .unwrap(),
-            ),
-            x => Arc::new(x.clone()),
+            }) => Ok(Arc::new(project_with_column_index_alias(
+                expr.to_vec(),
+                input.clone(),
+                union_schema.clone(),
+                alias.clone(),
+            )?)),
+            x => Ok(Arc::new(x.clone())),
         })
-        .collect::<Vec<_>>();
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
 
     if inputs.is_empty() {
         return Err(DataFusionError::Plan("Empty UNION".to_string()));
@@ -955,7 +955,7 @@ pub fn project_with_alias(
                 .push(columnize_expr(normalize_col(e, &plan)?, input_schema)),
         }
     }
-    validate_unique_names("Projections", projected_expr.iter(), input_schema)?;
+    validate_unique_names("Projections", projected_expr.iter())?;
     let input_schema = DFSchema::new_with_metadata(
         exprlist_to_fields(&projected_expr, &plan)?,
         plan.schema().metadata().clone(),
@@ -1057,7 +1057,7 @@ mod tests {
                     vec![sum(col("salary")).alias("total_salary")],
                 )?
                 .project(vec![col("state"), col("total_salary")])?
-                .limit(Some(2), Some(10))?
+                .limit(2, Some(10))?
                 .build()?;
 
         let expected = "Limit: skip=2, fetch=10\

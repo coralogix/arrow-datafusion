@@ -133,7 +133,7 @@ where
 {
     Ok(left
         .iter()
-        .map(|left| left.map(|left| op(left, right)))
+        .map(|left| left.map(|left| op(left.as_i128(), right)))
         .collect())
 }
 
@@ -152,7 +152,7 @@ where
         .zip(right.iter())
         .map(|(left, right)| {
             if let (Some(left), Some(right)) = (left, right) {
-                Some(op(left, right))
+                Some(op(left.as_i128(), right.as_i128()))
             } else {
                 None
             }
@@ -288,7 +288,7 @@ where
         .zip(right.iter())
         .map(|(left, right)| {
             if let (Some(left), Some(right)) = (left, right) {
-                Some(op(left, right)).transpose()
+                Some(op(left.as_i128(), right.as_i128())).transpose()
             } else {
                 Ok(None)
             }
@@ -307,7 +307,7 @@ where
     left.iter()
         .map(|left| {
             if let Some(left) = left {
-                Some(op(left, right)).transpose()
+                Some(op(left.as_i128(), right)).transpose()
             } else {
                 Ok(None)
             }
@@ -435,10 +435,11 @@ mod tests {
 
     fn create_decimal_array(
         array: &[Option<i128>],
-        precision: usize,
-        scale: usize,
+        precision: u8,
+        scale: u8,
     ) -> Decimal128Array {
-        let mut decimal_builder = Decimal128Builder::new(array.len(), precision, scale);
+        let mut decimal_builder =
+            Decimal128Builder::with_capacity(array.len(), precision, scale);
         for value in array {
             match value {
                 None => {

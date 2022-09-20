@@ -17,6 +17,7 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
+use std::any::type_name;
 use std::any::Any;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ use arrow::{
     array::{ArrayRef, UInt64Array},
     datatypes::Field,
 };
-use datafusion_common::ScalarValue;
+use datafusion_common::{downcast_value, ScalarValue};
 use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::{Accumulator, AggregateState};
 use datafusion_row::accessor::RowAccessor;
@@ -54,7 +55,7 @@ impl Avg {
         // the result of avg just support FLOAT64 and Decimal data type.
         assert!(matches!(
             data_type,
-            DataType::Float64 | DataType::Decimal(_, _)
+            DataType::Float64 | DataType::Decimal128(_, _)
         ));
         Self {
             name: name.into(),
@@ -169,7 +170,7 @@ impl Accumulator for AvgAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        let counts = states[0].as_any().downcast_ref::<UInt64Array>().unwrap();
+        let counts = downcast_value!(states[0], UInt64Array);
         // counts are summed
         self.count += compute::sum(counts).unwrap_or(0);
 
@@ -245,7 +246,7 @@ impl RowAccumulator for AvgRowAccumulator {
         states: &[ArrayRef],
         accessor: &mut RowAccessor,
     ) -> Result<()> {
-        let counts = states[0].as_any().downcast_ref::<UInt64Array>().unwrap();
+        let counts = downcast_value!(states[0], UInt64Array);
         // count
         let delta = compute::sum(counts).unwrap_or(0);
         accessor.add_u64(self.state_index(), delta);
@@ -301,10 +302,10 @@ mod tests {
 
         generic_test_op!(
             array,
-            DataType::Decimal(10, 0),
+            DataType::Decimal128(10, 0),
             Avg,
             ScalarValue::Decimal128(Some(35000), 14, 4),
-            DataType::Decimal(14, 4)
+            DataType::Decimal128(14, 4)
         )
     }
 
@@ -318,10 +319,10 @@ mod tests {
         );
         generic_test_op!(
             array,
-            DataType::Decimal(10, 0),
+            DataType::Decimal128(10, 0),
             Avg,
             ScalarValue::Decimal128(Some(32500), 14, 4),
-            DataType::Decimal(14, 4)
+            DataType::Decimal128(14, 4)
         )
     }
 
@@ -329,17 +330,18 @@ mod tests {
     fn avg_decimal_all_nulls() -> Result<()> {
         // test agg
         let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
+            std::iter::repeat::<Option<i128>>(None)
                 .take(6)
+                .into_iter()
                 .collect::<Decimal128Array>()
                 .with_precision_and_scale(10, 0)?,
         );
         generic_test_op!(
             array,
-            DataType::Decimal(10, 0),
+            DataType::Decimal128(10, 0),
             Avg,
             ScalarValue::Decimal128(None, 14, 4),
-            DataType::Decimal(14, 4)
+            DataType::Decimal128(14, 4)
         )
     }
 

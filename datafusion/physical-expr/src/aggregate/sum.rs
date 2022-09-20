@@ -17,7 +17,7 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
-use std::any::Any;
+use std::any::{type_name, Any};
 use std::convert::TryFrom;
 use std::sync::Arc;
 
@@ -26,12 +26,12 @@ use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::{
     array::{
-        ArrayRef, BasicDecimalArray, Float32Array, Float64Array, Int16Array, Int32Array,
-        Int64Array, Int8Array, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+        ArrayRef, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+        Int8Array, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
     },
     datatypes::Field,
 };
-use datafusion_common::{DataFusionError, Result, ScalarValue};
+use datafusion_common::{downcast_value, DataFusionError, Result, ScalarValue};
 use datafusion_expr::{Accumulator, AggregateState};
 
 use crate::aggregate::row_accumulator::RowAccumulator;
@@ -144,7 +144,7 @@ impl SumAccumulator {
 // returns the new value after sum with the new values, taking nullability into account
 macro_rules! typed_sum_delta_batch {
     ($VALUES:expr, $ARRAYTYPE:ident, $SCALAR:ident) => {{
-        let array = $VALUES.as_any().downcast_ref::<$ARRAYTYPE>().unwrap();
+        let array = downcast_value!($VALUES, $ARRAYTYPE);
         let delta = compute::sum(array);
         ScalarValue::$SCALAR(delta)
     }};
@@ -152,15 +152,11 @@ macro_rules! typed_sum_delta_batch {
 
 // TODO implement this in arrow-rs with simd
 // https://github.com/apache/arrow-rs/issues/1010
-fn sum_decimal_batch(
-    values: &ArrayRef,
-    precision: &usize,
-    scale: &usize,
-) -> Result<ScalarValue> {
-    let array = values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+fn sum_decimal_batch(values: &ArrayRef, precision: u8, scale: u8) -> Result<ScalarValue> {
+    let array = downcast_value!(values, Decimal128Array);
 
     if array.null_count() == array.len() {
-        return Ok(ScalarValue::Decimal128(None, *precision, *scale));
+        return Ok(ScalarValue::Decimal128(None, precision, scale));
     }
 
     let mut result = 0_i128;
@@ -169,15 +165,15 @@ fn sum_decimal_batch(
             result += array.value(i).as_i128();
         }
     }
-    Ok(ScalarValue::Decimal128(Some(result), *precision, *scale))
+    Ok(ScalarValue::Decimal128(Some(result), precision, scale))
 }
 
 // sums the array and returns a ScalarValue of its corresponding type.
 pub(crate) fn sum_batch(values: &ArrayRef, sum_type: &DataType) -> Result<ScalarValue> {
     let values = &cast(values, sum_type)?;
     Ok(match values.data_type() {
-        DataType::Decimal(precision, scale) => {
-            sum_decimal_batch(values, precision, scale)?
+        DataType::Decimal128(precision, scale) => {
+            sum_decimal_batch(values, *precision, *scale)?
         }
         DataType::Float64 => typed_sum_delta_batch!(values, Float64Array, Float64),
         DataType::Float32 => typed_sum_delta_batch!(values, Float32Array, Float32),
@@ -226,15 +222,15 @@ macro_rules! sum_row {
 fn sum_decimal(
     lhs: &Option<i128>,
     rhs: &Option<i128>,
-    precision: &usize,
-    scale: &usize,
+    precision: u8,
+    scale: u8,
 ) -> ScalarValue {
     match (lhs, rhs) {
-        (None, None) => ScalarValue::Decimal128(None, *precision, *scale),
-        (None, rhs) => ScalarValue::Decimal128(*rhs, *precision, *scale),
-        (lhs, None) => ScalarValue::Decimal128(*lhs, *precision, *scale),
+        (None, None) => ScalarValue::Decimal128(None, precision, scale),
+        (None, rhs) => ScalarValue::Decimal128(*rhs, precision, scale),
+        (lhs, None) => ScalarValue::Decimal128(*lhs, precision, scale),
         (Some(lhs_value), Some(rhs_value)) => {
-            ScalarValue::Decimal128(Some(lhs_value + rhs_value), *precision, *scale)
+            ScalarValue::Decimal128(Some(lhs_value + rhs_value), precision, scale)
         }
     }
 }
@@ -242,22 +238,22 @@ fn sum_decimal(
 fn sum_decimal_with_diff_scale(
     lhs: &Option<i128>,
     rhs: &Option<i128>,
-    precision: &usize,
-    lhs_scale: &usize,
-    rhs_scale: &usize,
+    precision: u8,
+    lhs_scale: u8,
+    rhs_scale: u8,
 ) -> ScalarValue {
     // the lhs_scale must be greater or equal rhs_scale.
     match (lhs, rhs) {
-        (None, None) => ScalarValue::Decimal128(None, *precision, *lhs_scale),
+        (None, None) => ScalarValue::Decimal128(None, precision, lhs_scale),
         (None, Some(rhs_value)) => {
             let new_value = rhs_value * 10_i128.pow((lhs_scale - rhs_scale) as u32);
-            ScalarValue::Decimal128(Some(new_value), *precision, *lhs_scale)
+            ScalarValue::Decimal128(Some(new_value), precision, lhs_scale)
         }
-        (lhs, None) => ScalarValue::Decimal128(*lhs, *precision, *lhs_scale),
+        (lhs, None) => ScalarValue::Decimal128(*lhs, precision, lhs_scale),
         (Some(lhs_value), Some(rhs_value)) => {
             let new_value =
                 rhs_value * 10_i128.pow((lhs_scale - rhs_scale) as u32) + lhs_value;
-            ScalarValue::Decimal128(Some(new_value), *precision, *lhs_scale)
+            ScalarValue::Decimal128(Some(new_value), precision, lhs_scale)
         }
     }
 }
@@ -265,16 +261,16 @@ fn sum_decimal_with_diff_scale(
 pub(crate) fn sum(lhs: &ScalarValue, rhs: &ScalarValue) -> Result<ScalarValue> {
     Ok(match (lhs, rhs) {
         (ScalarValue::Decimal128(v1, p1, s1), ScalarValue::Decimal128(v2, p2, s2)) => {
-            let max_precision = p1.max(p2);
+            let max_precision = *p1.max(p2);
             if s1.eq(s2) {
                 // s1 = s2
-                sum_decimal(v1, v2, max_precision, s1)
+                sum_decimal(v1, v2, max_precision, *s1)
             } else if s1.gt(s2) {
                 // s1 > s2
-                sum_decimal_with_diff_scale(v1, v2, max_precision, s1, s2)
+                sum_decimal_with_diff_scale(v1, v2, max_precision, *s1, *s2)
             } else {
                 // s1 < s2
-                sum_decimal_with_diff_scale(v2, v1, max_precision, s2, s1)
+                sum_decimal_with_diff_scale(v2, v1, max_precision, *s2, *s1)
             }
         }
         // float64 coerces everything to f64
@@ -544,7 +540,7 @@ mod tests {
                 .collect::<Decimal128Array>()
                 .with_precision_and_scale(10, 0)?,
         );
-        let result = sum_batch(&array, &DataType::Decimal(10, 0))?;
+        let result = sum_batch(&array, &DataType::Decimal128(10, 0))?;
         assert_eq!(ScalarValue::Decimal128(Some(15), 10, 0), result);
 
         // test agg
@@ -557,10 +553,10 @@ mod tests {
 
         generic_test_op!(
             array,
-            DataType::Decimal(10, 0),
+            DataType::Decimal128(10, 0),
             Sum,
             ScalarValue::Decimal128(Some(15), 20, 0),
-            DataType::Decimal(20, 0)
+            DataType::Decimal128(20, 0)
         )
     }
 
@@ -579,7 +575,7 @@ mod tests {
                 .collect::<Decimal128Array>()
                 .with_precision_and_scale(10, 0)?,
         );
-        let result = sum_batch(&array, &DataType::Decimal(10, 0))?;
+        let result = sum_batch(&array, &DataType::Decimal128(10, 0))?;
         assert_eq!(ScalarValue::Decimal128(Some(13), 10, 0), result);
 
         // test agg
@@ -591,10 +587,10 @@ mod tests {
         );
         generic_test_op!(
             array,
-            DataType::Decimal(35, 0),
+            DataType::Decimal128(35, 0),
             Sum,
             ScalarValue::Decimal128(Some(13), 38, 0),
-            DataType::Decimal(38, 0)
+            DataType::Decimal128(38, 0)
         )
     }
 
@@ -608,21 +604,22 @@ mod tests {
 
         // test with batch
         let array: ArrayRef = Arc::new(
-            std::iter::repeat(None)
+            std::iter::repeat::<Option<i128>>(None)
                 .take(6)
+                .into_iter()
                 .collect::<Decimal128Array>()
                 .with_precision_and_scale(10, 0)?,
         );
-        let result = sum_batch(&array, &DataType::Decimal(10, 0))?;
+        let result = sum_batch(&array, &DataType::Decimal128(10, 0))?;
         assert_eq!(ScalarValue::Decimal128(None, 10, 0), result);
 
         // test agg
         generic_test_op!(
             array,
-            DataType::Decimal(10, 0),
+            DataType::Decimal128(10, 0),
             Sum,
             ScalarValue::Decimal128(None, 20, 0),
-            DataType::Decimal(20, 0)
+            DataType::Decimal128(20, 0)
         )
     }
 

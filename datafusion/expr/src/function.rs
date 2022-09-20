@@ -24,7 +24,7 @@ use crate::{
     array_expressions, conditional_expressions, struct_expressions, Accumulator,
     BuiltinScalarFunction, Signature, TypeSignature,
 };
-use arrow::datatypes::{DataType, Field, TimeUnit};
+use arrow::datatypes::{DataType, Field, IntervalUnit, TimeUnit};
 use datafusion_common::{DataFusionError, Result};
 use std::sync::Arc;
 
@@ -39,15 +39,16 @@ use std::sync::Arc;
 pub type ScalarFunctionImplementation =
     Arc<dyn Fn(&[ColumnarValue]) -> Result<ColumnarValue> + Send + Sync>;
 
-/// A function's return type
+/// Factory that returns the functions's return type given the input argument types
 pub type ReturnTypeFunction =
     Arc<dyn Fn(&[DataType]) -> Result<Arc<DataType>> + Send + Sync>;
 
-/// the implementation of an aggregate function
+/// Factory that returns an accumulator for the given aggregate, given
+/// its return datatype.
 pub type AccumulatorFunctionImplementation =
-    Arc<dyn Fn() -> Result<Box<dyn Accumulator>> + Send + Sync>;
+    Arc<dyn Fn(&DataType) -> Result<Box<dyn Accumulator>> + Send + Sync>;
 
-/// This signature corresponds to which types an aggregator serializes
+/// Factory that returns the types used by an aggregator to serialize
 /// its state, given its return datatype.
 pub type StateTypeFunction =
     Arc<dyn Fn(&DataType) -> Result<Arc<Vec<DataType>>> + Send + Sync>;
@@ -73,7 +74,23 @@ macro_rules! make_utf8_to_return_type {
 
 make_utf8_to_return_type!(utf8_to_str_type, DataType::LargeUtf8, DataType::Utf8);
 make_utf8_to_return_type!(utf8_to_int_type, DataType::Int64, DataType::Int32);
-make_utf8_to_return_type!(utf8_to_binary_type, DataType::Binary, DataType::Binary);
+
+fn utf8_or_binary_to_binary_type(arg_type: &DataType, name: &str) -> Result<DataType> {
+    Ok(match arg_type {
+        DataType::LargeUtf8
+        | DataType::Utf8
+        | DataType::Binary
+        | DataType::LargeBinary => DataType::Binary,
+        DataType::Null => DataType::Null,
+        _ => {
+            // this error is internal as `data_types` should have captured this.
+            return Err(DataFusionError::Internal(format!(
+                "The {:?} function can only accept strings or binary arrays.",
+                name
+            )));
+        }
+    })
+}
 
 /// Returns the datatype of the scalar function
 pub fn return_type(
@@ -96,7 +113,7 @@ pub fn return_type(
     // the return type of the built in function.
     // Some built-in functions' return type depends on the incoming type.
     match fun {
-        BuiltinScalarFunction::Array => Ok(DataType::FixedSizeList(
+        BuiltinScalarFunction::MakeArray => Ok(DataType::FixedSizeList(
             Box::new(Field::new("item", input_expr_types[0].clone(), true)),
             input_expr_types.len() as i32,
         )),
@@ -118,6 +135,9 @@ pub fn return_type(
         BuiltinScalarFunction::ConcatWithSeparator => Ok(DataType::Utf8),
         BuiltinScalarFunction::DatePart => Ok(DataType::Int32),
         BuiltinScalarFunction::DateTrunc => {
+            Ok(DataType::Timestamp(TimeUnit::Nanosecond, None))
+        }
+        BuiltinScalarFunction::DateBin => {
             Ok(DataType::Timestamp(TimeUnit::Nanosecond, None))
         }
         BuiltinScalarFunction::InitCap => {
@@ -151,19 +171,19 @@ pub fn return_type(
         BuiltinScalarFunction::Rpad => utf8_to_str_type(&input_expr_types[0], "rpad"),
         BuiltinScalarFunction::Rtrim => utf8_to_str_type(&input_expr_types[0], "rtrimp"),
         BuiltinScalarFunction::SHA224 => {
-            utf8_to_binary_type(&input_expr_types[0], "sha224")
+            utf8_or_binary_to_binary_type(&input_expr_types[0], "sha224")
         }
         BuiltinScalarFunction::SHA256 => {
-            utf8_to_binary_type(&input_expr_types[0], "sha256")
+            utf8_or_binary_to_binary_type(&input_expr_types[0], "sha256")
         }
         BuiltinScalarFunction::SHA384 => {
-            utf8_to_binary_type(&input_expr_types[0], "sha384")
+            utf8_or_binary_to_binary_type(&input_expr_types[0], "sha384")
         }
         BuiltinScalarFunction::SHA512 => {
-            utf8_to_binary_type(&input_expr_types[0], "sha512")
+            utf8_or_binary_to_binary_type(&input_expr_types[0], "sha512")
         }
         BuiltinScalarFunction::Digest => {
-            utf8_to_binary_type(&input_expr_types[0], "digest")
+            utf8_or_binary_to_binary_type(&input_expr_types[0], "digest")
         }
         BuiltinScalarFunction::SplitPart => {
             utf8_to_str_type(&input_expr_types[0], "split_part")
@@ -234,6 +254,8 @@ pub fn return_type(
             _ => Ok(DataType::Float64),
         },
 
+        BuiltinScalarFunction::ArrowTypeof => Ok(DataType::Utf8),
+
         BuiltinScalarFunction::Abs
         | BuiltinScalarFunction::Acos
         | BuiltinScalarFunction::Asin
@@ -264,7 +286,7 @@ pub fn signature(fun: &BuiltinScalarFunction) -> Signature {
 
     // for now, the list is small, as we do not have many built-in functions.
     match fun {
-        BuiltinScalarFunction::Array => Signature::variadic(
+        BuiltinScalarFunction::MakeArray => Signature::variadic(
             array_expressions::SUPPORTED_ARRAY_TYPES.to_vec(),
             fun.volatility(),
         ),
@@ -279,19 +301,27 @@ pub fn signature(fun: &BuiltinScalarFunction) -> Signature {
             conditional_expressions::SUPPORTED_COALESCE_TYPES.to_vec(),
             fun.volatility(),
         ),
+        BuiltinScalarFunction::SHA224
+        | BuiltinScalarFunction::SHA256
+        | BuiltinScalarFunction::SHA384
+        | BuiltinScalarFunction::SHA512
+        | BuiltinScalarFunction::MD5 => Signature::uniform(
+            1,
+            vec![
+                DataType::Utf8,
+                DataType::LargeUtf8,
+                DataType::Binary,
+                DataType::LargeBinary,
+            ],
+            fun.volatility(),
+        ),
         BuiltinScalarFunction::Ascii
         | BuiltinScalarFunction::BitLength
         | BuiltinScalarFunction::CharacterLength
         | BuiltinScalarFunction::InitCap
         | BuiltinScalarFunction::Lower
-        | BuiltinScalarFunction::MD5
         | BuiltinScalarFunction::OctetLength
         | BuiltinScalarFunction::Reverse
-        | BuiltinScalarFunction::SHA224
-        | BuiltinScalarFunction::SHA256
-        | BuiltinScalarFunction::SHA384
-        | BuiltinScalarFunction::SHA512
-        | BuiltinScalarFunction::Trim
         | BuiltinScalarFunction::Upper => Signature::uniform(
             1,
             vec![DataType::Utf8, DataType::LargeUtf8],
@@ -299,7 +329,8 @@ pub fn signature(fun: &BuiltinScalarFunction) -> Signature {
         ),
         BuiltinScalarFunction::Btrim
         | BuiltinScalarFunction::Ltrim
-        | BuiltinScalarFunction::Rtrim => Signature::one_of(
+        | BuiltinScalarFunction::Rtrim
+        | BuiltinScalarFunction::Trim => Signature::one_of(
             vec![
                 TypeSignature::Exact(vec![DataType::Utf8]),
                 TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
@@ -396,12 +427,26 @@ pub fn signature(fun: &BuiltinScalarFunction) -> Signature {
         BuiltinScalarFunction::FromUnixtime => {
             Signature::uniform(1, vec![DataType::Int64], fun.volatility())
         }
-        BuiltinScalarFunction::Digest => {
-            Signature::exact(vec![DataType::Utf8, DataType::Utf8], fun.volatility())
-        }
+        BuiltinScalarFunction::Digest => Signature::one_of(
+            vec![
+                TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
+                TypeSignature::Exact(vec![DataType::LargeUtf8, DataType::Utf8]),
+                TypeSignature::Exact(vec![DataType::Binary, DataType::Utf8]),
+                TypeSignature::Exact(vec![DataType::LargeBinary, DataType::Utf8]),
+            ],
+            fun.volatility(),
+        ),
         BuiltinScalarFunction::DateTrunc => Signature::exact(
             vec![
                 DataType::Utf8,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+            ],
+            fun.volatility(),
+        ),
+        BuiltinScalarFunction::DateBin => Signature::exact(
+            vec![
+                DataType::Interval(IntervalUnit::DayTime),
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
             ],
             fun.volatility(),
@@ -556,6 +601,7 @@ pub fn signature(fun: &BuiltinScalarFunction) -> Signature {
             ],
             fun.volatility(),
         ),
+        BuiltinScalarFunction::ArrowTypeof => Signature::any(1, fun.volatility()),
         // math expressions expect 1 argument of type f64 or f32
         // priority is given to f64 because e.g. `sqrt(1i32)` is in IR (real numbers) and thus we
         // return the best approximation for it (in f64).

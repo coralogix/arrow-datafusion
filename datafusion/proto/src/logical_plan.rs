@@ -178,36 +178,6 @@ macro_rules! convert_box_required {
     }};
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<datafusion::logical_plan::FileType> for protobuf::FileType {
-    fn into(self) -> datafusion::logical_plan::FileType {
-        use datafusion::logical_plan::FileType;
-        match self {
-            protobuf::FileType::NdJson => FileType::NdJson,
-            protobuf::FileType::Parquet => FileType::Parquet,
-            protobuf::FileType::Csv => FileType::CSV,
-            protobuf::FileType::Avro => FileType::Avro,
-        }
-    }
-}
-
-impl TryFrom<i32> for protobuf::FileType {
-    type Error = DataFusionError;
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        use protobuf::FileType;
-        match value {
-            _x if _x == FileType::NdJson as i32 => Ok(FileType::NdJson),
-            _x if _x == FileType::Parquet as i32 => Ok(FileType::Parquet),
-            _x if _x == FileType::Csv as i32 => Ok(FileType::Csv),
-            _x if _x == FileType::Avro as i32 => Ok(FileType::Avro),
-            invalid => Err(DataFusionError::Internal(format!(
-                "Attempted to convert invalid i32 to protobuf::Filetype: {}",
-                invalid
-            ))),
-        }
-    }
-}
-
 impl From<protobuf::JoinType> for JoinType {
     fn from(t: protobuf::JoinType) -> Self {
         match t {
@@ -411,12 +381,12 @@ impl AsLogicalPlan for LogicalPlanNode {
                         FileFormatType::Avro(..) => Arc::new(AvroFormat::default()),
                     };
 
-                // let table_path = ListingTableUrl::parse(&scan.paths)?;
                 let table_paths = &scan
                     .paths
                     .iter()
-                    .map(|p| ListingTableUrl::parse(p).unwrap())
-                    .collect::<Vec<ListingTableUrl>>();
+                    .map(ListingTableUrl::parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+
                 let options = ListingOptions {
                     file_extension: scan.file_extension.clone(),
                     format: file_format,
@@ -491,14 +461,29 @@ impl AsLogicalPlan for LogicalPlanNode {
                     ))
                 })?;
 
-                let pb_file_type: protobuf::FileType =
-                    create_extern_table.file_type.try_into()?;
+                let definition = if !create_extern_table.definition.is_empty() {
+                    Some(create_extern_table.definition.clone())
+                } else {
+                    None
+                };
+
+                match create_extern_table.file_type.as_str() {
+                    "CSV" | "JSON" | "PARQUET" | "AVRO" => {}
+                    it => {
+                        if !ctx.table_factories.contains_key(it) {
+                            Err(DataFusionError::Internal(format!(
+                                "No TableProvider for file type: {}",
+                                it
+                            )))?
+                        }
+                    }
+                }
 
                 Ok(LogicalPlan::CreateExternalTable(CreateExternalTable {
                     schema: pb_schema.try_into()?,
                     name: create_extern_table.name.clone(),
                     location: create_extern_table.location.clone(),
-                    file_type: pb_file_type.into(),
+                    file_type: create_extern_table.file_type.clone(),
                     has_header: create_extern_table.has_header,
                     delimiter: create_extern_table.delimiter.chars().next().ok_or_else(|| {
                         DataFusionError::Internal(String::from("Protobuf deserialization error, unable to parse CSV delimiter"))
@@ -507,6 +492,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                         .table_partition_cols
                         .clone(),
                     if_not_exists: create_extern_table.if_not_exists,
+                    definition,
                 }))
             }
             LogicalPlanType::CreateView(create_view) => {
@@ -578,11 +564,7 @@ impl AsLogicalPlan for LogicalPlanNode {
             LogicalPlanType::Limit(limit) => {
                 let input: LogicalPlan =
                     into_logical_plan!(limit.input, ctx, extension_codec)?;
-                let skip = if limit.skip <= 0 {
-                    None
-                } else {
-                    Some(limit.skip as usize)
-                };
+                let skip = limit.skip.max(0) as usize;
 
                 let fetch = if limit.fetch < 0 {
                     None
@@ -653,7 +635,10 @@ impl AsLogicalPlan for LogicalPlanNode {
                     )));
                 }
 
-                let mut builder = LogicalPlanBuilder::from(input_plans.pop().unwrap());
+                let first = input_plans.pop().ok_or_else(|| DataFusionError::Internal(String::from(
+                    "Protobuf deserialization error, Union was require at least two input.",
+                )))?;
+                let mut builder = LogicalPlanBuilder::from(first);
                 for plan in input_plans {
                     builder = builder.union(plan)?;
                 }
@@ -734,7 +719,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                         })
                     }
                 };
-                let schema: protobuf::Schema = schema.as_ref().into();
+                let schema: protobuf::Schema = schema.as_ref().try_into()?;
 
                 let filters: Vec<protobuf::LogicalExprNode> = filters
                     .iter()
@@ -968,7 +953,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                     logical_plan_type: Some(LogicalPlanType::Limit(Box::new(
                         protobuf::LimitNode {
                             input: Some(Box::new(input)),
-                            skip: skip.unwrap_or(0) as i64,
+                            skip: *skip as i64,
                             fetch: fetch.unwrap_or(i64::MAX as usize) as i64,
                         },
                     ))),
@@ -1021,6 +1006,11 @@ impl AsLogicalPlan for LogicalPlanNode {
                     Partitioning::RoundRobinBatch(partition_count) => {
                         PartitionMethod::RoundRobin(*partition_count as u64)
                     }
+                    Partitioning::DistributeBy(_) => {
+                        return Err(DataFusionError::NotImplemented(
+                            "DistributeBy".to_string(),
+                        ))
+                    }
                 };
 
                 Ok(protobuf::LogicalPlanNode {
@@ -1050,31 +1040,22 @@ impl AsLogicalPlan for LogicalPlanNode {
                 schema: df_schema,
                 table_partition_cols,
                 if_not_exists,
-            }) => {
-                use datafusion::logical_plan::FileType;
-
-                let pb_file_type: protobuf::FileType = match file_type {
-                    FileType::NdJson => protobuf::FileType::NdJson,
-                    FileType::Parquet => protobuf::FileType::Parquet,
-                    FileType::CSV => protobuf::FileType::Csv,
-                    FileType::Avro => protobuf::FileType::Avro,
-                };
-
-                Ok(protobuf::LogicalPlanNode {
-                    logical_plan_type: Some(LogicalPlanType::CreateExternalTable(
-                        protobuf::CreateExternalTableNode {
-                            name: name.clone(),
-                            location: location.clone(),
-                            file_type: pb_file_type as i32,
-                            has_header: *has_header,
-                            schema: Some(df_schema.into()),
-                            table_partition_cols: table_partition_cols.clone(),
-                            if_not_exists: *if_not_exists,
-                            delimiter: String::from(*delimiter),
-                        },
-                    )),
-                })
-            }
+                definition,
+            }) => Ok(protobuf::LogicalPlanNode {
+                logical_plan_type: Some(LogicalPlanType::CreateExternalTable(
+                    protobuf::CreateExternalTableNode {
+                        name: name.clone(),
+                        location: location.clone(),
+                        file_type: file_type.clone(),
+                        has_header: *has_header,
+                        schema: Some(df_schema.try_into()?),
+                        table_partition_cols: table_partition_cols.clone(),
+                        if_not_exists: *if_not_exists,
+                        delimiter: String::from(*delimiter),
+                        definition: definition.clone().unwrap_or_else(|| "".to_string()),
+                    },
+                )),
+            }),
             LogicalPlan::CreateView(CreateView {
                 name,
                 input,
@@ -1102,7 +1083,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                     protobuf::CreateCatalogSchemaNode {
                         schema_name: schema_name.clone(),
                         if_not_exists: *if_not_exists,
-                        schema: Some(df_schema.into()),
+                        schema: Some(df_schema.try_into()?),
                     },
                 )),
             }),
@@ -1115,7 +1096,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                     protobuf::CreateCatalogNode {
                         catalog_name: catalog_name.clone(),
                         if_not_exists: *if_not_exists,
-                        schema: Some(df_schema.into()),
+                        schema: Some(df_schema.try_into()?),
                     },
                 )),
             }),
@@ -1209,6 +1190,9 @@ impl AsLogicalPlan for LogicalPlanNode {
             )),
             LogicalPlan::DropTable(_) => Err(proto_error(
                 "LogicalPlan serde is not yet implemented for DropTable",
+            )),
+            LogicalPlan::DropView(_) => Err(proto_error(
+                "LogicalPlan serde is not yet implemented for DropView",
             )),
         }
     }

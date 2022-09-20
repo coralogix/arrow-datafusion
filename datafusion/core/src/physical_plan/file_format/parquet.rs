@@ -22,39 +22,16 @@ use std::fmt;
 use std::fs;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use std::{any::Any, convert::TryInto};
-
-use arrow::datatypes::DataType;
-use arrow::{
-    array::ArrayRef,
-    datatypes::{Schema, SchemaRef},
-    error::ArrowError,
-};
-use bytes::Bytes;
-use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use log::debug;
-use object_store::{ObjectMeta, ObjectStore};
-use parquet::arrow::async_reader::AsyncFileReader;
-use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask};
-use parquet::basic::{ConvertedType, LogicalType};
-use parquet::errors::ParquetError;
-use parquet::file::{
-    metadata::{ParquetMetaData, RowGroupMetaData},
-    properties::WriterProperties,
-    statistics::Statistics as ParquetStatistics,
-};
-use parquet::schema::types::ColumnDescriptor;
-
-use datafusion_common::Column;
-use datafusion_expr::Expr;
 
 use crate::datasource::file_format::parquet::fetch_parquet_metadata;
 use crate::datasource::listing::FileRange;
 use crate::physical_plan::file_format::file_stream::{
     FileOpenFuture, FileOpener, FileStream,
 };
-use crate::physical_plan::metrics::BaselineMetrics;
+use crate::physical_plan::file_format::row_filter::build_row_filter;
+use crate::physical_plan::file_format::FileMeta;
 use crate::{
     error::{DataFusionError, Result},
     execution::context::{SessionState, TaskContext},
@@ -68,6 +45,54 @@ use crate::{
     },
     scalar::ScalarValue,
 };
+use arrow::datatypes::DataType;
+use arrow::{
+    array::ArrayRef,
+    datatypes::{Schema, SchemaRef},
+    error::ArrowError,
+};
+use bytes::Bytes;
+use datafusion_common::Column;
+use datafusion_expr::Expr;
+use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use log::debug;
+use object_store::{ObjectMeta, ObjectStore};
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder, ProjectionMask};
+use parquet::basic::{ConvertedType, LogicalType};
+use parquet::errors::ParquetError;
+use parquet::file::{
+    metadata::{ParquetMetaData, RowGroupMetaData},
+    properties::WriterProperties,
+    statistics::Statistics as ParquetStatistics,
+};
+use parquet::schema::types::ColumnDescriptor;
+
+#[derive(Debug, Clone, Default)]
+/// Specify options for the parquet scan
+pub struct ParquetScanOptions {
+    /// If true, any available `pruning_predicate` will be converted to a `RowFilter`
+    /// and pushed down to the `ParquetRecordBatchStream`. This will enable row level
+    /// filter at the decoder level. Defaults to false
+    pushdown_filters: bool,
+    /// If true, the generated `RowFilter` may reorder the predicate `Expr`s to try and optimize
+    /// the cost of filter evaluation.
+    reorder_predicates: bool,
+}
+
+impl ParquetScanOptions {
+    pub fn with_pushdown_filters(mut self, pushdown_filters: bool) -> Self {
+        self.pushdown_filters = pushdown_filters;
+        self
+    }
+
+    pub fn with_reorder_predicates(mut self, reorder_predicates: bool) -> Self {
+        self.reorder_predicates = reorder_predicates;
+        self
+    }
+}
 
 /// Execution plan for scanning one or more Parquet partitions
 #[derive(Debug, Clone)]
@@ -81,17 +106,10 @@ pub struct ParquetExec {
     pruning_predicate: Option<PruningPredicate>,
     /// Optional hint for the size of the parquet metadata
     metadata_size_hint: Option<usize>,
-}
-
-/// Stores metrics about the parquet execution for a particular parquet file
-#[derive(Debug, Clone)]
-struct ParquetFileMetrics {
-    /// Number of times the predicate could not be evaluated
-    pub predicate_evaluation_errors: metrics::Count,
-    /// Number of row groups pruned using
-    pub row_groups_pruned: metrics::Count,
-    /// Total number of bytes scanned
-    pub bytes_scanned: metrics::Count,
+    /// Optional user defined parquet file reader factory
+    parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+    /// Options to specify behavior of parquet scan
+    scan_options: ParquetScanOptions,
 }
 
 impl ParquetExec {
@@ -131,6 +149,8 @@ impl ParquetExec {
             metrics,
             pruning_predicate,
             metadata_size_hint,
+            parquet_file_reader_factory: None,
+            scan_options: ParquetScanOptions::default(),
         }
     }
 
@@ -143,6 +163,43 @@ impl ParquetExec {
     pub fn pruning_predicate(&self) -> Option<&PruningPredicate> {
         self.pruning_predicate.as_ref()
     }
+
+    /// Optional user defined parquet file reader factory.
+    ///
+    /// `ParquetFileReaderFactory` complements `TableProvider`, It enables users to provide custom
+    /// implementation for data access operations.
+    ///
+    /// If custom `ParquetFileReaderFactory` is provided, then data access operations will be routed
+    /// to this factory instead of `ObjectStore`.
+    pub fn with_parquet_file_reader_factory(
+        mut self,
+        parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
+    ) -> Self {
+        self.parquet_file_reader_factory = Some(parquet_file_reader_factory);
+        self
+    }
+
+    /// Configure `ParquetScanOptions`
+    pub fn with_scan_options(mut self, scan_options: ParquetScanOptions) -> Self {
+        self.scan_options = scan_options;
+        self
+    }
+}
+
+/// Stores metrics about the parquet execution for a particular parquet file.
+///
+/// This component is a subject to **change** in near future and is exposed for low level integrations
+/// through [ParquetFileReaderFactory].
+#[derive(Debug, Clone)]
+pub struct ParquetFileMetrics {
+    /// Number of times the predicate could not be evaluated
+    pub predicate_evaluation_errors: metrics::Count,
+    /// Number of row groups pruned using
+    pub row_groups_pruned: metrics::Count,
+    /// Total number of bytes scanned
+    pub bytes_scanned: metrics::Count,
+    /// Time spent parsing metadata
+    pub metadata_processing_time: metrics::Time,
 }
 
 impl ParquetFileMetrics {
@@ -164,10 +221,15 @@ impl ParquetFileMetrics {
             .with_new_label("filename", filename.to_string())
             .counter("bytes_scanned", partition);
 
+        let metadata_processing_time = MetricBuilder::new(metrics)
+            .with_new_label("filename", filename.to_string())
+            .subset_time("metadata_processing", partition);
+
         Self {
             predicate_evaluation_errors,
             row_groups_pruned,
             bytes_scanned,
+            metadata_processing_time,
         }
     }
 }
@@ -210,29 +272,44 @@ impl ExecutionPlan for ParquetExec {
     fn execute(
         &self,
         partition_index: usize,
-        context: Arc<TaskContext>,
+        ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let projection = match self.base_config.file_column_projection_indices() {
             Some(proj) => proj,
             None => (0..self.base_config.file_schema.fields().len()).collect(),
         };
 
+        let parquet_file_reader_factory = self
+            .parquet_file_reader_factory
+            .as_ref()
+            .map(|f| Ok(Arc::clone(f)))
+            .unwrap_or_else(|| {
+                ctx.runtime_env()
+                    .object_store(&self.base_config.object_store_url)
+                    .map(|store| {
+                        Arc::new(DefaultParquetFileReaderFactory::new(store))
+                            as Arc<dyn ParquetFileReaderFactory>
+                    })
+            })?;
+
         let opener = ParquetOpener {
             partition_index,
             projection: Arc::from(projection),
-            batch_size: context.session_config().batch_size(),
+            batch_size: ctx.session_config().batch_size(),
             pruning_predicate: self.pruning_predicate.clone(),
             table_schema: self.base_config.file_schema.clone(),
             metadata_size_hint: self.metadata_size_hint,
             metrics: self.metrics.clone(),
+            parquet_file_reader_factory,
+            scan_options: self.scan_options.clone(),
         };
 
         let stream = FileStream::new(
             &self.base_config,
             partition_index,
-            context,
+            ctx,
             opener,
-            BaselineMetrics::new(&self.metrics, partition_index),
+            self.metrics.clone(),
         )?;
 
         Ok(Box::pin(stream))
@@ -285,35 +362,49 @@ struct ParquetOpener {
     table_schema: SchemaRef,
     metadata_size_hint: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
+    parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
+    scan_options: ParquetScanOptions,
 }
 
 impl FileOpener for ParquetOpener {
     fn open(
         &self,
-        store: Arc<dyn ObjectStore>,
-        meta: ObjectMeta,
-        range: Option<FileRange>,
-    ) -> FileOpenFuture {
+        _: Arc<dyn ObjectStore>,
+        file_meta: FileMeta,
+    ) -> Result<FileOpenFuture> {
+        let file_range = file_meta.range.clone();
+        let file_location = file_meta.location().to_string();
+
         let metrics = ParquetFileMetrics::new(
             self.partition_index,
-            meta.location.as_ref(),
+            file_meta.location().as_ref(),
             &self.metrics,
         );
 
-        let reader = ParquetFileReader {
-            store,
-            meta,
-            metadata_size_hint: self.metadata_size_hint,
-            metrics: metrics.clone(),
-        };
+        let reader =
+            BoxedAsyncFileReader(self.parquet_file_reader_factory.create_reader(
+                self.partition_index,
+                file_meta,
+                self.metadata_size_hint,
+                &self.metrics,
+            )?);
 
         let schema_adapter = SchemaAdapter::new(self.table_schema.clone());
         let batch_size = self.batch_size;
         let projection = self.projection.clone();
         let pruning_predicate = self.pruning_predicate.clone();
+        let table_schema = self.table_schema.clone();
+        let reorder_predicates = self.scan_options.reorder_predicates;
+        let pushdown_filters = self.scan_options.pushdown_filters;
 
-        Box::pin(async move {
-            let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+        Ok(Box::pin(async move {
+            let mut builder = if pruning_predicate.is_some() {
+                let options = ArrowReaderOptions::new().with_page_index(true);
+                ParquetRecordBatchStreamBuilder::new_with_options(reader, options).await?
+            } else {
+                ParquetRecordBatchStreamBuilder::new(reader).await?
+            };
+
             let adapted_projections =
                 schema_adapter.map_projections(builder.schema(), &projection)?;
 
@@ -322,8 +413,24 @@ impl FileOpener for ParquetOpener {
                 adapted_projections.iter().cloned(),
             );
 
+            if let Some(predicate) = pushdown_filters
+                .then(|| pruning_predicate.as_ref().map(|p| p.logical_expr()))
+                .flatten()
+            {
+                if let Ok(Some(filter)) = build_row_filter(
+                    predicate.clone(),
+                    builder.schema().as_ref(),
+                    table_schema.as_ref(),
+                    builder.metadata(),
+                    reorder_predicates,
+                ) {
+                    builder = builder.with_row_filter(filter);
+                }
+            };
+
             let groups = builder.metadata().row_groups();
-            let row_groups = prune_row_groups(groups, range, pruning_predicate, &metrics);
+            let row_groups =
+                prune_row_groups(groups, file_range, pruning_predicate, &metrics);
 
             let stream = builder
                 .with_projection(mask)
@@ -332,7 +439,13 @@ impl FileOpener for ParquetOpener {
                 .build()?;
 
             let adapted = stream
-                .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+                .map_err(move |e| {
+                    let error = ParquetError::General(format!(
+                        "Error reading file {}: {:?}",
+                        file_location, e
+                    ));
+                    ArrowError::ExternalError(Box::new(error))
+                })
                 .map(move |maybe_batch| {
                     maybe_batch.and_then(|b| {
                         schema_adapter
@@ -342,7 +455,32 @@ impl FileOpener for ParquetOpener {
                 });
 
             Ok(adapted.boxed())
-        })
+        }))
+    }
+}
+
+/// Factory of parquet file readers.
+///
+/// Provides means to implement custom data access interface.
+pub trait ParquetFileReaderFactory: Debug + Send + Sync + 'static {
+    /// Provides `AsyncFileReader` over parquet file specified in `FileMeta`
+    fn create_reader(
+        &self,
+        partition_index: usize,
+        file_meta: FileMeta,
+        metadata_size_hint: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Result<Box<dyn AsyncFileReader + Send>>;
+}
+
+#[derive(Debug)]
+pub struct DefaultParquetFileReaderFactory {
+    store: Arc<dyn ObjectStore>,
+}
+
+impl DefaultParquetFileReaderFactory {
+    pub fn new(store: Arc<dyn ObjectStore>) -> Self {
+        Self { store }
     }
 }
 
@@ -350,9 +488,16 @@ impl FileOpener for ParquetOpener {
 struct ParquetFileReader {
     store: Arc<dyn ObjectStore>,
     meta: ObjectMeta,
-    metadata_size_hint: Option<usize>,
     metrics: ParquetFileMetrics,
+    metadata_size_hint: Option<usize>,
 }
+
+/// Range requests with a gap less than or equal to this,
+/// will be coalesced into a single request by [`coalesce_ranges`]
+const COALESCE_DEFAULT: usize = 1024 * 1024;
+
+/// Max size of an individual range request (16MiB)
+pub const MAX_CHUNK_SIZE: usize = 16 * 1024 * 1024;
 
 impl AsyncFileReader for ParquetFileReader {
     fn get_bytes(
@@ -369,10 +514,84 @@ impl AsyncFileReader for ParquetFileReader {
             .boxed()
     }
 
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>>
+    where
+        Self: Send,
+    {
+        let total = ranges.iter().map(|r| r.end - r.start).sum();
+        self.metrics.bytes_scanned.add(total);
+
+        let mut ret = Vec::with_capacity(ranges.len());
+        let mut tasks = Vec::with_capacity(ranges.len());
+        let mut start_idx = 0;
+        let mut end_idx = 1;
+
+        let mut groups = vec![];
+
+        while start_idx != ranges.len() {
+            let mut range_end = ranges[start_idx].end;
+
+            while end_idx != ranges.len()
+                && ranges[end_idx]
+                    .start
+                    .checked_sub(ranges[end_idx - 1].end)
+                    .map(|delta| delta <= COALESCE_DEFAULT)
+                    .unwrap_or(false)
+                && ranges[end_idx].end - ranges[start_idx].start < MAX_CHUNK_SIZE
+            {
+                if ranges[end_idx].end > range_end {
+                    range_end = ranges[end_idx].end;
+                }
+                end_idx += 1;
+            }
+
+            let start = ranges[start_idx].start;
+
+            groups.push((start_idx, end_idx));
+
+            let task = self.store.get_range(&self.meta.location, start..range_end);
+
+            tasks.push(task);
+            start_idx = end_idx;
+            end_idx += 1;
+        }
+
+        async move {
+            let chunks = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .collect::<object_store::Result<Vec<Bytes>>>()
+                .map_err(|e| {
+                    ParquetError::General(format!(
+                        "AsyncChunkReader::get_byte_ranges error: {}",
+                        e
+                    ))
+                })?
+                .into_iter()
+                .zip(groups.into_iter());
+
+            for (chunk, (start_idx, end_idx)) in chunks {
+                let chunk_offset = ranges[start_idx].start;
+                for range in &ranges[start_idx..end_idx] {
+                    ret.push(
+                        chunk.slice(range.start - chunk_offset..range.end - chunk_offset),
+                    );
+                }
+            }
+
+            Ok(ret)
+        }
+        .boxed()
+    }
+
     fn get_metadata(
         &mut self,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         Box::pin(async move {
+            let start = Instant::now();
             let metadata = fetch_parquet_metadata(
                 self.store.as_ref(),
                 &self.meta,
@@ -385,8 +604,66 @@ impl AsyncFileReader for ParquetFileReader {
                     e
                 ))
             })?;
+            self.metrics.metadata_processing_time.add_elapsed(start);
             Ok(Arc::new(metadata))
         })
+    }
+}
+
+impl ParquetFileReaderFactory for DefaultParquetFileReaderFactory {
+    fn create_reader(
+        &self,
+        partition_index: usize,
+        file_meta: FileMeta,
+        metadata_size_hint: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Result<Box<dyn AsyncFileReader + Send>> {
+        let parquet_file_metrics = ParquetFileMetrics::new(
+            partition_index,
+            file_meta.location().as_ref(),
+            metrics,
+        );
+
+        Ok(Box::new(ParquetFileReader {
+            meta: file_meta.object_meta,
+            store: Arc::clone(&self.store),
+            metadata_size_hint,
+            metrics: parquet_file_metrics,
+        }))
+    }
+}
+
+///
+/// BoxedAsyncFileReader has been created to satisfy type requirements of
+/// parquet stream builder constructor.
+///
+/// Temporary pending https://github.com/apache/arrow-rs/pull/2368
+struct BoxedAsyncFileReader(Box<dyn AsyncFileReader + Send>);
+
+impl AsyncFileReader for BoxedAsyncFileReader {
+    fn get_bytes(
+        &mut self,
+        range: Range<usize>,
+    ) -> BoxFuture<'_, ::parquet::errors::Result<Bytes>> {
+        self.0.get_bytes(range)
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>>
+    // TODO: This where bound forces us to enable #![allow(where_clauses_object_safety)] (#3081)
+    // Upstream issue https://github.com/apache/arrow-rs/issues/2372
+    where
+        Self: Send,
+    {
+        self.0.get_byte_ranges(ranges)
+    }
+
+    fn get_metadata(
+        &mut self,
+    ) -> BoxFuture<'_, ::parquet::errors::Result<Arc<ParquetMetaData>>> {
+        self.0.get_metadata()
     }
 }
 
@@ -425,7 +702,7 @@ macro_rules! get_statistic {
             ParquetStatistics::Int32(s) => {
                 match $target_arrow_type {
                     // int32 to decimal with the precision and scale
-                    Some(DataType::Decimal(precision, scale)) => {
+                    Some(DataType::Decimal128(precision, scale)) => {
                         Some(ScalarValue::Decimal128(
                             Some(*s.$func() as i128),
                             precision,
@@ -438,7 +715,7 @@ macro_rules! get_statistic {
             ParquetStatistics::Int64(s) => {
                 match $target_arrow_type {
                     // int64 to decimal with the precision and scale
-                    Some(DataType::Decimal(precision, scale)) => {
+                    Some(DataType::Decimal128(precision, scale)) => {
                         Some(ScalarValue::Decimal128(
                             Some(*s.$func() as i128),
                             precision,
@@ -463,7 +740,7 @@ macro_rules! get_statistic {
             ParquetStatistics::FixedLenByteArray(s) => {
                 match $target_arrow_type {
                     // just support the decimal data type
-                    Some(DataType::Decimal(precision, scale)) => {
+                    Some(DataType::Decimal128(precision, scale)) => {
                         Some(ScalarValue::Decimal128(
                             Some(from_bytes_to_i128(s.$bytes_func())),
                             precision,
@@ -535,12 +812,12 @@ fn parquet_to_arrow_decimal_type(parquet_column: &ColumnDescriptor) -> Option<Da
     let type_ptr = parquet_column.self_type_ptr();
     match type_ptr.get_basic_info().logical_type() {
         Some(LogicalType::Decimal { scale, precision }) => {
-            Some(DataType::Decimal(precision as usize, scale as usize))
+            Some(DataType::Decimal128(precision as u8, scale as u8))
         }
         _ => match type_ptr.get_basic_info().converted_type() {
-            ConvertedType::DECIMAL => Some(DataType::Decimal(
-                type_ptr.get_precision() as usize,
-                type_ptr.get_scale() as usize,
+            ConvertedType::DECIMAL => Some(DataType::Decimal128(
+                type_ptr.get_precision() as u8,
+                type_ptr.get_scale() as u8,
             )),
             _ => None,
         },
@@ -653,12 +930,6 @@ pub async fn plan_to_parquet(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        assert_batches_sorted_eq, assert_contains,
-        datasource::file_format::{parquet::ParquetFormat, FileFormat},
-        physical_plan::collect,
-    };
-
     use super::*;
     use crate::datasource::file_format::parquet::test_util::store_parquet;
     use crate::datasource::file_format::test_util::scan_format;
@@ -667,6 +938,11 @@ mod tests {
     use crate::execution::options::CsvReadOptions;
     use crate::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use crate::test::object_store::local_unpartitioned_file;
+    use crate::{
+        assert_batches_sorted_eq, assert_contains,
+        datasource::file_format::{parquet::ParquetFormat, FileFormat},
+        physical_plan::collect,
+    };
     use arrow::array::Float32Array;
     use arrow::record_batch::RecordBatch;
     use arrow::{
@@ -697,6 +973,7 @@ mod tests {
         projection: Option<Vec<usize>>,
         schema: Option<SchemaRef>,
         predicate: Option<Expr>,
+        pushdown_predicate: bool,
     ) -> Result<Vec<RecordBatch>> {
         let file_schema = match schema {
             Some(schema) => schema,
@@ -709,7 +986,7 @@ mod tests {
         let file_groups = meta.into_iter().map(Into::into).collect();
 
         // prepare the scan
-        let parquet_exec = ParquetExec::new(
+        let mut parquet_exec = ParquetExec::new(
             FileScanConfig {
                 object_store_url: ObjectStoreUrl::local_filesystem(),
                 file_groups: vec![file_groups],
@@ -722,6 +999,14 @@ mod tests {
             predicate,
             None,
         );
+
+        if pushdown_predicate {
+            parquet_exec = parquet_exec.with_scan_options(
+                ParquetScanOptions::default()
+                    .with_pushdown_filters(true)
+                    .with_reorder_predicates(true),
+            );
+        }
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
@@ -770,9 +1055,10 @@ mod tests {
         let batch3 = add_to_batch(&batch1, "c3", c3);
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2, batch3], None, None, None)
-            .await
-            .unwrap();
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2, batch3], None, None, None, false)
+                .await
+                .unwrap();
         let expected = vec![
             "+-----+----+----+",
             "| c1  | c2 | c3 |",
@@ -811,7 +1097,7 @@ mod tests {
         let batch2 = create_batch(vec![("c3", c3), ("c2", c2), ("c1", c1)]);
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, None)
+        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, None, false)
             .await
             .unwrap();
         let expected = vec![
@@ -845,7 +1131,7 @@ mod tests {
         let batch2 = create_batch(vec![("c3", c3), ("c2", c2)]);
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, None)
+        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, None, false)
             .await
             .unwrap();
         let expected = vec![
@@ -878,20 +1164,56 @@ mod tests {
         // batch2: c3(int8), c2(int64)
         let batch2 = create_batch(vec![("c3", c3), ("c2", c2)]);
 
-        let filter = col("c2").eq(lit(0_i64));
+        let filter = col("c2").eq(lit(2_i64));
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter))
-            .await
-            .unwrap();
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter), false)
+                .await
+                .unwrap();
         let expected = vec![
             "+-----+----+----+",
             "| c1  | c3 | c2 |",
             "+-----+----+----+",
-            "| Foo | 10 |    |",
+            "|     |    |    |",
+            "|     | 10 | 1  |",
             "|     | 20 |    |",
+            "|     | 20 | 2  |",
+            "| Foo | 10 |    |",
             "| bar |    |    |",
             "+-----+----+----+",
+        ];
+        assert_batches_sorted_eq!(expected, &read);
+    }
+
+    #[tokio::test]
+    async fn evolved_schema_intersection_filter_with_filter_pushdown() {
+        let c1: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("Foo"), None, Some("bar")]));
+
+        let c2: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), Some(2), None]));
+
+        let c3: ArrayRef = Arc::new(Int8Array::from(vec![Some(10), Some(20), None]));
+
+        // batch1: c1(string), c3(int8)
+        let batch1 = create_batch(vec![("c1", c1), ("c3", c3.clone())]);
+
+        // batch2: c3(int8), c2(int64)
+        let batch2 = create_batch(vec![("c3", c3), ("c2", c2)]);
+
+        let filter = col("c2").eq(lit(2_i64));
+
+        // read/write them files:
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter), true)
+                .await
+                .unwrap();
+        let expected = vec![
+            "+----+----+----+",
+            "| c1 | c3 | c2 |",
+            "+----+----+----+",
+            "|    | 20 | 2  |",
+            "+----+----+----+",
         ];
         assert_batches_sorted_eq!(expected, &read);
     }
@@ -919,10 +1241,15 @@ mod tests {
         let batch2 = create_batch(vec![("c3", c3), ("c2", c2), ("c1", c1), ("c4", c4)]);
 
         // read/write them files:
-        let read =
-            round_trip_to_parquet(vec![batch1, batch2], Some(vec![0, 3]), None, None)
-                .await
-                .unwrap();
+        let read = round_trip_to_parquet(
+            vec![batch1, batch2],
+            Some(vec![0, 3]),
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
         let expected = vec![
             "+-----+-----+",
             "| c1  | c4  |",
@@ -960,9 +1287,10 @@ mod tests {
         let filter = col("c3").eq(lit(0_i8));
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter))
-            .await
-            .unwrap();
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter), false)
+                .await
+                .unwrap();
 
         // Predicate should prune all row groups
         assert_eq!(read.len(), 0);
@@ -981,12 +1309,13 @@ mod tests {
         // batch2: c2(int64)
         let batch2 = create_batch(vec![("c2", c2)]);
 
-        let filter = col("c2").eq(lit(0_i64));
+        let filter = col("c2").eq(lit(1_i64));
 
         // read/write them files:
-        let read = round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter))
-            .await
-            .unwrap();
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter), false)
+                .await
+                .unwrap();
 
         // This does not look correct since the "c2" values in the result do not in fact match the predicate `c2 == 0`
         // but parquet pruning is not exact. If the min/max values are not defined (which they are not in this case since the it is
@@ -997,10 +1326,44 @@ mod tests {
             "+-----+----+",
             "| c1  | c2 |",
             "+-----+----+",
-            "| Foo |    |",
             "|     |    |",
+            "|     |    |",
+            "|     | 1  |",
+            "|     | 2  |",
+            "| Foo |    |",
             "| bar |    |",
             "+-----+----+",
+        ];
+        assert_batches_sorted_eq!(expected, &read);
+    }
+
+    #[tokio::test]
+    async fn evolved_schema_disjoint_schema_filter_with_pushdown() {
+        let c1: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("Foo"), None, Some("bar")]));
+
+        let c2: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), Some(2), None]));
+
+        // batch1: c1(string)
+        let batch1 = create_batch(vec![("c1", c1.clone())]);
+
+        // batch2: c2(int64)
+        let batch2 = create_batch(vec![("c2", c2)]);
+
+        let filter = col("c2").eq(lit(1_i64));
+
+        // read/write them files:
+        let read =
+            round_trip_to_parquet(vec![batch1, batch2], None, None, Some(filter), true)
+                .await
+                .unwrap();
+
+        let expected = vec![
+            "+----+----+",
+            "| c1 | c2 |",
+            "+----+----+",
+            "|    | 1  |",
+            "+----+----+",
         ];
         assert_batches_sorted_eq!(expected, &read);
     }
@@ -1039,6 +1402,7 @@ mod tests {
             None,
             Some(Arc::new(schema)),
             None,
+            false,
         )
         .await;
         assert_contains!(read.unwrap_err().to_string(),
@@ -1087,6 +1451,7 @@ mod tests {
                 object_meta: meta.clone(),
                 partition_values: vec![],
                 range: Some(FileRange { start, end }),
+                extensions: None,
             }
         }
 
@@ -1189,6 +1554,7 @@ mod tests {
                 ScalarValue::Utf8(Some("26".to_owned())),
             ],
             range: None,
+            extensions: None,
         };
 
         let parquet_exec = ParquetExec::new(
@@ -1251,6 +1617,7 @@ mod tests {
             },
             partition_values: vec![],
             range: None,
+            extensions: None,
         };
 
         let parquet_exec = ParquetExec::new(
@@ -1475,7 +1842,8 @@ mod tests {
 
         // INT32: c1 > 5, the c1 is decimal(9,2)
         let expr = col("c1").gt(lit(ScalarValue::Decimal128(Some(500), 9, 2)));
-        let schema = Schema::new(vec![Field::new("c1", DataType::Decimal(9, 2), false)]);
+        let schema =
+            Schema::new(vec![Field::new("c1", DataType::Decimal128(9, 2), false)]);
         let schema_descr = get_test_schema_descr(vec![(
             "c1",
             PhysicalType::INT32,
@@ -1516,7 +1884,8 @@ mod tests {
         // INT32: c1 > 5, but parquet decimal type has different precision or scale to arrow decimal
         // The decimal of arrow is decimal(5,2), the decimal of parquet is decimal(9,0)
         let expr = col("c1").gt(lit(ScalarValue::Decimal128(Some(500), 5, 2)));
-        let schema = Schema::new(vec![Field::new("c1", DataType::Decimal(5, 2), false)]);
+        let schema =
+            Schema::new(vec![Field::new("c1", DataType::Decimal128(5, 2), false)]);
         // The decimal of parquet is decimal(9,0)
         let schema_descr = get_test_schema_descr(vec![(
             "c1",
@@ -1568,7 +1937,8 @@ mod tests {
 
         // INT64: c1 < 5, the c1 is decimal(18,2)
         let expr = col("c1").lt(lit(ScalarValue::Decimal128(Some(500), 18, 2)));
-        let schema = Schema::new(vec![Field::new("c1", DataType::Decimal(18, 2), false)]);
+        let schema =
+            Schema::new(vec![Field::new("c1", DataType::Decimal128(18, 2), false)]);
         let schema_descr = get_test_schema_descr(vec![(
             "c1",
             PhysicalType::INT64,
@@ -1607,7 +1977,8 @@ mod tests {
         // FIXED_LENGTH_BYTE_ARRAY: c1 = 100, the c1 is decimal(28,2)
         // the type of parquet is decimal(18,2)
         let expr = col("c1").eq(lit(ScalarValue::Decimal128(Some(100000), 28, 3)));
-        let schema = Schema::new(vec![Field::new("c1", DataType::Decimal(18, 3), false)]);
+        let schema =
+            Schema::new(vec![Field::new("c1", DataType::Decimal128(18, 3), false)]);
         let schema_descr = get_test_schema_descr(vec![(
             "c1",
             PhysicalType::FIXED_LEN_BYTE_ARRAY,

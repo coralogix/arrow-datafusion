@@ -18,6 +18,7 @@
 //! Optimizer rule to replace `LIMIT 0` or
 //! `LIMIT whose ancestor LIMIT's skip is greater than or equal to current's fetch`
 //! on a plan with an empty relation.
+//! This rule also removes OFFSET 0 from the [LogicalPlan]
 //! This saves time in planning and executing the query.
 use crate::{OptimizerConfig, OptimizerRule};
 use datafusion_common::Result;
@@ -28,7 +29,8 @@ use datafusion_expr::{
 
 /// Optimization rule that replaces LIMIT 0 or
 /// LIMIT whose ancestor LIMIT's skip is greater than or equal to current's fetch
-/// with an [LogicalPlan::EmptyRelation]
+/// with an [LogicalPlan::EmptyRelation].
+/// This rule also removes OFFSET 0 from the [LogicalPlan]
 #[derive(Default)]
 pub struct EliminateLimit;
 
@@ -43,7 +45,7 @@ impl EliminateLimit {
 /// when traversing down related to "eliminate limit".
 enum Ancestor {
     /// Limit
-    FromLimit { skip: Option<usize> },
+    FromLimit { skip: usize },
     /// Other nodes that don't affect the adjustment of "Limit"
     NotRelevant,
 }
@@ -51,6 +53,7 @@ enum Ancestor {
 /// replaces LIMIT 0 with an [LogicalPlan::EmptyRelation]
 /// replaces LIMIT node whose ancestor LIMIT's skip is greater than or equal to current's fetch
 /// with an [LogicalPlan::EmptyRelation]
+/// removes OFFSET 0 from the [LogicalPlan]
 fn eliminate_limit(
     _optimizer: &EliminateLimit,
     ancestor: &Ancestor,
@@ -62,7 +65,7 @@ fn eliminate_limit(
             skip, fetch, input, ..
         }) => {
             let ancestor_skip = match ancestor {
-                Ancestor::FromLimit { skip, .. } => skip.unwrap_or(0),
+                Ancestor::FromLimit { skip } => *skip,
                 _ => 0,
             };
             // If ancestor's skip is equal or greater than current's fetch,
@@ -78,7 +81,12 @@ fn eliminate_limit(
                         }));
                     }
                 }
-                None => {}
+                None => {
+                    if *skip == 0 {
+                        // If there is no LIMIT and OFFSET is zero, LIMIT/OFFSET can be removed
+                        return Ok(input.as_ref().clone());
+                    }
+                }
             }
 
             let expr = plan.expressions();
@@ -165,11 +173,10 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(None, Some(0))
+            .limit(0, Some(0))
             .unwrap()
             .build()
             .unwrap();
-
         // No aggregate / scan / limit
         let expected = "EmptyRelation";
         assert_optimized_plan_eq(&plan, expected);
@@ -186,7 +193,7 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(None, Some(0))
+            .limit(0, Some(0))
             .unwrap()
             .union(plan1)
             .unwrap()
@@ -207,9 +214,9 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(None, Some(2))
+            .limit(0, Some(2))
             .unwrap()
-            .limit(Some(2), None)
+            .limit(2, None)
             .unwrap()
             .build()
             .unwrap();
@@ -226,11 +233,11 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(None, Some(2))
+            .limit(0, Some(2))
             .unwrap()
             .sort(vec![col("a")])
             .unwrap()
-            .limit(Some(2), Some(1))
+            .limit(2, Some(1))
             .unwrap()
             .build()
             .unwrap();
@@ -247,18 +254,18 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(None, Some(2))
+            .limit(0, Some(2))
             .unwrap()
             .sort(vec![col("a")])
             .unwrap()
-            .limit(None, Some(1))
+            .limit(0, Some(1))
             .unwrap()
             .build()
             .unwrap();
 
-        let expected = "Limit: skip=None, fetch=1\
+        let expected = "Limit: skip=0, fetch=1\
             \n  Sort: #test.a\
-            \n    Limit: skip=None, fetch=2\
+            \n    Limit: skip=0, fetch=2\
             \n      Aggregate: groupBy=[[#test.a]], aggr=[[SUM(#test.b)]]\
             \n        TableScan: test";
         assert_optimized_plan_eq(&plan, expected);
@@ -270,11 +277,11 @@ mod tests {
         let plan = LogicalPlanBuilder::from(table_scan)
             .aggregate(vec![col("a")], vec![sum(col("b"))])
             .unwrap()
-            .limit(Some(2), Some(1))
+            .limit(2, Some(1))
             .unwrap()
             .sort(vec![col("a")])
             .unwrap()
-            .limit(Some(3), Some(1))
+            .limit(3, Some(1))
             .unwrap()
             .build()
             .unwrap();
@@ -290,7 +297,7 @@ mod tests {
         let table_scan = test_table_scan().unwrap();
         let table_scan_inner = test_table_scan_with_name("test1").unwrap();
         let plan = LogicalPlanBuilder::from(table_scan)
-            .limit(Some(2), Some(1))
+            .limit(2, Some(1))
             .unwrap()
             .join_using(
                 &table_scan_inner,
@@ -298,7 +305,7 @@ mod tests {
                 vec![Column::from_name("a".to_string())],
             )
             .unwrap()
-            .limit(Some(3), Some(1))
+            .limit(3, Some(1))
             .unwrap()
             .build()
             .unwrap();
@@ -308,6 +315,22 @@ mod tests {
             \n    Limit: skip=2, fetch=1\
             \n      TableScan: test\
             \n    TableScan: test1";
+        assert_optimized_plan_eq(&plan, expected);
+    }
+
+    #[test]
+    fn remove_zero_offset() {
+        let table_scan = test_table_scan().unwrap();
+        let plan = LogicalPlanBuilder::from(table_scan)
+            .aggregate(vec![col("a")], vec![sum(col("b"))])
+            .unwrap()
+            .limit(0, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let expected = "Aggregate: groupBy=[[#test.a]], aggr=[[SUM(#test.b)]]\
+            \n  TableScan: test";
         assert_optimized_plan_eq(&plan, expected);
     }
 }

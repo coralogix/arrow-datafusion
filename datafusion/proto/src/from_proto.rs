@@ -33,10 +33,10 @@ use datafusion_expr::expr::GroupingSet;
 use datafusion_expr::expr::GroupingSet::GroupingSets;
 use datafusion_expr::{
     abs, acos, array, ascii, asin, atan, atan2, bit_length, btrim, ceil,
-    character_length, chr, coalesce, concat_expr, concat_ws_expr, cos, date_part,
-    date_trunc, digest, exp, floor, from_unixtime, left, ln, log10, log2,
+    character_length, chr, coalesce, concat_expr, concat_ws_expr, cos, date_bin,
+    date_part, date_trunc, digest, exp, floor, from_unixtime, left, ln, log10, log2,
     logical_plan::{PlanType, StringifiedPlan},
-    lower, lpad, ltrim, md5, now_expr, nullif, octet_length, power, random, regexp_match,
+    lower, lpad, ltrim, md5, now, nullif, octet_length, power, random, regexp_match,
     regexp_replace, repeat, replace, reverse, right, round, rpad, rtrim, sha224, sha256,
     sha384, sha512, signum, sin, split_part, sqrt, starts_with, strpos, substr, tan,
     to_hex, to_timestamp_micros, to_timestamp_millis, to_timestamp_seconds, translate,
@@ -226,7 +226,7 @@ impl From<protobuf::PrimitiveScalarType> for DataType {
                 DataType::Time64(TimeUnit::Nanosecond)
             }
             protobuf::PrimitiveScalarType::Null => DataType::Null,
-            protobuf::PrimitiveScalarType::Decimal128 => DataType::Decimal(0, 0),
+            protobuf::PrimitiveScalarType::Decimal128 => DataType::Decimal128(0, 0),
             protobuf::PrimitiveScalarType::Date64 => DataType::Date64,
             protobuf::PrimitiveScalarType::TimeSecond => {
                 DataType::Timestamp(TimeUnit::Second, None)
@@ -309,7 +309,7 @@ impl TryFrom<&protobuf::arrow_type::ArrowTypeEnum> for DataType {
             arrow_type::ArrowTypeEnum::Decimal(protobuf::Decimal {
                 whole,
                 fractional,
-            }) => DataType::Decimal(*whole as usize, *fractional as usize),
+            }) => DataType::Decimal128(*whole as u8, *fractional as u8),
             arrow_type::ArrowTypeEnum::List(list) => {
                 let list_type =
                     list.as_ref().field_type.as_deref().required("field_type")?;
@@ -378,11 +378,13 @@ impl From<&protobuf::StringifiedPlan> for StringifiedPlan {
             plan_type: match stringified_plan
                 .plan_type
                 .as_ref()
-                .unwrap()
-                .plan_type_enum
-                .as_ref()
-                .unwrap()
-            {
+                .and_then(|pt| pt.plan_type_enum.as_ref())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Cannot create protobuf::StringifiedPlan from {:?}",
+                        stringified_plan
+                    )
+                }) {
                 InitialLogicalPlan(_) => PlanType::InitialLogicalPlan,
                 OptimizedLogicalPlan(OptimizedLogicalPlanType { optimizer_name }) => {
                     PlanType::OptimizedLogicalPlan {
@@ -431,10 +433,11 @@ impl From<&protobuf::ScalarFunction> for BuiltinScalarFunction {
             ScalarFunction::Ltrim => Self::Ltrim,
             ScalarFunction::Rtrim => Self::Rtrim,
             ScalarFunction::ToTimestamp => Self::ToTimestamp,
-            ScalarFunction::Array => Self::Array,
+            ScalarFunction::Array => Self::MakeArray,
             ScalarFunction::NullIf => Self::NullIf,
             ScalarFunction::DatePart => Self::DatePart,
             ScalarFunction::DateTrunc => Self::DateTrunc,
+            ScalarFunction::DateBin => Self::DateBin,
             ScalarFunction::Md5 => Self::MD5,
             ScalarFunction::Sha224 => Self::SHA224,
             ScalarFunction::Sha256 => Self::SHA256,
@@ -475,6 +478,7 @@ impl From<&protobuf::ScalarFunction> for BuiltinScalarFunction {
             ScalarFunction::StructFun => Self::Struct,
             ScalarFunction::FromUnixtime => Self::FromUnixtime,
             ScalarFunction::Atan2 => Self::Atan2,
+            ScalarFunction::ArrowTypeof => Self::ArrowTypeof,
         }
     }
 }
@@ -625,9 +629,7 @@ impl TryFrom<&protobuf::PrimitiveScalarType> for ScalarValue {
         use protobuf::PrimitiveScalarType;
 
         Ok(match scalar {
-            PrimitiveScalarType::Null => {
-                return Err(proto_error("Untyped null is an invalid scalar value"));
-            }
+            PrimitiveScalarType::Null => Self::Null,
             PrimitiveScalarType::Bool => Self::Boolean(None),
             PrimitiveScalarType::Uint8 => Self::UInt8(None),
             PrimitiveScalarType::Int8 => Self::Int8(None),
@@ -742,8 +744,8 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
                 let array = vec_to_array(val.value.clone());
                 Self::Decimal128(
                     Some(i128::from_be_bytes(array)),
-                    val.p as usize,
-                    val.s as usize,
+                    val.p as u8,
+                    val.s as u8,
                 )
             }
             Value::Date64Value(v) => Self::Date64(Some(*v)),
@@ -888,7 +890,8 @@ pub fn parse_expr(
                     .iter()
                     .map(|e| parse_expr(e, registry))
                     .collect::<Result<Vec<_>, _>>()?,
-                distinct: false, // TODO
+                distinct: expr.distinct,
+                filter: parse_optional_expr(&expr.filter, registry)?.map(Box::new),
             })
         }
         ExprType::Alias(alias) => Ok(Expr::Alias(
@@ -906,11 +909,47 @@ pub fn parse_expr(
         ExprType::NotExpr(not) => Ok(Expr::Not(Box::new(parse_required_expr(
             &not.expr, registry, "expr",
         )?))),
+        ExprType::IsTrue(msg) => Ok(Expr::IsTrue(Box::new(parse_required_expr(
+            &msg.expr, registry, "expr",
+        )?))),
+        ExprType::IsFalse(msg) => Ok(Expr::IsFalse(Box::new(parse_required_expr(
+            &msg.expr, registry, "expr",
+        )?))),
+        ExprType::IsUnknown(msg) => Ok(Expr::IsUnknown(Box::new(parse_required_expr(
+            &msg.expr, registry, "expr",
+        )?))),
+        ExprType::IsNotTrue(msg) => Ok(Expr::IsNotTrue(Box::new(parse_required_expr(
+            &msg.expr, registry, "expr",
+        )?))),
+        ExprType::IsNotFalse(msg) => Ok(Expr::IsNotFalse(Box::new(parse_required_expr(
+            &msg.expr, registry, "expr",
+        )?))),
+        ExprType::IsNotUnknown(msg) => Ok(Expr::IsNotUnknown(Box::new(
+            parse_required_expr(&msg.expr, registry, "expr")?,
+        ))),
         ExprType::Between(between) => Ok(Expr::Between {
             expr: Box::new(parse_required_expr(&between.expr, registry, "expr")?),
             negated: between.negated,
             low: Box::new(parse_required_expr(&between.low, registry, "expr")?),
             high: Box::new(parse_required_expr(&between.high, registry, "expr")?),
+        }),
+        ExprType::Like(like) => Ok(Expr::Like {
+            expr: Box::new(parse_required_expr(&like.expr, registry, "expr")?),
+            negated: like.negated,
+            pattern: Box::new(parse_required_expr(&like.pattern, registry, "pattern")?),
+            escape_char: parse_escape_char(&like.escape_char)?,
+        }),
+        ExprType::Ilike(like) => Ok(Expr::ILike {
+            expr: Box::new(parse_required_expr(&like.expr, registry, "expr")?),
+            negated: like.negated,
+            pattern: Box::new(parse_required_expr(&like.pattern, registry, "pattern")?),
+            escape_char: parse_escape_char(&like.escape_char)?,
+        }),
+        ExprType::SimilarTo(like) => Ok(Expr::SimilarTo {
+            expr: Box::new(parse_required_expr(&like.expr, registry, "expr")?),
+            negated: like.negated,
+            pattern: Box::new(parse_required_expr(&like.pattern, registry, "pattern")?),
+            escape_char: parse_escape_char(&like.escape_char)?,
         }),
         ExprType::Case(case) => {
             let when_then_expr = case
@@ -1003,12 +1042,20 @@ pub fn parse_expr(
                     parse_expr(&args[0], registry)?,
                     parse_expr(&args[1], registry)?,
                 )),
+                ScalarFunction::DateBin => Ok(date_bin(
+                    parse_expr(&args[0], registry)?,
+                    parse_expr(&args[1], registry)?,
+                    parse_expr(&args[2], registry)?,
+                )),
                 ScalarFunction::Sha224 => Ok(sha224(parse_expr(&args[0], registry)?)),
                 ScalarFunction::Sha256 => Ok(sha256(parse_expr(&args[0], registry)?)),
                 ScalarFunction::Sha384 => Ok(sha384(parse_expr(&args[0], registry)?)),
                 ScalarFunction::Sha512 => Ok(sha512(parse_expr(&args[0], registry)?)),
                 ScalarFunction::Md5 => Ok(md5(parse_expr(&args[0], registry)?)),
-                ScalarFunction::NullIf => Ok(nullif(parse_expr(&args[0], registry)?)),
+                ScalarFunction::NullIf => Ok(nullif(
+                    parse_expr(&args[0], registry)?,
+                    parse_expr(&args[1], registry)?,
+                )),
                 ScalarFunction::Digest => Ok(digest(
                     parse_expr(&args[0], registry)?,
                     parse_expr(&args[1], registry)?,
@@ -1110,12 +1157,7 @@ pub fn parse_expr(
                 ScalarFunction::ToTimestampSeconds => {
                     Ok(to_timestamp_seconds(parse_expr(&args[0], registry)?))
                 }
-                ScalarFunction::Now => Ok(now_expr(
-                    args.to_owned()
-                        .iter()
-                        .map(|expr| parse_expr(expr, registry))
-                        .collect::<Result<Vec<_>, _>>()?,
-                )),
+                ScalarFunction::Now => Ok(now()),
                 ScalarFunction::Translate => Ok(translate(
                     parse_expr(&args[0], registry)?,
                     parse_expr(&args[1], registry)?,
@@ -1153,15 +1195,17 @@ pub fn parse_expr(
                     .collect::<Result<Vec<_>, Error>>()?,
             })
         }
-        ExprType::AggregateUdfExpr(protobuf::AggregateUdfExprNode { fun_name, args }) => {
-            let agg_fn = registry.udaf(fun_name.as_str())?;
+        ExprType::AggregateUdfExpr(pb) => {
+            let agg_fn = registry.udaf(pb.fun_name.as_str())?;
 
             Ok(Expr::AggregateUDF {
                 fun: agg_fn,
-                args: args
+                args: pb
+                    .args
                     .iter()
                     .map(|expr| parse_expr(expr, registry))
                     .collect::<Result<Vec<_>, Error>>()?,
+                filter: parse_optional_expr(&pb.filter, registry)?.map(Box::new),
             })
         }
 
@@ -1190,6 +1234,17 @@ pub fn parse_expr(
                     .collect::<Result<Vec<_>, Error>>()?,
             )))
         }
+    }
+}
+
+/// Parse an optional escape_char for Like, ILike, SimilarTo
+fn parse_escape_char(s: &str) -> Result<Option<char>, DataFusionError> {
+    match s.len() {
+        0 => Ok(None),
+        1 => Ok(s.chars().next()),
+        _ => Err(DataFusionError::Internal(
+            "Invalid length for escape char".to_string(),
+        )),
     }
 }
 
@@ -1291,6 +1346,7 @@ impl From<protobuf::IntervalUnit> for IntervalUnit {
     }
 }
 
+// panic here because no better way to convert from Vec to Array
 fn vec_to_array<T, const N: usize>(v: Vec<T>) -> [T; N] {
     v.try_into().unwrap_or_else(|v: Vec<T>| {
         panic!("Expected a Vec of length {} but it was {}", N, v.len())
@@ -1434,8 +1490,8 @@ fn typechecked_scalar_value_conversion(
             let array = vec_to_array(val.value.clone());
             ScalarValue::Decimal128(
                 Some(i128::from_be_bytes(array)),
-                val.p as usize,
-                val.s as usize,
+                val.p as u8,
+                val.s as u8,
             )
         }
         (Value::Date64Value(v), PrimitiveScalarType::Date64) => {
@@ -1476,6 +1532,17 @@ fn from_proto_binary_op(op: &str) -> Result<Operator, Error> {
         "Modulo" => Ok(Operator::Modulo),
         "Like" => Ok(Operator::Like),
         "NotLike" => Ok(Operator::NotLike),
+        "IsDistinctFrom" => Ok(Operator::IsDistinctFrom),
+        "IsNotDistinctFrom" => Ok(Operator::IsNotDistinctFrom),
+        "BitwiseAnd" => Ok(Operator::BitwiseAnd),
+        "BitwiseOr" => Ok(Operator::BitwiseOr),
+        "BitwiseShiftLeft" => Ok(Operator::BitwiseShiftLeft),
+        "BitwiseShiftRight" => Ok(Operator::BitwiseShiftRight),
+        "RegexIMatch" => Ok(Operator::RegexIMatch),
+        "RegexMatch" => Ok(Operator::RegexMatch),
+        "RegexNotIMatch" => Ok(Operator::RegexNotIMatch),
+        "RegexNotMatch" => Ok(Operator::RegexNotMatch),
+        "StringConcat" => Ok(Operator::StringConcat),
         other => Err(proto_error(format!(
             "Unsupported binary operator '{:?}'",
             other

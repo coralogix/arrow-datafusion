@@ -34,7 +34,7 @@ pub enum Recursion<V: ExpressionVisitor> {
 /// recursively on all nodes of an expression tree. See the comments
 /// on `Expr::accept` for details on its use
 pub trait ExpressionVisitor<E: ExprVisitable = Expr>: Sized {
-    /// Invoked before any children of `expr` are visisted.
+    /// Invoked before any children of `expr` are visited.
     fn pre_visit(self, expr: &E) -> Result<Recursion<Self>>
     where
         Self: ExpressionVisitor;
@@ -97,6 +97,12 @@ impl ExprVisitable for Expr {
             Expr::Alias(expr, _)
             | Expr::Not(expr)
             | Expr::IsNotNull(expr)
+            | Expr::IsTrue(expr)
+            | Expr::IsFalse(expr)
+            | Expr::IsUnknown(expr)
+            | Expr::IsNotTrue(expr)
+            | Expr::IsNotFalse(expr)
+            | Expr::IsNotUnknown(expr)
             | Expr::IsNull(expr)
             | Expr::Negative(expr)
             | Expr::Cast { expr, .. }
@@ -127,6 +133,18 @@ impl ExprVisitable for Expr {
             Expr::BinaryExpr { left, right, .. } => {
                 let visitor = left.accept(visitor)?;
                 right.accept(visitor)
+            }
+            Expr::Like { expr, pattern, .. } => {
+                let visitor = expr.accept(visitor)?;
+                pattern.accept(visitor)
+            }
+            Expr::ILike { expr, pattern, .. } => {
+                let visitor = expr.accept(visitor)?;
+                pattern.accept(visitor)
+            }
+            Expr::SimilarTo { expr, pattern, .. } => {
+                let visitor = expr.accept(visitor)?;
+                pattern.accept(visitor)
             }
             Expr::Between {
                 expr, low, high, ..

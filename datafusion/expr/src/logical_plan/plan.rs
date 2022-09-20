@@ -17,7 +17,7 @@
 
 use crate::logical_plan::display::{GraphvizVisitor, IndentVisitor};
 use crate::logical_plan::extension::UserDefinedLogicalNode;
-use crate::utils::exprlist_to_fields;
+use crate::utils::{exprlist_to_fields, grouping_set_expr_count};
 use crate::{Expr, TableProviderFilterPushDown, TableSource};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::{plan_err, Column, DFSchema, DFSchemaRef, DataFusionError};
@@ -86,6 +86,8 @@ pub enum LogicalPlan {
     CreateCatalog(CreateCatalog),
     /// Drops a table.
     DropTable(DropTable),
+    /// Drops a view.
+    DropView(DropView),
     /// Values expression. See
     /// [Postgres VALUES](https://www.postgresql.org/docs/current/queries-values.html)
     /// documentation for more details.
@@ -137,6 +139,7 @@ impl LogicalPlan {
             }
             LogicalPlan::CreateCatalog(CreateCatalog { schema, .. }) => schema,
             LogicalPlan::DropTable(DropTable { schema, .. }) => schema,
+            LogicalPlan::DropView(DropView { schema, .. }) => schema,
         }
     }
 
@@ -193,7 +196,7 @@ impl LogicalPlan {
             | LogicalPlan::CreateView(CreateView { input, .. })
             | LogicalPlan::Filter(Filter { input, .. }) => input.all_schemas(),
             LogicalPlan::Distinct(Distinct { input, .. }) => input.all_schemas(),
-            LogicalPlan::DropTable(_) => vec![],
+            LogicalPlan::DropTable(_) | LogicalPlan::DropView(_) => vec![],
         }
     }
 
@@ -220,7 +223,8 @@ impl LogicalPlan {
                 ..
             }) => match partitioning_scheme {
                 Partitioning::Hash(expr, _) => expr.clone(),
-                _ => vec![],
+                Partitioning::DistributeBy(expr) => expr.clone(),
+                Partitioning::RoundRobinBatch(_) => vec![],
             },
             LogicalPlan::Window(Window { window_expr, .. }) => window_expr.clone(),
             LogicalPlan::Aggregate(Aggregate {
@@ -252,6 +256,7 @@ impl LogicalPlan {
             | LogicalPlan::CreateCatalogSchema(_)
             | LogicalPlan::CreateCatalog(_)
             | LogicalPlan::DropTable(_)
+            | LogicalPlan::DropView(_)
             | LogicalPlan::CrossJoin(_)
             | LogicalPlan::Analyze { .. }
             | LogicalPlan::Explain { .. }
@@ -295,7 +300,8 @@ impl LogicalPlan {
             | LogicalPlan::CreateExternalTable(_)
             | LogicalPlan::CreateCatalogSchema(_)
             | LogicalPlan::CreateCatalog(_)
-            | LogicalPlan::DropTable(_) => vec![],
+            | LogicalPlan::DropTable(_)
+            | LogicalPlan::DropView(_) => vec![],
         }
     }
 
@@ -448,7 +454,8 @@ impl LogicalPlan {
             | LogicalPlan::CreateExternalTable(_)
             | LogicalPlan::CreateCatalogSchema(_)
             | LogicalPlan::CreateCatalog(_)
-            | LogicalPlan::DropTable(_) => true,
+            | LogicalPlan::DropTable(_)
+            | LogicalPlan::DropView(_) => true,
         };
         if !recurse {
             return Ok(false);
@@ -542,8 +549,10 @@ impl LogicalPlan {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 let with_schema = false;
                 let mut visitor = IndentVisitor::new(f, with_schema);
-                self.0.accept(&mut visitor).unwrap();
-                Ok(())
+                match self.0.accept(&mut visitor) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(fmt::Error),
+                }
             }
         }
         Wrapper(self)
@@ -583,8 +592,10 @@ impl LogicalPlan {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 let with_schema = true;
                 let mut visitor = IndentVisitor::new(f, with_schema);
-                self.0.accept(&mut visitor).unwrap();
-                Ok(())
+                match self.0.accept(&mut visitor) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(fmt::Error),
+                }
             }
         }
         Wrapper(self)
@@ -634,12 +645,12 @@ impl LogicalPlan {
                 let mut visitor = GraphvizVisitor::new(f);
 
                 visitor.pre_visit_plan("LogicalPlan")?;
-                self.0.accept(&mut visitor).unwrap();
+                self.0.accept(&mut visitor).map_err(|_| fmt::Error)?;
                 visitor.post_visit_plan()?;
 
                 visitor.set_with_schema(true);
                 visitor.pre_visit_plan("Detailed LogicalPlan")?;
-                self.0.accept(&mut visitor).unwrap();
+                self.0.accept(&mut visitor).map_err(|_| fmt::Error)?;
                 visitor.post_visit_plan()?;
 
                 writeln!(f, "}}")?;
@@ -861,6 +872,15 @@ impl LogicalPlan {
                                 n
                             )
                         }
+                        Partitioning::DistributeBy(expr) => {
+                            let dist_by_expr: Vec<String> =
+                                expr.iter().map(|e| format!("{:?}", e)).collect();
+                            write!(
+                                f,
+                                "Repartition: DistributeBy({})",
+                                dist_by_expr.join(", "),
+                            )
+                        }
                     },
                     LogicalPlan::Limit(Limit {
                         ref skip,
@@ -870,7 +890,7 @@ impl LogicalPlan {
                         write!(
                             f,
                             "Limit: skip={}, fetch={}",
-                            skip.map_or("None".to_string(), |x| x.to_string()),
+                            skip,
                             fetch.map_or_else(|| "None".to_string(), |x| x.to_string())
                         )
                     }
@@ -909,6 +929,11 @@ impl LogicalPlan {
                         name, if_exists, ..
                     }) => {
                         write!(f, "DropTable: {:?} if not exist:={}", name, if_exists)
+                    }
+                    LogicalPlan::DropView(DropView {
+                        name, if_exists, ..
+                    }) => {
+                        write!(f, "DropView: {:?} if not exist:={}", name, if_exists)
                     }
                     LogicalPlan::Distinct(Distinct { .. }) => {
                         write!(f, "Distinct:")
@@ -1004,6 +1029,17 @@ pub struct DropTable {
     /// The table name
     pub name: String,
     /// If the table exists
+    pub if_exists: bool,
+    /// Dummy schema
+    pub schema: DFSchemaRef,
+}
+
+/// Drops a view.
+#[derive(Clone)]
+pub struct DropView {
+    /// The view name
+    pub name: String,
+    /// If the view exists
     pub if_exists: bool,
     /// Dummy schema
     pub schema: DFSchemaRef,
@@ -1204,19 +1240,6 @@ pub struct CreateView {
     pub definition: Option<String>,
 }
 
-/// Types of files to parse as DataFrames
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileType {
-    /// Newline-delimited JSON
-    NdJson,
-    /// Apache Parquet columnar storage
-    Parquet,
-    /// Comma separated values
-    CSV,
-    /// Avro binary records
-    Avro,
-}
-
 /// Creates an external table.
 #[derive(Clone)]
 pub struct CreateExternalTable {
@@ -1227,7 +1250,7 @@ pub struct CreateExternalTable {
     /// The physical location
     pub location: String,
     /// The file type of physical file
-    pub file_type: FileType,
+    pub file_type: String,
     /// Whether the CSV file contains a header
     pub has_header: bool,
     /// Delimiter for CSV
@@ -1236,6 +1259,8 @@ pub struct CreateExternalTable {
     pub table_partition_cols: Vec<String>,
     /// Option to not error if table already exists
     pub if_not_exists: bool,
+    /// SQL used to create the table, if available
+    pub definition: Option<String>,
 }
 
 /// Produces a relation with string representations of
@@ -1275,8 +1300,9 @@ pub struct Extension {
 #[derive(Clone)]
 pub struct Limit {
     /// Number of rows to skip before fetch
-    pub skip: Option<usize>,
-    /// Maximum number of rows to fetch
+    pub skip: usize,
+    /// Maximum number of rows to fetch,
+    /// None means fetching all rows
     pub fetch: Option<usize>,
     /// The logical plan
     pub input: Arc<LogicalPlan>,
@@ -1304,6 +1330,34 @@ pub struct Aggregate {
 }
 
 impl Aggregate {
+    pub fn try_new(
+        input: Arc<LogicalPlan>,
+        group_expr: Vec<Expr>,
+        aggr_expr: Vec<Expr>,
+        schema: DFSchemaRef,
+    ) -> datafusion_common::Result<Self> {
+        if group_expr.is_empty() && aggr_expr.is_empty() {
+            return Err(DataFusionError::Plan(
+                "Aggregate requires at least one grouping or aggregate expression"
+                    .to_string(),
+            ));
+        }
+        let group_expr_count = grouping_set_expr_count(&group_expr)?;
+        if schema.fields().len() != group_expr_count + aggr_expr.len() {
+            return Err(DataFusionError::Plan(format!(
+                "Aggregate schema has wrong number of fields. Expected {} got {}",
+                group_expr_count + aggr_expr.len(),
+                schema.fields().len()
+            )));
+        }
+        Ok(Self {
+            input,
+            group_expr,
+            aggr_expr,
+            schema,
+        })
+    }
+
     pub fn try_from_plan(plan: &LogicalPlan) -> datafusion_common::Result<&Aggregate> {
         match plan {
             LogicalPlan::Aggregate(it) => Ok(it),
@@ -1383,6 +1437,8 @@ impl PartialEq for Subquery {
     }
 }
 
+impl Eq for Subquery {}
+
 /// Logical partitioning schemes supported by the repartition operator.
 #[derive(Debug, Clone)]
 pub enum Partitioning {
@@ -1390,8 +1446,9 @@ pub enum Partitioning {
     RoundRobinBatch(usize),
     /// Allocate rows based on a hash of one of more expressions and the specified number
     /// of partitions.
-    /// This partitioning scheme is not yet fully supported. See <https://issues.apache.org/jira/browse/ARROW-11011>
     Hash(Vec<Expr>, usize),
+    /// The DISTRIBUTE BY clause is used to repartition the data based on the input expressions
+    DistributeBy(Vec<Expr>),
 }
 
 /// Represents which type of plan, when storing multiple

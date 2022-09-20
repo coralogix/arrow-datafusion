@@ -43,12 +43,12 @@ async fn csv_query_cast() -> Result<()> {
     let actual = execute_to_batches(&ctx, sql).await;
 
     let expected = vec![
-        "+-----------------------------------------+",
-        "| CAST(aggregate_test_100.c12 AS Float32) |",
-        "+-----------------------------------------+",
-        "| 0.39144436                              |",
-        "| 0.3887028                               |",
-        "+-----------------------------------------+",
+        "+------------------------+",
+        "| aggregate_test_100.c12 |",
+        "+------------------------+",
+        "| 0.39144436             |",
+        "| 0.3887028              |",
+        "+------------------------+",
     ];
 
     assert_batches_eq!(expected, &actual);
@@ -64,12 +64,12 @@ async fn csv_query_cast_literal() -> Result<()> {
     let actual = execute_to_batches(&ctx, sql).await;
 
     let expected = vec![
-        "+--------------------+---------------------------+",
-        "| c12                | CAST(Int64(1) AS Float32) |",
-        "+--------------------+---------------------------+",
-        "| 0.9294097332465232 | 1                         |",
-        "| 0.3114712539863804 | 1                         |",
-        "+--------------------+---------------------------+",
+        "+--------------------+----------+",
+        "| c12                | Int64(1) |",
+        "+--------------------+----------+",
+        "| 0.9294097332465232 | 1        |",
+        "| 0.3114712539863804 | 1        |",
+        "+--------------------+----------+",
     ];
 
     assert_batches_eq!(expected, &actual);
@@ -98,20 +98,19 @@ async fn query_concat() -> Result<()> {
     let sql = "SELECT concat(c1, '-hi-', cast(c2 as varchar)) FROM test";
     let actual = execute_to_batches(&ctx, sql).await;
     let expected = vec![
-        "+----------------------------------------------------+",
-        "| concat(test.c1,Utf8(\"-hi-\"),CAST(test.c2 AS Utf8)) |",
-        "+----------------------------------------------------+",
-        "| -hi-0                                              |",
-        "| a-hi-1                                             |",
-        "| aa-hi-                                             |",
-        "| aaa-hi-3                                           |",
-        "+----------------------------------------------------+",
+        "+--------------------------------------+",
+        "| concat(test.c1,Utf8(\"-hi-\"),test.c2) |",
+        "+--------------------------------------+",
+        "| -hi-0                                |",
+        "| a-hi-1                               |",
+        "| aa-hi-                               |",
+        "| aaa-hi-3                             |",
+        "+--------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     Ok(())
 }
 
-// Revisit after implementing https://github.com/apache/arrow-rs/issues/925
 #[tokio::test]
 async fn query_array() -> Result<()> {
     let schema = Arc::new(Schema::new(vec![
@@ -131,15 +130,19 @@ async fn query_array() -> Result<()> {
 
     let ctx = SessionContext::new();
     ctx.register_table("test", Arc::new(table))?;
-    let sql = "SELECT array(c1, cast(c2 as varchar)) FROM test";
-    let actual = execute(&ctx, sql).await;
+    let sql = "SELECT make_array(c1, cast(c2 as varchar)) FROM test";
+    let actual = execute_to_batches(&ctx, sql).await;
     let expected = vec![
-        vec!["[,0]"],
-        vec!["[a,1]"],
-        vec!["[aa,NULL]"],
-        vec!["[aaa,3]"],
+        "+----------------------------+",
+        "| makearray(test.c1,test.c2) |",
+        "+----------------------------+",
+        "| [, 0]                      |",
+        "| [a, 1]                     |",
+        "| [aa, ]                     |",
+        "| [aaa, 3]                   |",
+        "+----------------------------+",
     ];
-    assert_eq!(expected, actual);
+    assert_batches_eq!(expected, &actual);
     Ok(())
 }
 
@@ -147,10 +150,16 @@ async fn query_array() -> Result<()> {
 async fn query_array_scalar() -> Result<()> {
     let ctx = SessionContext::new();
 
-    let sql = "SELECT array(1, 2, 3);";
-    let actual = execute(&ctx, sql).await;
-    let expected = vec![vec!["[1, 2, 3]"]];
-    assert_eq!(expected, actual);
+    let sql = "SELECT make_array(1, 2, 3);";
+    let actual = execute_to_batches(&ctx, sql).await;
+    let expected = vec![
+        "+---------------------------------------+",
+        "| makearray(Int64(1),Int64(2),Int64(3)) |",
+        "+---------------------------------------+",
+        "| [1, 2, 3]                             |",
+        "+---------------------------------------+",
+    ];
+    assert_batches_eq!(expected, &actual);
     Ok(())
 }
 
@@ -324,14 +333,14 @@ async fn coalesce_mul_with_default_value() -> Result<()> {
     let sql = "SELECT COALESCE(c1 * c2, 0) FROM test";
     let actual = execute_to_batches(&ctx, sql).await;
     let expected = vec![
-        "+---------------------------------------------+",
-        "| coalesce(test.c1 Multiply test.c2,Int64(0)) |",
-        "+---------------------------------------------+",
-        "| 2                                           |",
-        "| 0                                           |",
-        "| 0                                           |",
-        "| 0                                           |",
-        "+---------------------------------------------+",
+        "+--------------------------------------+",
+        "| coalesce(test.c1 * test.c2,Int64(0)) |",
+        "+--------------------------------------+",
+        "| 2                                    |",
+        "| 0                                    |",
+        "| 0                                    |",
+        "| 0                                    |",
+        "+--------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     Ok(())

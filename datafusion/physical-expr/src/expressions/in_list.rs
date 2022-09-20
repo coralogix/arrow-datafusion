@@ -24,8 +24,9 @@ use std::sync::Arc;
 use arrow::array::GenericStringArray;
 use arrow::array::{
     ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, Int8Array, OffsetSizeTrait, UInt16Array, UInt32Array, UInt64Array,
-    UInt8Array,
+    Int64Array, Int8Array, OffsetSizeTrait, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
+    UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow::{
     datatypes::{DataType, Schema},
@@ -34,11 +35,12 @@ use arrow::{
 
 use crate::PhysicalExpr;
 use arrow::array::*;
-use arrow::buffer::{Buffer, MutableBuffer};
+use arrow::datatypes::TimeUnit;
 use datafusion_common::ScalarValue;
 use datafusion_common::ScalarValue::{
-    Boolean, Decimal128, Int16, Int32, Int64, Int8, LargeUtf8, UInt16, UInt32, UInt64,
-    UInt8, Utf8,
+    Binary, Boolean, Date32, Date64, Decimal128, Int16, Int32, Int64, Int8, LargeBinary,
+    LargeUtf8, TimestampMicrosecond, TimestampMillisecond, TimestampNanosecond,
+    TimestampSecond, UInt16, UInt32, UInt64, UInt8, Utf8,
 };
 use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::ColumnarValue;
@@ -48,30 +50,6 @@ use datafusion_expr::ColumnarValue;
 /// https://github.com/apache/arrow-datafusion/pull/2156#discussion_r845198369
 /// TODO: add switch codeGen in In_List
 static OPTIMIZER_INSET_THRESHOLD: usize = 30;
-
-macro_rules! compare_op_scalar {
-    ($left: expr, $right:expr, $op:expr) => {{
-        let null_bit_buffer = $left.data().null_buffer().cloned();
-
-        let comparison =
-            (0..$left.len()).map(|i| unsafe { $op($left.value_unchecked(i), $right) });
-        // same as $left.len()
-        let buffer = unsafe { MutableBuffer::from_trusted_len_iter_bool(comparison) };
-
-        let data = unsafe {
-            ArrayData::new_unchecked(
-                DataType::Boolean,
-                $left.len(),
-                None,
-                null_bit_buffer,
-                0,
-                vec![Buffer::from(buffer)],
-                vec![],
-            )
-        };
-        Ok(BooleanArray::from(data))
-    }};
-}
 
 /// InList
 #[derive(Debug)]
@@ -136,8 +114,8 @@ macro_rules! make_contains_primitive {
             .iter()
             .flat_map(|expr| match expr {
                 ColumnarValue::Scalar(s) => match s {
-                    ScalarValue::$SCALAR_VALUE(Some(v)) => Some(*v),
-                    ScalarValue::$SCALAR_VALUE(None) => None,
+                    ScalarValue::$SCALAR_VALUE(Some(v), ..) => Some(*v),
+                    ScalarValue::$SCALAR_VALUE(None, ..) => None,
                     datatype => unreachable!("InList can't reach other data type {} for {}.", datatype, s),
                 },
                 ColumnarValue::Array(_) => {
@@ -197,10 +175,10 @@ macro_rules! set_contains_for_float {
 macro_rules! set_contains_for_primitive {
     ($ARRAY:expr, $SET_VALUES:expr, $SCALAR_VALUE:ident, $NEGATED:expr, $PHY_TYPE:ty) => {{
         let contains_null = $SET_VALUES.iter().any(|s| s.is_null());
-        let native_array = $SET_VALUES
+        let native_set = $SET_VALUES
             .iter()
             .flat_map(|v| match v {
-                $SCALAR_VALUE(value) => *value,
+                $SCALAR_VALUE(value, ..) => *value,
                 datatype => {
                     unreachable!(
                         "InList can't reach other data type {} for {}.",
@@ -208,8 +186,7 @@ macro_rules! set_contains_for_primitive {
                     )
                 }
             })
-            .collect::<Vec<_>>();
-        let native_set: HashSet<$PHY_TYPE> = HashSet::from_iter(native_array);
+            .collect::<HashSet<_>>();
 
         collection_contains_check!($ARRAY, native_set, $NEGATED, contains_null)
     }};
@@ -254,19 +231,43 @@ macro_rules! collection_contains_check {
     }};
 }
 
-// whether each value on the left (can be null) is contained in the non-null list
-fn in_list_utf8<OffsetSize: OffsetSizeTrait>(
-    array: &GenericStringArray<OffsetSize>,
-    values: &[&str],
-) -> Result<BooleanArray> {
-    compare_op_scalar!(array, values, |x, v: &[&str]| v.contains(&x))
-}
-
-fn not_in_list_utf8<OffsetSize: OffsetSizeTrait>(
-    array: &GenericStringArray<OffsetSize>,
-    values: &[&str],
-) -> Result<BooleanArray> {
-    compare_op_scalar!(array, values, |x, v: &[&str]| !v.contains(&x))
+macro_rules! collection_contains_check_decimal {
+    ($ARRAY:expr, $VALUES:expr, $NEGATED:expr, $CONTAINS_NULL:expr) => {{
+        let bool_array = if $NEGATED {
+            // Not in
+            if $CONTAINS_NULL {
+                $ARRAY
+                    .iter()
+                    .map(|vop| match vop.map(|v| !$VALUES.contains(&v.as_i128())) {
+                        Some(true) => None,
+                        x => x,
+                    })
+                    .collect::<BooleanArray>()
+            } else {
+                $ARRAY
+                    .iter()
+                    .map(|vop| vop.map(|v| !$VALUES.contains(&v.as_i128())))
+                    .collect::<BooleanArray>()
+            }
+        } else {
+            // In
+            if $CONTAINS_NULL {
+                $ARRAY
+                    .iter()
+                    .map(|vop| match vop.map(|v| $VALUES.contains(&v.as_i128())) {
+                        Some(false) => None,
+                        x => x,
+                    })
+                    .collect::<BooleanArray>()
+            } else {
+                $ARRAY
+                    .iter()
+                    .map(|vop| vop.map(|v| $VALUES.contains(&v.as_i128())))
+                    .collect::<BooleanArray>()
+            }
+        };
+        ColumnarValue::Array(Arc::new(bool_array))
+    }};
 }
 
 // try evaluate all list exprs and check if the exprs are constants or not
@@ -275,8 +276,7 @@ fn try_cast_static_filter_to_set(
     schema: &Schema,
 ) -> Result<HashSet<ScalarValue>> {
     let batch = RecordBatch::new_empty(Arc::new(schema.to_owned()));
-    match list
-        .iter()
+    list.iter()
         .map(|expr| match expr.evaluate(&batch) {
             Ok(ColumnarValue::Array(_)) => Err(DataFusionError::NotImplemented(
                 "InList doesn't support to evaluate the array result".to_string(),
@@ -284,11 +284,7 @@ fn try_cast_static_filter_to_set(
             Ok(ColumnarValue::Scalar(s)) => Ok(s),
             Err(e) => Err(e),
         })
-        .collect::<Result<Vec<_>>>()
-    {
-        Ok(s) => Ok(HashSet::from_iter(s)),
-        Err(e) => Err(e),
-    }
+        .collect::<Result<HashSet<_>>>()
 }
 
 fn make_list_contains_decimal(
@@ -315,7 +311,7 @@ fn make_list_contains_decimal(
         })
         .collect::<Vec<_>>();
 
-    collection_contains_check!(array, values, negated, contains_null)
+    collection_contains_check_decimal!(array, values, negated, contains_null)
 }
 
 fn make_set_contains_decimal(
@@ -324,7 +320,7 @@ fn make_set_contains_decimal(
     negated: bool,
 ) -> ColumnarValue {
     let contains_null = set.iter().any(|v| v.is_null());
-    let native_array = set
+    let native_set = set
         .iter()
         .flat_map(|v| match v {
             Decimal128(v128op, _, _) => *v128op,
@@ -332,10 +328,9 @@ fn make_set_contains_decimal(
                 unreachable!("InList can't reach other data type {} for {}.", datatype, v)
             }
         })
-        .collect::<Vec<_>>();
-    let native_set: HashSet<i128> = HashSet::from_iter(native_array);
+        .collect::<HashSet<_>>();
 
-    collection_contains_check!(array, native_set, negated, contains_null)
+    collection_contains_check_decimal!(array, native_set, negated, contains_null)
 }
 
 fn set_contains_utf8<OffsetSize: OffsetSizeTrait>(
@@ -344,17 +339,34 @@ fn set_contains_utf8<OffsetSize: OffsetSizeTrait>(
     negated: bool,
 ) -> ColumnarValue {
     let contains_null = set.iter().any(|v| v.is_null());
-    let native_array = set
+    let native_set = set
         .iter()
         .flat_map(|v| match v {
-            Utf8(v) => v.as_deref(),
-            LargeUtf8(v) => v.as_deref(),
+            Utf8(v) | LargeUtf8(v) => v.as_deref(),
             datatype => {
                 unreachable!("InList can't reach other data type {} for {}.", datatype, v)
             }
         })
-        .collect::<Vec<_>>();
-    let native_set: HashSet<&str> = HashSet::from_iter(native_array);
+        .collect::<HashSet<_>>();
+
+    collection_contains_check!(array, native_set, negated, contains_null)
+}
+
+fn set_contains_binary<OffsetSize: OffsetSizeTrait>(
+    array: &GenericBinaryArray<OffsetSize>,
+    set: &HashSet<ScalarValue>,
+    negated: bool,
+) -> ColumnarValue {
+    let contains_null = set.iter().any(|v| v.is_null());
+    let native_set = set
+        .iter()
+        .flat_map(|v| match v {
+            Binary(v) | LargeBinary(v) => v.as_deref(),
+            datatype => {
+                unreachable!("InList can't reach other data type {} for {}.", datatype, v)
+            }
+        })
+        .collect::<HashSet<_>>();
 
     collection_contains_check!(array, native_set, negated, contains_null)
 }
@@ -432,37 +444,50 @@ impl InListExpr {
             })
             .collect::<Vec<&str>>();
 
-        if negated {
-            if contains_null {
-                Ok(ColumnarValue::Array(Arc::new(
-                    array
-                        .iter()
-                        .map(|x| match x.map(|v| !values.contains(&v)) {
-                            Some(true) => None,
-                            x => x,
-                        })
-                        .collect::<BooleanArray>(),
-                )))
-            } else {
-                Ok(ColumnarValue::Array(Arc::new(not_in_list_utf8(
-                    array, &values,
-                )?)))
-            }
-        } else if contains_null {
-            Ok(ColumnarValue::Array(Arc::new(
-                array
-                    .iter()
-                    .map(|x| match x.map(|v| values.contains(&v)) {
-                        Some(false) => None,
-                        x => x,
-                    })
-                    .collect::<BooleanArray>(),
-            )))
-        } else {
-            Ok(ColumnarValue::Array(Arc::new(in_list_utf8(
-                array, &values,
-            )?)))
-        }
+        Ok(collection_contains_check!(
+            array,
+            values,
+            negated,
+            contains_null
+        ))
+    }
+
+    fn compare_binary<T: OffsetSizeTrait>(
+        &self,
+        array: ArrayRef,
+        list_values: Vec<ColumnarValue>,
+        negated: bool,
+    ) -> Result<ColumnarValue> {
+        let array = array
+            .as_any()
+            .downcast_ref::<GenericBinaryArray<T>>()
+            .unwrap();
+
+        let contains_null = list_values
+            .iter()
+            .any(|v| matches!(v, ColumnarValue::Scalar(s) if s.is_null()));
+        let values = list_values
+            .iter()
+            .flat_map(|expr| match expr {
+                ColumnarValue::Scalar(s) => match s {
+                    ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
+                        Some(v.as_slice())
+                    }
+                    ScalarValue::Binary(None) | ScalarValue::LargeBinary(None) => None,
+                    datatype => unimplemented!("Unexpected type {} for InList", datatype),
+                },
+                ColumnarValue::Array(_) => {
+                    unimplemented!("InList does not yet support nested columns.")
+                }
+            })
+            .collect::<Vec<&[u8]>>();
+
+        Ok(collection_contains_check!(
+            array,
+            values,
+            negated,
+            contains_null
+        ))
     }
 }
 
@@ -597,6 +622,26 @@ impl PhysicalExpr for InListExpr {
                         u64
                     ))
                 }
+                DataType::Date32 => {
+                    let array = array.as_any().downcast_ref::<Date32Array>().unwrap();
+                    Ok(set_contains_for_primitive!(
+                        array,
+                        set,
+                        Date32,
+                        self.negated,
+                        i32
+                    ))
+                }
+                DataType::Date64 => {
+                    let array = array.as_any().downcast_ref::<Date64Array>().unwrap();
+                    Ok(set_contains_for_primitive!(
+                        array,
+                        set,
+                        Date64,
+                        self.negated,
+                        i64
+                    ))
+                }
                 DataType::Float32 => {
                     let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
                     Ok(set_contains_for_float!(
@@ -631,10 +676,78 @@ impl PhysicalExpr for InListExpr {
                         .unwrap();
                     Ok(set_contains_utf8(array, set, self.negated))
                 }
-                DataType::Decimal(_, _) => {
+                DataType::Binary => {
+                    let array = array
+                        .as_any()
+                        .downcast_ref::<GenericBinaryArray<i32>>()
+                        .unwrap();
+                    Ok(set_contains_binary(array, set, self.negated))
+                }
+                DataType::LargeBinary => {
+                    let array = array
+                        .as_any()
+                        .downcast_ref::<GenericBinaryArray<i64>>()
+                        .unwrap();
+                    Ok(set_contains_binary(array, set, self.negated))
+                }
+                DataType::Decimal128(_, _) => {
                     let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
                     Ok(make_set_contains_decimal(array, set, self.negated))
                 }
+                DataType::Timestamp(unit, _) => match unit {
+                    TimeUnit::Second => {
+                        let array = array
+                            .as_any()
+                            .downcast_ref::<TimestampSecondArray>()
+                            .unwrap();
+                        Ok(set_contains_for_primitive!(
+                            array,
+                            set,
+                            TimestampSecond,
+                            self.negated,
+                            i64
+                        ))
+                    }
+                    TimeUnit::Millisecond => {
+                        let array = array
+                            .as_any()
+                            .downcast_ref::<TimestampMillisecondArray>()
+                            .unwrap();
+                        Ok(set_contains_for_primitive!(
+                            array,
+                            set,
+                            TimestampMillisecond,
+                            self.negated,
+                            i64
+                        ))
+                    }
+                    TimeUnit::Microsecond => {
+                        let array = array
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .unwrap();
+                        Ok(set_contains_for_primitive!(
+                            array,
+                            set,
+                            TimestampMicrosecond,
+                            self.negated,
+                            i64
+                        ))
+                    }
+                    TimeUnit::Nanosecond => {
+                        let array = array
+                            .as_any()
+                            .downcast_ref::<TimestampNanosecondArray>()
+                            .unwrap();
+                        Ok(set_contains_for_primitive!(
+                            array,
+                            set,
+                            TimestampNanosecond,
+                            self.negated,
+                            i64
+                        ))
+                    }
+                },
                 datatype => Result::Err(DataFusionError::NotImplemented(format!(
                     "InSet does not support datatype {:?}.",
                     datatype
@@ -743,6 +856,24 @@ impl PhysicalExpr for InListExpr {
                         UInt8Array
                     )
                 }
+                DataType::Date32 => {
+                    make_contains_primitive!(
+                        array,
+                        list_values,
+                        self.negated,
+                        Date32,
+                        Date32Array
+                    )
+                }
+                DataType::Date64 => {
+                    make_contains_primitive!(
+                        array,
+                        list_values,
+                        self.negated,
+                        Date64,
+                        Date64Array
+                    )
+                }
                 DataType::Boolean => Ok(make_contains!(
                     array,
                     list_values,
@@ -756,11 +887,17 @@ impl PhysicalExpr for InListExpr {
                 DataType::LargeUtf8 => {
                     self.compare_utf8::<i64>(array, list_values, self.negated)
                 }
+                DataType::Binary => {
+                    self.compare_binary::<i32>(array, list_values, self.negated)
+                }
+                DataType::LargeBinary => {
+                    self.compare_binary::<i64>(array, list_values, self.negated)
+                }
                 DataType::Null => {
                     let null_array = new_null_array(&DataType::Boolean, array.len());
                     Ok(ColumnarValue::Array(Arc::new(null_array)))
                 }
-                DataType::Decimal(_, _) => {
+                DataType::Decimal128(_, _) => {
                     let decimal_array =
                         array.as_any().downcast_ref::<Decimal128Array>().unwrap();
                     Ok(make_list_contains_decimal(
@@ -769,6 +906,44 @@ impl PhysicalExpr for InListExpr {
                         self.negated,
                     ))
                 }
+                DataType::Timestamp(unit, _) => match unit {
+                    TimeUnit::Second => {
+                        make_contains_primitive!(
+                            array,
+                            list_values,
+                            self.negated,
+                            TimestampSecond,
+                            TimestampSecondArray
+                        )
+                    }
+                    TimeUnit::Millisecond => {
+                        make_contains_primitive!(
+                            array,
+                            list_values,
+                            self.negated,
+                            TimestampMillisecond,
+                            TimestampMillisecondArray
+                        )
+                    }
+                    TimeUnit::Microsecond => {
+                        make_contains_primitive!(
+                            array,
+                            list_values,
+                            self.negated,
+                            TimestampMicrosecond,
+                            TimestampMicrosecondArray
+                        )
+                    }
+                    TimeUnit::Nanosecond => {
+                        make_contains_primitive!(
+                            array,
+                            list_values,
+                            self.negated,
+                            TimestampNanosecond,
+                            TimestampNanosecondArray
+                        )
+                    }
+                },
                 datatype => Result::Err(DataFusionError::NotImplemented(format!(
                     "InList does not support datatype {:?}.",
                     datatype
@@ -855,6 +1030,66 @@ mod tests {
 
         // expression: "a not in ("a", "b")"
         let list = vec![lit("a"), lit("b"), lit(ScalarValue::Utf8(None))];
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_binary() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("a", DataType::Binary, true)]);
+        let a = BinaryArray::from(vec![
+            Some([1, 2, 3].as_slice()),
+            Some([1, 2, 2].as_slice()),
+            None,
+        ]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        // expression: "a in ([1, 2, 3], [4, 5, 6])"
+        let list = vec![lit([1, 2, 3].as_slice()), lit([4, 5, 6].as_slice())];
+        in_list!(
+            batch,
+            list.clone(),
+            &false,
+            vec![Some(true), Some(false), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a not in ([1, 2, 3], [4, 5, 6])"
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), Some(true), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a in ([1, 2, 3], [4, 5, 6], null)"
+        let list = vec![
+            lit([1, 2, 3].as_slice()),
+            lit([4, 5, 6].as_slice()),
+            lit(ScalarValue::Binary(None)),
+        ];
+        in_list!(
+            batch,
+            list.clone(),
+            &false,
+            vec![Some(true), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a in ([1, 2, 3], [4, 5, 6], null)"
         in_list!(
             batch,
             list,
@@ -1030,9 +1265,134 @@ mod tests {
     }
 
     #[test]
+    fn in_list_date64() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("a", DataType::Date64, true)]);
+        let a = Date64Array::from(vec![Some(0), Some(2), None]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        // expression: "a in (0, 1)"
+        let list = vec![lit(Date64(Some(0))), lit(Date64(Some(1)))];
+        in_list!(
+            batch,
+            list,
+            &false,
+            vec![Some(true), Some(false), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a not in (0, 1)"
+        let list = vec![lit(Date64(Some(0))), lit(Date64(Some(1)))];
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), Some(true), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a in (0, 1, NULL)"
+        let list = vec![
+            lit(Date64(Some(0))),
+            lit(Date64(Some(1))),
+            lit(ScalarValue::Null),
+        ];
+        in_list!(
+            batch,
+            list,
+            &false,
+            vec![Some(true), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a not in (0, 1, NULL)"
+        let list = vec![
+            lit(Date64(Some(0))),
+            lit(Date64(Some(1))),
+            lit(ScalarValue::Null),
+        ];
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_date32() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("a", DataType::Date32, true)]);
+        let a = Date32Array::from(vec![Some(0), Some(2), None]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        // expression: "a in (0, 1)"
+        let list = vec![lit(Date32(Some(0))), lit(Date32(Some(1)))];
+        in_list!(
+            batch,
+            list,
+            &false,
+            vec![Some(true), Some(false), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a not in (0, 1)"
+        let list = vec![lit(Date32(Some(0))), lit(Date32(Some(1)))];
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), Some(true), None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a in (0, 1, NULL)"
+        let list = vec![
+            lit(Date32(Some(0))),
+            lit(Date32(Some(1))),
+            lit(ScalarValue::Null),
+        ];
+        in_list!(
+            batch,
+            list,
+            &false,
+            vec![Some(true), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        // expression: "a not in (0, 1, NULL)"
+        let list = vec![
+            lit(Date32(Some(0))),
+            lit(Date32(Some(1))),
+            lit(ScalarValue::Null),
+        ];
+        in_list!(
+            batch,
+            list,
+            &true,
+            vec![Some(false), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn in_list_decimal() -> Result<()> {
         // Now, we can check the NULL type
-        let schema = Schema::new(vec![Field::new("a", DataType::Decimal(13, 4), true)]);
+        let schema =
+            Schema::new(vec![Field::new("a", DataType::Decimal128(13, 4), true)]);
         let array = vec![Some(100_0000_i128), None, Some(200_5000_i128)]
             .into_iter()
             .collect::<Decimal128Array>();
@@ -1277,8 +1637,46 @@ mod tests {
     }
 
     #[test]
+    fn in_list_set_binary() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("a", DataType::Binary, true)]);
+        let a = BinaryArray::from(vec![
+            Some([1, 2, 3].as_slice()),
+            Some([3, 2, 1].as_slice()),
+            None,
+        ]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        let mut list = vec![lit([1, 2, 3].as_slice()), lit(ScalarValue::Binary(None))];
+        for v in 0..OPTIMIZER_INSET_THRESHOLD {
+            list.push(lit([v as u8].as_slice()));
+        }
+
+        in_list!(
+            batch,
+            list.clone(),
+            &false,
+            vec![Some(true), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        in_list!(
+            batch,
+            list.clone(),
+            &true,
+            vec![Some(false), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn in_list_set_decimal() -> Result<()> {
-        let schema = Schema::new(vec![Field::new("a", DataType::Decimal(13, 4), true)]);
+        let schema =
+            Schema::new(vec![Field::new("a", DataType::Decimal128(13, 4), true)]);
         let array = vec![Some(100_0000_i128), Some(200_5000_i128), None]
             .into_iter()
             .collect::<Decimal128Array>();
@@ -1320,7 +1718,8 @@ mod tests {
     #[test]
     fn test_cast_static_filter_to_set() -> Result<()> {
         // random schema
-        let schema = Schema::new(vec![Field::new("a", DataType::Decimal(13, 4), true)]);
+        let schema =
+            Schema::new(vec![Field::new("a", DataType::Decimal128(13, 4), true)]);
         // list of phy expr
         let mut phy_exprs = vec![
             lit(1i64),
@@ -1353,6 +1752,108 @@ mod tests {
         phy_exprs.push(expressions::col("a", &schema)?);
         assert!(try_cast_static_filter_to_set(&phy_exprs, &schema).is_err());
 
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_set_timestamp() -> Result<()> {
+        let schema = Schema::new(vec![Field::new(
+            "a",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]);
+        let a = TimestampMicrosecondArray::from(vec![
+            Some(1388588401000000000),
+            Some(1288588501000000000),
+            None,
+        ]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        let mut list = vec![
+            lit(ScalarValue::TimestampMicrosecond(
+                Some(1388588401000000000),
+                None,
+            )),
+            lit(ScalarValue::TimestampMicrosecond(None, None)),
+            lit(ScalarValue::TimestampMicrosecond(
+                Some(1388588401000000001),
+                None,
+            )),
+        ];
+        let start_ts = 1388588401000000001;
+        for v in start_ts..(start_ts + OPTIMIZER_INSET_THRESHOLD + 4) {
+            list.push(lit(ScalarValue::TimestampMicrosecond(Some(v as i64), None)));
+        }
+
+        in_list!(
+            batch,
+            list.clone(),
+            &false,
+            vec![Some(true), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        in_list!(
+            batch,
+            list.clone(),
+            &true,
+            vec![Some(false), None, None],
+            col_a.clone(),
+            &schema
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_timestamp() -> Result<()> {
+        let schema = Schema::new(vec![Field::new(
+            "a",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]);
+        let a = TimestampMicrosecondArray::from(vec![
+            Some(1388588401000000000),
+            Some(1288588501000000000),
+            None,
+        ]);
+        let col_a = col("a", &schema)?;
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
+
+        let list = vec![
+            lit(ScalarValue::TimestampMicrosecond(
+                Some(1388588401000000000),
+                None,
+            )),
+            lit(ScalarValue::TimestampMicrosecond(
+                Some(1388588401000000001),
+                None,
+            )),
+            lit(ScalarValue::TimestampMicrosecond(
+                Some(1388588401000000002),
+                None,
+            )),
+        ];
+
+        in_list!(
+            batch,
+            list.clone(),
+            &false,
+            vec![Some(true), Some(false), None],
+            col_a.clone(),
+            &schema
+        );
+
+        in_list!(
+            batch,
+            list.clone(),
+            &true,
+            vec![Some(false), Some(true), None],
+            col_a.clone(),
+            &schema
+        );
         Ok(())
     }
 }

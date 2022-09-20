@@ -73,7 +73,7 @@ pub enum BuiltinScalarFunction {
 
     // string functions
     /// construct an array from columns
-    Array,
+    MakeArray,
     /// ascii
     Ascii,
     /// bit_length
@@ -92,6 +92,8 @@ pub enum BuiltinScalarFunction {
     DatePart,
     /// date_trunc
     DateTrunc,
+    /// date_bin
+    DateBin,
     /// initcap
     InitCap,
     /// left
@@ -162,8 +164,10 @@ pub enum BuiltinScalarFunction {
     Upper,
     /// regexp_match
     RegexpMatch,
-    ///struct
+    /// struct
     Struct,
+    /// arrow_typeof
+    ArrowTypeof,
 }
 
 impl BuiltinScalarFunction {
@@ -200,7 +204,7 @@ impl BuiltinScalarFunction {
             BuiltinScalarFunction::Sqrt => Volatility::Immutable,
             BuiltinScalarFunction::Tan => Volatility::Immutable,
             BuiltinScalarFunction::Trunc => Volatility::Immutable,
-            BuiltinScalarFunction::Array => Volatility::Immutable,
+            BuiltinScalarFunction::MakeArray => Volatility::Immutable,
             BuiltinScalarFunction::Ascii => Volatility::Immutable,
             BuiltinScalarFunction::BitLength => Volatility::Immutable,
             BuiltinScalarFunction::Btrim => Volatility::Immutable,
@@ -210,6 +214,7 @@ impl BuiltinScalarFunction {
             BuiltinScalarFunction::ConcatWithSeparator => Volatility::Immutable,
             BuiltinScalarFunction::DatePart => Volatility::Immutable,
             BuiltinScalarFunction::DateTrunc => Volatility::Immutable,
+            BuiltinScalarFunction::DateBin => Volatility::Immutable,
             BuiltinScalarFunction::InitCap => Volatility::Immutable,
             BuiltinScalarFunction::Left => Volatility::Immutable,
             BuiltinScalarFunction::Lpad => Volatility::Immutable,
@@ -245,6 +250,7 @@ impl BuiltinScalarFunction {
             BuiltinScalarFunction::RegexpMatch => Volatility::Immutable,
             BuiltinScalarFunction::Struct => Volatility::Immutable,
             BuiltinScalarFunction::FromUnixtime => Volatility::Immutable,
+            BuiltinScalarFunction::ArrowTypeof => Volatility::Immutable,
 
             // Stable builtin functions
             BuiltinScalarFunction::Now => Volatility::Stable,
@@ -291,8 +297,10 @@ impl FromStr for BuiltinScalarFunction {
             // conditional functions
             "coalesce" => BuiltinScalarFunction::Coalesce,
 
+            // array functions
+            "make_array" => BuiltinScalarFunction::MakeArray,
+
             // string functions
-            "array" => BuiltinScalarFunction::Array,
             "ascii" => BuiltinScalarFunction::Ascii,
             "bit_length" => BuiltinScalarFunction::BitLength,
             "btrim" => BuiltinScalarFunction::Btrim,
@@ -303,6 +311,7 @@ impl FromStr for BuiltinScalarFunction {
             "chr" => BuiltinScalarFunction::Chr,
             "date_part" | "datepart" => BuiltinScalarFunction::DatePart,
             "date_trunc" | "datetrunc" => BuiltinScalarFunction::DateTrunc,
+            "date_bin" => BuiltinScalarFunction::DateBin,
             "initcap" => BuiltinScalarFunction::InitCap,
             "left" => BuiltinScalarFunction::Left,
             "length" => BuiltinScalarFunction::CharacterLength,
@@ -341,6 +350,7 @@ impl FromStr for BuiltinScalarFunction {
             "regexp_match" => BuiltinScalarFunction::RegexpMatch,
             "struct" => BuiltinScalarFunction::Struct,
             "from_unixtime" => BuiltinScalarFunction::FromUnixtime,
+            "arrow_typeof" => BuiltinScalarFunction::ArrowTypeof,
             _ => {
                 return Err(DataFusionError::Plan(format!(
                     "There is no built-in function named {}",

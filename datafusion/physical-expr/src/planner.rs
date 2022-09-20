@@ -16,9 +16,12 @@
 // under the License.
 
 use crate::expressions::try_cast;
+use crate::var_provider::is_system_variables;
 use crate::{
     execution_props::ExecutionProps,
-    expressions::{self, binary, Column, DateIntervalExpr, GetIndexedFieldExpr, Literal},
+    expressions::{
+        self, binary, Column, DateTimeIntervalExpr, GetIndexedFieldExpr, Literal,
+    },
     functions, udf,
     var_provider::VarType,
     PhysicalExpr,
@@ -26,16 +29,32 @@ use crate::{
 use arrow::datatypes::{DataType, Schema};
 use datafusion_common::{DFSchema, DataFusionError, Result, ScalarValue};
 use datafusion_expr::binary_rule::comparison_coercion;
-use datafusion_expr::{Expr, Operator};
+use datafusion_expr::{binary_expr, Expr, Operator};
 use std::sync::Arc;
 
-/// Create a physical expression from a logical expression ([Expr])
+/// Create a physical expression from a logical expression ([Expr]).
+///
+/// # Arguments
+///
+/// * `e` - The logical expression
+/// * `input_dfschema` - The DataFusion schema for the input, used to resolve `Column` references
+///                      to qualified or unqualified fields by name.
+/// * `input_schema` - The Arrow schema for the input, used for determining expression data types
+///                    when performing type coercion.
 pub fn create_physical_expr(
     e: &Expr,
     input_dfschema: &DFSchema,
     input_schema: &Schema,
     execution_props: &ExecutionProps,
 ) -> Result<Arc<dyn PhysicalExpr>> {
+    if input_schema.fields.len() != input_dfschema.fields().len() {
+        return Err(DataFusionError::Internal(format!(
+            "create_physical_expr expected same number of fields, got \
+                     got Arrow schema with {}  and DataFusion schema with {}",
+            input_schema.fields.len(),
+            input_dfschema.fields().len()
+        )));
+    }
     match e {
         Expr::Alias(expr, ..) => Ok(create_physical_expr(
             expr,
@@ -49,7 +68,7 @@ pub fn create_physical_expr(
         }
         Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
         Expr::ScalarVariable(_, variable_names) => {
-            if &variable_names[0][0..2] == "@@" {
+            if is_system_variables(variable_names) {
                 match execution_props.get_var_provider(VarType::System) {
                     Some(provider) => {
                         let scalar_value = provider.get_value(variable_names.clone())?;
@@ -71,6 +90,84 @@ pub fn create_physical_expr(
                 }
             }
         }
+        Expr::IsTrue(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsNotDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(Some(true))),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
+        Expr::IsNotTrue(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(Some(true))),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
+        Expr::IsFalse(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsNotDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(Some(false))),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
+        Expr::IsNotFalse(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(Some(false))),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
+        Expr::IsUnknown(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsNotDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(None)),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
+        Expr::IsNotUnknown(expr) => {
+            let binary_op = binary_expr(
+                expr.as_ref().clone(),
+                Operator::IsDistinctFrom,
+                Expr::Literal(ScalarValue::Boolean(None)),
+            );
+            create_physical_expr(
+                &binary_op,
+                input_dfschema,
+                input_schema,
+                execution_props,
+            )
+        }
         Expr::BinaryExpr { left, op, right } => {
             let lhs = create_physical_expr(
                 left,
@@ -90,10 +187,10 @@ pub fn create_physical_expr(
                 rhs.data_type(input_schema)?,
             ) {
                 (
-                    DataType::Date32 | DataType::Date64,
+                    DataType::Date32 | DataType::Date64 | DataType::Timestamp(_, _),
                     Operator::Plus | Operator::Minus,
                     DataType::Interval(_),
-                ) => Ok(Arc::new(DateIntervalExpr::try_new(
+                ) => Ok(Arc::new(DateTimeIntervalExpr::try_new(
                     lhs,
                     *op,
                     rhs,
@@ -105,6 +202,26 @@ pub fn create_physical_expr(
                     binary(lhs, *op, rhs, input_schema)
                 }
             }
+        }
+        Expr::Like {
+            negated,
+            expr,
+            pattern,
+            escape_char,
+        } => {
+            if escape_char.is_some() {
+                return Err(DataFusionError::Execution(
+                    "LIKE does not support escape_char".to_string(),
+                ));
+            }
+            let op = if *negated {
+                Operator::NotLike
+            } else {
+                Operator::Like
+            };
+            let bin_expr =
+                binary_expr(expr.as_ref().clone(), op, pattern.as_ref().clone());
+            create_physical_expr(&bin_expr, input_dfschema, input_schema, execution_props)
         }
         Expr::Case {
             expr,
@@ -284,19 +401,13 @@ pub fn create_physical_expr(
 
                 let list_exprs = list
                     .iter()
-                    .map(|expr| match expr {
-                        Expr::Literal(ScalarValue::Utf8(None)) => create_physical_expr(
+                    .map(|expr| {
+                        create_physical_expr(
                             expr,
                             input_dfschema,
                             input_schema,
                             execution_props,
-                        ),
-                        _ => create_physical_expr(
-                            expr,
-                            input_dfschema,
-                            input_schema,
-                            execution_props,
-                        ),
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
 

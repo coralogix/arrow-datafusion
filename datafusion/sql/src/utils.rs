@@ -17,7 +17,7 @@
 
 //! SQL Utility Functions
 
-use arrow::datatypes::{DataType, DECIMAL_DEFAULT_SCALE, DECIMAL_MAX_PRECISION};
+use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION, DECIMAL_DEFAULT_SCALE};
 use sqlparser::ast::Ident;
 
 use datafusion_common::{DataFusionError, Result, ScalarValue};
@@ -163,6 +163,7 @@ where
                 fun,
                 args,
                 distinct,
+                filter,
             } => Ok(Expr::AggregateFunction {
                 fun: fun.clone(),
                 args: args
@@ -170,6 +171,7 @@ where
                     .map(|e| clone_with_replacement(e, replacement_fn))
                     .collect::<Result<Vec<Expr>>>()?,
                 distinct: *distinct,
+                filter: filter.clone(),
             }),
             Expr::WindowFunction {
                 fun,
@@ -193,12 +195,13 @@ where
                     .collect::<Result<Vec<_>>>()?,
                 window_frame: *window_frame,
             }),
-            Expr::AggregateUDF { fun, args } => Ok(Expr::AggregateUDF {
+            Expr::AggregateUDF { fun, args, filter } => Ok(Expr::AggregateUDF {
                 fun: fun.clone(),
                 args: args
                     .iter()
                     .map(|e| clone_with_replacement(e, replacement_fn))
                     .collect::<Result<Vec<Expr>>>()?,
+                filter: filter.clone(),
             }),
             Expr::Alias(nested_expr, alias_name) => Ok(Expr::Alias(
                 Box::new(clone_with_replacement(nested_expr, replacement_fn)?),
@@ -231,6 +234,39 @@ where
                 left: Box::new(clone_with_replacement(left, replacement_fn)?),
                 op: *op,
                 right: Box::new(clone_with_replacement(right, replacement_fn)?),
+            }),
+            Expr::Like {
+                negated,
+                expr,
+                pattern,
+                escape_char,
+            } => Ok(Expr::Like {
+                negated: *negated,
+                expr: Box::new(clone_with_replacement(expr, replacement_fn)?),
+                pattern: Box::new(clone_with_replacement(pattern, replacement_fn)?),
+                escape_char: *escape_char,
+            }),
+            Expr::ILike {
+                negated,
+                expr,
+                pattern,
+                escape_char,
+            } => Ok(Expr::ILike {
+                negated: *negated,
+                expr: Box::new(clone_with_replacement(expr, replacement_fn)?),
+                pattern: Box::new(clone_with_replacement(pattern, replacement_fn)?),
+                escape_char: *escape_char,
+            }),
+            Expr::SimilarTo {
+                negated,
+                expr,
+                pattern,
+                escape_char,
+            } => Ok(Expr::SimilarTo {
+                negated: *negated,
+                expr: Box::new(clone_with_replacement(expr, replacement_fn)?),
+                pattern: Box::new(clone_with_replacement(pattern, replacement_fn)?),
+                escape_char: *escape_char,
             }),
             Expr::Case {
                 expr: case_expr_opt,
@@ -284,6 +320,24 @@ where
                 clone_with_replacement(nested_expr, replacement_fn)?,
             ))),
             Expr::IsNull(nested_expr) => Ok(Expr::IsNull(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsTrue(nested_expr) => Ok(Expr::IsTrue(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsFalse(nested_expr) => Ok(Expr::IsFalse(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsUnknown(nested_expr) => Ok(Expr::IsUnknown(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsNotTrue(nested_expr) => Ok(Expr::IsNotTrue(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsNotFalse(nested_expr) => Ok(Expr::IsNotFalse(Box::new(
+                clone_with_replacement(nested_expr, replacement_fn)?,
+            ))),
+            Expr::IsNotUnknown(nested_expr) => Ok(Expr::IsNotUnknown(Box::new(
                 clone_with_replacement(nested_expr, replacement_fn)?,
             ))),
             Expr::Cast {
@@ -447,24 +501,24 @@ pub(crate) fn make_decimal_type(
 ) -> Result<DataType> {
     // postgres like behavior
     let (precision, scale) = match (precision, scale) {
-        (Some(p), Some(s)) => (p as usize, s as usize),
-        (Some(p), None) => (p as usize, 0),
+        (Some(p), Some(s)) => (p as u8, s as u8),
+        (Some(p), None) => (p as u8, 0),
         (None, Some(_)) => {
             return Err(DataFusionError::Internal(
                 "Cannot specify only scale for decimal data type".to_string(),
             ))
         }
-        (None, None) => (DECIMAL_MAX_PRECISION, DECIMAL_DEFAULT_SCALE),
+        (None, None) => (DECIMAL128_MAX_PRECISION, DECIMAL_DEFAULT_SCALE),
     };
 
     // Arrow decimal is i128 meaning 38 maximum decimal digits
-    if precision > DECIMAL_MAX_PRECISION || scale > precision {
+    if precision > DECIMAL128_MAX_PRECISION || scale > precision {
         Err(DataFusionError::Internal(format!(
             "For decimal(precision, scale) precision must be less than or equal to 38 and scale can't be greater than precision. Got ({}, {})",
             precision, scale
         )))
     } else {
-        Ok(DataType::Decimal(precision, scale))
+        Ok(DataType::Decimal128(precision, scale))
     }
 }
 

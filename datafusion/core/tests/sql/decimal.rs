@@ -23,45 +23,45 @@ async fn decimal_cast() -> Result<()> {
     let sql = "select cast(1.23 as decimal(10,4))";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 4),
+        &DataType::Decimal128(10, 4),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+---------------------------------------+",
-        "| CAST(Float64(1.23) AS Decimal(10, 4)) |",
-        "+---------------------------------------+",
-        "| 1.2300                                |",
-        "+---------------------------------------+",
+        "+---------------+",
+        "| Float64(1.23) |",
+        "+---------------+",
+        "| 1.2300        |",
+        "+---------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select cast(cast(1.23 as decimal(10,3)) as decimal(10,4))";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 4),
+        &DataType::Decimal128(10, 4),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+---------------------------------------------------------------+",
-        "| CAST(CAST(Float64(1.23) AS Decimal(10, 3)) AS Decimal(10, 4)) |",
-        "+---------------------------------------------------------------+",
-        "| 1.2300                                                        |",
-        "+---------------------------------------------------------------+",
+        "+---------------+",
+        "| Float64(1.23) |",
+        "+---------------+",
+        "| 1.2300        |",
+        "+---------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select cast(1.2345 as decimal(24,2))";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(24, 2),
+        &DataType::Decimal128(24, 2),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+-----------------------------------------+",
-        "| CAST(Float64(1.2345) AS Decimal(24, 2)) |",
-        "+-----------------------------------------+",
-        "| 1.23                                    |",
-        "+-----------------------------------------+",
+        "+-----------------+",
+        "| Float64(1.2345) |",
+        "+-----------------+",
+        "| 1.23            |",
+        "+-----------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
@@ -75,7 +75,7 @@ async fn decimal_by_sql() -> Result<()> {
     let sql = "SELECT c1 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -110,7 +110,7 @@ async fn decimal_by_filter() -> Result<()> {
     let sql = "select c1 from decimal_simple where c1 > 0.000030";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -133,11 +133,11 @@ async fn decimal_by_filter() -> Result<()> {
     let sql = "select * from decimal_simple where c1 > c5";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     assert_eq!(
-        &DataType::Decimal(12, 7),
+        &DataType::Decimal128(12, 7),
         actual[0].schema().field(4).data_type()
     );
     let expected = vec![
@@ -161,7 +161,7 @@ async fn decimal_agg_function() -> Result<()> {
     let sql = "select min(c1) from decimal_simple where c4=false";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -176,7 +176,7 @@ async fn decimal_agg_function() -> Result<()> {
     let sql = "select max(c1) from decimal_simple where c4=false";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -193,7 +193,7 @@ async fn decimal_agg_function() -> Result<()> {
     let actual = execute_to_batches(&ctx, sql).await;
     // inferred precision is 10+10
     assert_eq!(
-        &DataType::Decimal(20, 6),
+        &DataType::Decimal128(20, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -211,7 +211,7 @@ async fn decimal_agg_function() -> Result<()> {
     let sql = "select avg(c1) from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(14, 10),
+        &DataType::Decimal128(14, 10),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -234,7 +234,7 @@ async fn decimal_logic_op() -> Result<()> {
     let sql = "select * from decimal_simple where c1=CAST(0.00002 as Decimal(10,8))";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -274,7 +274,7 @@ async fn decimal_logic_op() -> Result<()> {
     let sql = "select * from decimal_simple where 0.00002 > c1";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -290,7 +290,7 @@ async fn decimal_logic_op() -> Result<()> {
     let sql = "select * from decimal_simple where c1 <= 0.00002";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -308,7 +308,7 @@ async fn decimal_logic_op() -> Result<()> {
     let sql = "select * from decimal_simple where c1 > 0.00002";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -335,7 +335,7 @@ async fn decimal_logic_op() -> Result<()> {
     let sql = "select * from decimal_simple where c1 >= 0.00002";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -372,232 +372,232 @@ async fn decimal_arithmetic_op() -> Result<()> {
     let actual = execute_to_batches(&ctx, sql).await;
     // array decimal(10,6) +  scalar decimal(20,0) => decimal(21,6)
     assert_eq!(
-        &DataType::Decimal(27, 6),
+        &DataType::Decimal128(27, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+---------------------------------+",
-        "| decimal_simple.c1 Plus Int64(1) |",
-        "+---------------------------------+",
-        "| 1.000010                        |",
-        "| 1.000020                        |",
-        "| 1.000020                        |",
-        "| 1.000030                        |",
-        "| 1.000030                        |",
-        "| 1.000030                        |",
-        "| 1.000040                        |",
-        "| 1.000040                        |",
-        "| 1.000040                        |",
-        "| 1.000040                        |",
-        "| 1.000050                        |",
-        "| 1.000050                        |",
-        "| 1.000050                        |",
-        "| 1.000050                        |",
-        "| 1.000050                        |",
-        "+---------------------------------+",
+        "+----------------------------------------------------+",
+        "| decimal_simple.c1 + Decimal128(Some(1000000),27,6) |",
+        "+----------------------------------------------------+",
+        "| 1.000010                                           |",
+        "| 1.000020                                           |",
+        "| 1.000020                                           |",
+        "| 1.000030                                           |",
+        "| 1.000030                                           |",
+        "| 1.000030                                           |",
+        "| 1.000040                                           |",
+        "| 1.000040                                           |",
+        "| 1.000040                                           |",
+        "| 1.000040                                           |",
+        "| 1.000050                                           |",
+        "| 1.000050                                           |",
+        "| 1.000050                                           |",
+        "| 1.000050                                           |",
+        "| 1.000050                                           |",
+        "+----------------------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     // array decimal(10,6) + array decimal(12,7) => decimal(13,7)
     let sql = "select c1+c5 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(13, 7),
+        &DataType::Decimal128(13, 7),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+------------------------------------------+",
-        "| decimal_simple.c1 Plus decimal_simple.c5 |",
-        "+------------------------------------------+",
-        "| 0.0000240                                |",
-        "| 0.0000450                                |",
-        "| 0.0000390                                |",
-        "| 0.0000620                                |",
-        "| 0.0000650                                |",
-        "| 0.0000410                                |",
-        "| 0.0000840                                |",
-        "| 0.0000800                                |",
-        "| 0.0000800                                |",
-        "| 0.0000840                                |",
-        "| 0.0001020                                |",
-        "| 0.0001280                                |",
-        "| 0.0000830                                |",
-        "| 0.0001180                                |",
-        "| 0.0001500                                |",
-        "+------------------------------------------+",
+        "+---------------------------------------+",
+        "| decimal_simple.c1 + decimal_simple.c5 |",
+        "+---------------------------------------+",
+        "| 0.0000240                             |",
+        "| 0.0000450                             |",
+        "| 0.0000390                             |",
+        "| 0.0000620                             |",
+        "| 0.0000650                             |",
+        "| 0.0000410                             |",
+        "| 0.0000840                             |",
+        "| 0.0000800                             |",
+        "| 0.0000800                             |",
+        "| 0.0000840                             |",
+        "| 0.0001020                             |",
+        "| 0.0001280                             |",
+        "| 0.0000830                             |",
+        "| 0.0001180                             |",
+        "| 0.0001500                             |",
+        "+---------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     // subtract
     let sql = "select c1-1 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(27, 6),
+        &DataType::Decimal128(27, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+----------------------------------+",
-        "| decimal_simple.c1 Minus Int64(1) |",
-        "+----------------------------------+",
-        "| -0.999990                        |",
-        "| -0.999980                        |",
-        "| -0.999980                        |",
-        "| -0.999970                        |",
-        "| -0.999970                        |",
-        "| -0.999970                        |",
-        "| -0.999960                        |",
-        "| -0.999960                        |",
-        "| -0.999960                        |",
-        "| -0.999960                        |",
-        "| -0.999950                        |",
-        "| -0.999950                        |",
-        "| -0.999950                        |",
-        "| -0.999950                        |",
-        "| -0.999950                        |",
-        "+----------------------------------+",
+        "+----------------------------------------------------+",
+        "| decimal_simple.c1 - Decimal128(Some(1000000),27,6) |",
+        "+----------------------------------------------------+",
+        "| -0.999990                                          |",
+        "| -0.999980                                          |",
+        "| -0.999980                                          |",
+        "| -0.999970                                          |",
+        "| -0.999970                                          |",
+        "| -0.999970                                          |",
+        "| -0.999960                                          |",
+        "| -0.999960                                          |",
+        "| -0.999960                                          |",
+        "| -0.999960                                          |",
+        "| -0.999950                                          |",
+        "| -0.999950                                          |",
+        "| -0.999950                                          |",
+        "| -0.999950                                          |",
+        "| -0.999950                                          |",
+        "+----------------------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select c1-c5 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(13, 7),
+        &DataType::Decimal128(13, 7),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+-------------------------------------------+",
-        "| decimal_simple.c1 Minus decimal_simple.c5 |",
-        "+-------------------------------------------+",
-        "| -0.0000040                                |",
-        "| -0.0000050                                |",
-        "| 0.0000010                                 |",
-        "| -0.0000020                                |",
-        "| -0.0000050                                |",
-        "| 0.0000190                                 |",
-        "| -0.0000040                                |",
-        "| 0.0000000                                 |",
-        "| 0.0000000                                 |",
-        "| -0.0000040                                |",
-        "| -0.0000020                                |",
-        "| -0.0000280                                |",
-        "| 0.0000170                                 |",
-        "| -0.0000180                                |",
-        "| -0.0000500                                |",
-        "+-------------------------------------------+",
+        "+---------------------------------------+",
+        "| decimal_simple.c1 - decimal_simple.c5 |",
+        "+---------------------------------------+",
+        "| -0.0000040                            |",
+        "| -0.0000050                            |",
+        "| 0.0000010                             |",
+        "| -0.0000020                            |",
+        "| -0.0000050                            |",
+        "| 0.0000190                             |",
+        "| -0.0000040                            |",
+        "| 0.0000000                             |",
+        "| 0.0000000                             |",
+        "| -0.0000040                            |",
+        "| -0.0000020                            |",
+        "| -0.0000280                            |",
+        "| 0.0000170                             |",
+        "| -0.0000180                            |",
+        "| -0.0000500                            |",
+        "+---------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     // multiply
     let sql = "select c1*20 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(31, 6),
+        &DataType::Decimal128(31, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+--------------------------------------+",
-        "| decimal_simple.c1 Multiply Int64(20) |",
-        "+--------------------------------------+",
-        "| 0.000200                             |",
-        "| 0.000400                             |",
-        "| 0.000400                             |",
-        "| 0.000600                             |",
-        "| 0.000600                             |",
-        "| 0.000600                             |",
-        "| 0.000800                             |",
-        "| 0.000800                             |",
-        "| 0.000800                             |",
-        "| 0.000800                             |",
-        "| 0.001000                             |",
-        "| 0.001000                             |",
-        "| 0.001000                             |",
-        "| 0.001000                             |",
-        "| 0.001000                             |",
-        "+--------------------------------------+",
+        "+-----------------------------------------------------+",
+        "| decimal_simple.c1 * Decimal128(Some(20000000),31,6) |",
+        "+-----------------------------------------------------+",
+        "| 0.000200                                            |",
+        "| 0.000400                                            |",
+        "| 0.000400                                            |",
+        "| 0.000600                                            |",
+        "| 0.000600                                            |",
+        "| 0.000600                                            |",
+        "| 0.000800                                            |",
+        "| 0.000800                                            |",
+        "| 0.000800                                            |",
+        "| 0.000800                                            |",
+        "| 0.001000                                            |",
+        "| 0.001000                                            |",
+        "| 0.001000                                            |",
+        "| 0.001000                                            |",
+        "| 0.001000                                            |",
+        "+-----------------------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select c1*c5 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(23, 13),
+        &DataType::Decimal128(23, 13),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+----------------------------------------------+",
-        "| decimal_simple.c1 Multiply decimal_simple.c5 |",
-        "+----------------------------------------------+",
-        "| 0.0000000001400                              |",
-        "| 0.0000000005000                              |",
-        "| 0.0000000003800                              |",
-        "| 0.0000000009600                              |",
-        "| 0.0000000010500                              |",
-        "| 0.0000000003300                              |",
-        "| 0.0000000017600                              |",
-        "| 0.0000000016000                              |",
-        "| 0.0000000016000                              |",
-        "| 0.0000000017600                              |",
-        "| 0.0000000026000                              |",
-        "| 0.0000000039000                              |",
-        "| 0.0000000016500                              |",
-        "| 0.0000000034000                              |",
-        "| 0.0000000050000                              |",
-        "+----------------------------------------------+",
+        "+---------------------------------------+",
+        "| decimal_simple.c1 * decimal_simple.c5 |",
+        "+---------------------------------------+",
+        "| 0.0000000001400                       |",
+        "| 0.0000000005000                       |",
+        "| 0.0000000003800                       |",
+        "| 0.0000000009600                       |",
+        "| 0.0000000010500                       |",
+        "| 0.0000000003300                       |",
+        "| 0.0000000017600                       |",
+        "| 0.0000000016000                       |",
+        "| 0.0000000016000                       |",
+        "| 0.0000000017600                       |",
+        "| 0.0000000026000                       |",
+        "| 0.0000000039000                       |",
+        "| 0.0000000016500                       |",
+        "| 0.0000000034000                       |",
+        "| 0.0000000050000                       |",
+        "+---------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
     // divide
     let sql = "select c1/cast(0.00001 as decimal(5,5)) from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(21, 12),
+        &DataType::Decimal128(21, 12),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+-------------------------------------------------------------+",
-        "| decimal_simple.c1 / CAST(Float64(0.00001) AS Decimal(5, 5)) |",
-        "+-------------------------------------------------------------+",
-        "| 1.000000000000                                              |",
-        "| 2.000000000000                                              |",
-        "| 2.000000000000                                              |",
-        "| 3.000000000000                                              |",
-        "| 3.000000000000                                              |",
-        "| 3.000000000000                                              |",
-        "| 4.000000000000                                              |",
-        "| 4.000000000000                                              |",
-        "| 4.000000000000                                              |",
-        "| 4.000000000000                                              |",
-        "| 5.000000000000                                              |",
-        "| 5.000000000000                                              |",
-        "| 5.000000000000                                              |",
-        "| 5.000000000000                                              |",
-        "| 5.000000000000                                              |",
-        "+-------------------------------------------------------------+",
+        "+--------------------------------------+",
+        "| decimal_simple.c1 / Float64(0.00001) |",
+        "+--------------------------------------+",
+        "| 1.000000000000                       |",
+        "| 2.000000000000                       |",
+        "| 2.000000000000                       |",
+        "| 3.000000000000                       |",
+        "| 3.000000000000                       |",
+        "| 3.000000000000                       |",
+        "| 4.000000000000                       |",
+        "| 4.000000000000                       |",
+        "| 4.000000000000                       |",
+        "| 4.000000000000                       |",
+        "| 5.000000000000                       |",
+        "| 5.000000000000                       |",
+        "| 5.000000000000                       |",
+        "| 5.000000000000                       |",
+        "| 5.000000000000                       |",
+        "+--------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select c1/c5 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(30, 19),
+        &DataType::Decimal128(30, 19),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+--------------------------------------------+",
-        "| decimal_simple.c1 Divide decimal_simple.c5 |",
-        "+--------------------------------------------+",
-        "| 0.7142857142857143296                      |",
-        "| 0.8000000000000000000                      |",
-        "| 1.0526315789473683456                      |",
-        "| 0.9375000000000000000                      |",
-        "| 0.8571428571428571136                      |",
-        "| 2.7272727272727269376                      |",
-        "| 0.9090909090909090816                      |",
-        "| 1.0000000000000000000                      |",
-        "| 1.0000000000000000000                      |",
-        "| 0.9090909090909090816                      |",
-        "| 0.9615384615384614912                      |",
-        "| 0.6410256410256410624                      |",
-        "| 1.5151515151515152384                      |",
-        "| 0.7352941176470588416                      |",
-        "| 0.5000000000000000000                      |",
-        "+--------------------------------------------+",
+        "+---------------------------------------+",
+        "| decimal_simple.c1 / decimal_simple.c5 |",
+        "+---------------------------------------+",
+        "| 0.7142857142857143296                 |",
+        "| 0.8000000000000000000                 |",
+        "| 1.0526315789473683456                 |",
+        "| 0.9375000000000000000                 |",
+        "| 0.8571428571428571136                 |",
+        "| 2.7272727272727269376                 |",
+        "| 0.9090909090909090816                 |",
+        "| 1.0000000000000000000                 |",
+        "| 1.0000000000000000000                 |",
+        "| 0.9090909090909090816                 |",
+        "| 0.9615384615384614912                 |",
+        "| 0.6410256410256410624                 |",
+        "| 1.5151515151515152384                 |",
+        "| 0.7352941176470588416                 |",
+        "| 0.5000000000000000000                 |",
+        "+---------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
@@ -605,58 +605,58 @@ async fn decimal_arithmetic_op() -> Result<()> {
     let sql = "select c5%cast(0.00001 as decimal(5,5)) from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(7, 7),
+        &DataType::Decimal128(7, 7),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+-------------------------------------------------------------+",
-        "| decimal_simple.c5 % CAST(Float64(0.00001) AS Decimal(5, 5)) |",
-        "+-------------------------------------------------------------+",
-        "| 0.0000040                                                   |",
-        "| 0.0000050                                                   |",
-        "| 0.0000090                                                   |",
-        "| 0.0000020                                                   |",
-        "| 0.0000050                                                   |",
-        "| 0.0000010                                                   |",
-        "| 0.0000040                                                   |",
-        "| 0.0000000                                                   |",
-        "| 0.0000000                                                   |",
-        "| 0.0000040                                                   |",
-        "| 0.0000020                                                   |",
-        "| 0.0000080                                                   |",
-        "| 0.0000030                                                   |",
-        "| 0.0000080                                                   |",
-        "| 0.0000000                                                   |",
-        "+-------------------------------------------------------------+",
+        "+--------------------------------------+",
+        "| decimal_simple.c5 % Float64(0.00001) |",
+        "+--------------------------------------+",
+        "| 0.0000040                            |",
+        "| 0.0000050                            |",
+        "| 0.0000090                            |",
+        "| 0.0000020                            |",
+        "| 0.0000050                            |",
+        "| 0.0000010                            |",
+        "| 0.0000040                            |",
+        "| 0.0000000                            |",
+        "| 0.0000000                            |",
+        "| 0.0000040                            |",
+        "| 0.0000020                            |",
+        "| 0.0000080                            |",
+        "| 0.0000030                            |",
+        "| 0.0000080                            |",
+        "| 0.0000000                            |",
+        "+--------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
     let sql = "select c1%c5 from decimal_simple";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(11, 7),
+        &DataType::Decimal128(11, 7),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
-        "+--------------------------------------------+",
-        "| decimal_simple.c1 Modulo decimal_simple.c5 |",
-        "+--------------------------------------------+",
-        "| 0.0000100                                  |",
-        "| 0.0000200                                  |",
-        "| 0.0000010                                  |",
-        "| 0.0000300                                  |",
-        "| 0.0000300                                  |",
-        "| 0.0000080                                  |",
-        "| 0.0000400                                  |",
-        "| 0.0000000                                  |",
-        "| 0.0000000                                  |",
-        "| 0.0000400                                  |",
-        "| 0.0000500                                  |",
-        "| 0.0000500                                  |",
-        "| 0.0000170                                  |",
-        "| 0.0000500                                  |",
-        "| 0.0000500                                  |",
-        "+--------------------------------------------+",
+        "+---------------------------------------+",
+        "| decimal_simple.c1 % decimal_simple.c5 |",
+        "+---------------------------------------+",
+        "| 0.0000100                             |",
+        "| 0.0000200                             |",
+        "| 0.0000010                             |",
+        "| 0.0000300                             |",
+        "| 0.0000300                             |",
+        "| 0.0000080                             |",
+        "| 0.0000400                             |",
+        "| 0.0000000                             |",
+        "| 0.0000000                             |",
+        "| 0.0000400                             |",
+        "| 0.0000500                             |",
+        "| 0.0000500                             |",
+        "| 0.0000170                             |",
+        "| 0.0000500                             |",
+        "| 0.0000500                             |",
+        "+---------------------------------------+",
     ];
     assert_batches_eq!(expected, &actual);
 
@@ -670,7 +670,7 @@ async fn decimal_sort() -> Result<()> {
     let sql = "select * from decimal_simple where c1 >= 0.00004 order by c1";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -693,7 +693,7 @@ async fn decimal_sort() -> Result<()> {
     let sql = "select * from decimal_simple where c1 >= 0.00004 order by c1 desc";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -716,7 +716,7 @@ async fn decimal_sort() -> Result<()> {
     let sql = "select * from decimal_simple where c1 < 0.00003 order by c1 desc,c4";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(0).data_type()
     );
     let expected = vec![
@@ -740,7 +740,7 @@ async fn decimal_group_function() -> Result<()> {
     let sql = "select count(*),c1 from decimal_simple group by c1 order by c1";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(1).data_type()
     );
     let expected = vec![
@@ -759,7 +759,7 @@ async fn decimal_group_function() -> Result<()> {
     let sql = "select count(*),c1,c4 from decimal_simple group by c1,c4 order by c1,c4";
     let actual = execute_to_batches(&ctx, sql).await;
     assert_eq!(
-        &DataType::Decimal(10, 6),
+        &DataType::Decimal128(10, 6),
         actual[0].schema().field(1).data_type()
     );
     let expected = vec![

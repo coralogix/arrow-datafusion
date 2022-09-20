@@ -62,7 +62,7 @@ use std::sync::Arc;
 /// let df = ctx.read_csv("tests/example.csv", CsvReadOptions::new()).await?;
 /// let df = df.filter(col("a").lt_eq(col("b")))?
 ///            .aggregate(vec![col("a")], vec![min(col("b"))])?
-///            .limit(None, Some(100))?;
+///            .limit(0, Some(100))?;
 /// let results = df.collect();
 /// # Ok(())
 /// # }
@@ -84,8 +84,25 @@ impl DataFrame {
 
     /// Create a physical plan
     pub async fn create_physical_plan(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        let state = self.session_state.read().clone();
-        state.create_physical_plan(&self.plan).await
+        // this function is copied from SessionContext function of the
+        // same name
+        let state_cloned = {
+            let mut state = self.session_state.write();
+            state.execution_props.start_execution();
+
+            // We need to clone `state` to release the lock that is not `Send`. We could
+            // make the lock `Send` by using `tokio::sync::Mutex`, but that would require to
+            // propagate async even to the `LogicalPlan` building methods.
+            // Cloning `state` here is fine as we then pass it as immutable `&state`, which
+            // means that we avoid write consistency issues as the cloned version will not
+            // be written to. As for eventual modifications that would be applied to the
+            // original state after it has been cloned, they will not be picked up by the
+            // clone but that is okay, as it is equivalent to postponing the state update
+            // by keeping the lock until the end of the function scope.
+            state.clone()
+        };
+
+        state_cloned.create_physical_plan(&self.plan).await
     }
 
     /// Filter the DataFrame by column. Returns a new DataFrame only containing the
@@ -200,15 +217,11 @@ impl DataFrame {
     /// # async fn main() -> Result<()> {
     /// let ctx = SessionContext::new();
     /// let df = ctx.read_csv("tests/example.csv", CsvReadOptions::new()).await?;
-    /// let df = df.limit(None, Some(100))?;
+    /// let df = df.limit(0, Some(100))?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn limit(
-        &self,
-        skip: Option<usize>,
-        fetch: Option<usize>,
-    ) -> Result<Arc<DataFrame>> {
+    pub fn limit(&self, skip: usize, fetch: Option<usize>) -> Result<Arc<DataFrame>> {
         let plan = LogicalPlanBuilder::from(self.plan.clone())
             .limit(skip, fetch)?
             .build()?;
@@ -421,7 +434,7 @@ impl DataFrame {
     /// # }
     /// ```
     pub async fn show_limit(&self, num: usize) -> Result<()> {
-        let results = self.limit(None, Some(num))?.collect().await?;
+        let results = self.limit(0, Some(num))?.collect().await?;
         Ok(pretty::print_batches(&results)?)
     }
 
@@ -503,7 +516,12 @@ impl DataFrame {
         self.plan.schema()
     }
 
-    /// Return the logical plan represented by this DataFrame.
+    /// Return the unoptimized logical plan represented by this DataFrame.
+    pub fn to_unoptimized_plan(&self) -> LogicalPlan {
+        self.plan.clone()
+    }
+
+    /// Return the optimized logical plan represented by this DataFrame.
     pub fn to_logical_plan(&self) -> Result<LogicalPlan> {
         // Optimize the plan first for better UX
         let state = self.session_state.read().clone();
@@ -521,7 +539,7 @@ impl DataFrame {
     /// # async fn main() -> Result<()> {
     /// let ctx = SessionContext::new();
     /// let df = ctx.read_csv("tests/example.csv", CsvReadOptions::new()).await?;
-    /// let batches = df.limit(None, Some(100))?.explain(false, false)?.collect().await?;
+    /// let batches = df.limit(0, Some(100))?.explain(false, false)?.collect().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -621,7 +639,7 @@ impl DataFrame {
         plan_to_json(&state, plan, path).await
     }
 
-    /// Create a projection based on arbitrary expressions.
+    /// Add an additional column to the DataFrame.
     ///
     /// ```
     /// # use datafusion::prelude::*;
@@ -767,7 +785,7 @@ impl TableProvider for DataFrame {
         Self::new(
             self.session_state.clone(),
             &limit
-                .map_or_else(|| Ok(expr.clone()), |n| expr.limit(None, Some(n)))?
+                .map_or_else(|| Ok(expr.clone()), |n| expr.limit(0, Some(n)))?
                 .plan
                 .clone(),
         )
@@ -783,12 +801,12 @@ mod tests {
     use super::*;
     use crate::execution::options::CsvReadOptions;
     use crate::physical_plan::ColumnarValue;
+    use crate::test_util;
     use crate::{assert_batches_sorted_eq, execution::context::SessionContext};
-    use crate::{logical_plan::*, test_util};
     use arrow::datatypes::DataType;
-    use datafusion_expr::Volatility;
     use datafusion_expr::{
-        BuiltInWindowFunction, ScalarFunctionImplementation, WindowFunction,
+        avg, cast, count, count_distinct, create_udf, lit, max, min, sum,
+        BuiltInWindowFunction, ScalarFunctionImplementation, Volatility, WindowFunction,
     };
 
     #[tokio::test]
@@ -901,9 +919,7 @@ mod tests {
     async fn limit() -> Result<()> {
         // build query using Table API
         let t = test_table().await?;
-        let t2 = t
-            .select_columns(&["c1", "c2", "c11"])?
-            .limit(None, Some(10))?;
+        let t2 = t.select_columns(&["c1", "c2", "c11"])?.limit(0, Some(10))?;
         let plan = t2.plan.clone();
 
         // build query using SQL
@@ -922,7 +938,7 @@ mod tests {
         let df = test_table().await?;
         let df = df
             .select_columns(&["c1", "c2", "c11"])?
-            .limit(None, Some(10))?
+            .limit(0, Some(10))?
             .explain(false, false)?;
         let plan = df.plan.clone();
 
@@ -1093,7 +1109,7 @@ mod tests {
         table_name: &str,
     ) -> Result<()> {
         let schema = test_util::aggr_test_schema();
-        let testdata = crate::test_util::arrow_test_data();
+        let testdata = test_util::arrow_test_data();
         ctx.register_csv(
             table_name,
             &format!("{}/csv/aggregate_test_100.csv", testdata),
@@ -1183,7 +1199,7 @@ mod tests {
             .await?
             .select_columns(&["c1", "c2", "c3"])?
             .filter(col("c2").eq(lit(3)).and(col("c1").eq(lit("a"))))?
-            .limit(None, Some(1))?
+            .limit(0, Some(1))?
             .sort(vec![
                 // make the test deterministic
                 col("c1").sort(true, true),
@@ -1226,7 +1242,7 @@ mod tests {
                 col("t2.c2").sort(true, true),
                 col("t2.c3").sort(true, true),
             ])?
-            .limit(None, Some(1))?;
+            .limit(0, Some(1))?;
 
         let df_results = df.collect().await?;
         assert_batches_sorted_eq!(
@@ -1241,9 +1257,20 @@ mod tests {
         );
 
         let df_renamed = df.with_column_renamed("t1.c1", "AAA")?;
+
         assert_eq!("\
         Projection: #t1.c1 AS AAA, #t1.c2, #t1.c3, #t2.c1, #t2.c2, #t2.c3\
-        \n  Limit: skip=None, fetch=1\
+        \n  Limit: skip=0, fetch=1\
+        \n    Sort: #t1.c1 ASC NULLS FIRST, #t1.c2 ASC NULLS FIRST, #t1.c3 ASC NULLS FIRST, #t2.c1 ASC NULLS FIRST, #t2.c2 ASC NULLS FIRST, #t2.c3 ASC NULLS FIRST\
+        \n      Inner Join: #t1.c1 = #t2.c1\
+        \n        TableScan: t1\
+        \n        TableScan: t2",
+            format!("{:?}", df_renamed.to_unoptimized_plan())
+        );
+
+        assert_eq!("\
+        Projection: #t1.c1 AS AAA, #t1.c2, #t1.c3, #t2.c1, #t2.c2, #t2.c3\
+        \n  Limit: skip=0, fetch=1\
         \n    Sort: #t1.c1 ASC NULLS FIRST, #t1.c2 ASC NULLS FIRST, #t1.c3 ASC NULLS FIRST, #t2.c1 ASC NULLS FIRST, #t2.c2 ASC NULLS FIRST, #t2.c3 ASC NULLS FIRST\
         \n      Inner Join: #t1.c1 = #t2.c1\
         \n        TableScan: t1 projection=[c1, c2, c3]\
@@ -1260,6 +1287,29 @@ mod tests {
                 "+-----+----+-----+----+----+-----+",
                 "| a   | 1  | -85 | a  | 1  | -85 |",
                 "+-----+----+-----+----+----+-----+",
+            ],
+            &df_results
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cast_expr_test() -> Result<()> {
+        let df = test_table()
+            .await?
+            .select_columns(&["c2", "c3"])?
+            .limit(0, Some(1))?
+            .with_column("sum", cast(col("c2") + col("c3"), DataType::Int64))?;
+
+        let df_results = df.collect().await?;
+        assert_batches_sorted_eq!(
+            vec![
+                "+----+----+-----+",
+                "| c2 | c3 | sum |",
+                "+----+----+-----+",
+                "| 2  | 1  | 3   |",
+                "+----+----+-----+",
             ],
             &df_results
         );

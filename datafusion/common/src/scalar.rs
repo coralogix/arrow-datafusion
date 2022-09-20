@@ -27,9 +27,9 @@ use arrow::{
         IntervalMonthDayNanoType, IntervalUnit, IntervalYearMonthType, TimeUnit,
         TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
         TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
-        DECIMAL_MAX_PRECISION,
+        DECIMAL128_MAX_PRECISION,
     },
-    util::decimal::{BasicDecimal, Decimal128},
+    util::decimal::Decimal128,
 };
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
@@ -52,7 +52,7 @@ pub enum ScalarValue {
     /// 64bit float
     Float64(Option<f64>),
     /// 128bit decimal, using the i128 to represent the decimal
-    Decimal128(Option<i128>, usize, usize),
+    Decimal128(Option<i128>, u8, u8),
     /// signed 8bit int
     Int8(Option<i8>),
     /// signed 16bit int
@@ -83,6 +83,8 @@ pub enum ScalarValue {
     Date32(Option<i32>),
     /// Date stored as a signed 64bit int milliseconds since UNIX epoch 1970-01-01
     Date64(Option<i64>),
+    /// Time stored as a signed 64bit int as nanoseconds since midnight
+    Time64(Option<i64>),
     /// Timestamp Second
     TimestampSecond(Option<i64>, Option<String>),
     /// Timestamp Milliseconds
@@ -163,6 +165,8 @@ impl PartialEq for ScalarValue {
             (Date32(_), _) => false,
             (Date64(v1), Date64(v2)) => v1.eq(v2),
             (Date64(_), _) => false,
+            (Time64(v1), Time64(v2)) => v1.eq(v2),
+            (Time64(_), _) => false,
             (TimestampSecond(v1, _), TimestampSecond(v2, _)) => v1.eq(v2),
             (TimestampSecond(_, _), _) => false,
             (TimestampMillisecond(v1, _), TimestampMillisecond(v2, _)) => v1.eq(v2),
@@ -255,6 +259,8 @@ impl PartialOrd for ScalarValue {
             (Date32(_), _) => None,
             (Date64(v1), Date64(v2)) => v1.partial_cmp(v2),
             (Date64(_), _) => None,
+            (Time64(v1), Time64(v2)) => v1.partial_cmp(v2),
+            (Time64(_), _) => None,
             (TimestampSecond(v1, _), TimestampSecond(v2, _)) => v1.partial_cmp(v2),
             (TimestampSecond(_, _), _) => None,
             (TimestampMillisecond(v1, _), TimestampMillisecond(v2, _)) => {
@@ -338,6 +344,7 @@ impl std::hash::Hash for ScalarValue {
             }
             Date32(v) => v.hash(state),
             Date64(v) => v.hash(state),
+            Time64(v) => v.hash(state),
             TimestampSecond(v, _) => v.hash(state),
             TimestampMillisecond(v, _) => v.hash(state),
             TimestampMicrosecond(v, _) => v.hash(state),
@@ -453,6 +460,7 @@ macro_rules! typed_cast {
     }};
 }
 
+// keep until https://github.com/apache/arrow-rs/issues/2054 is finished
 macro_rules! build_list {
     ($VALUE_BUILDER_TY:ident, $SCALAR_TY:ident, $VALUES:expr, $SIZE:expr) => {{
         match $VALUES {
@@ -520,9 +528,22 @@ macro_rules! build_timestamp_list {
     }};
 }
 
+macro_rules! new_builder {
+    (StringBuilder, $len:expr) => {
+        StringBuilder::new()
+    };
+    (LargeStringBuilder, $len:expr) => {
+        LargeStringBuilder::new()
+    };
+    ($el:ident, $len:expr) => {{
+        <$el>::with_capacity($len)
+    }};
+}
+
 macro_rules! build_values_list {
     ($VALUE_BUILDER_TY:ident, $SCALAR_TY:ident, $VALUES:expr, $SIZE:expr) => {{
-        let mut builder = ListBuilder::new($VALUE_BUILDER_TY::new($VALUES.len()));
+        let builder = new_builder!($VALUE_BUILDER_TY, $VALUES.len());
+        let mut builder = ListBuilder::new(builder);
 
         for _ in 0..$SIZE {
             for scalar_value in $VALUES {
@@ -545,7 +566,8 @@ macro_rules! build_values_list {
 
 macro_rules! build_values_list_tz {
     ($VALUE_BUILDER_TY:ident, $SCALAR_TY:ident, $VALUES:expr, $SIZE:expr) => {{
-        let mut builder = ListBuilder::new($VALUE_BUILDER_TY::new($VALUES.len()));
+        let mut builder =
+            ListBuilder::new($VALUE_BUILDER_TY::with_capacity($VALUES.len()));
 
         for _ in 0..$SIZE {
             for scalar_value in $VALUES {
@@ -605,13 +627,9 @@ macro_rules! eq_array_primitive {
 
 impl ScalarValue {
     /// Create a decimal Scalar from value/precision and scale.
-    pub fn try_new_decimal128(
-        value: i128,
-        precision: usize,
-        scale: usize,
-    ) -> Result<Self> {
+    pub fn try_new_decimal128(value: i128, precision: u8, scale: u8) -> Result<Self> {
         // make sure the precision and scale is valid
-        if precision <= DECIMAL_MAX_PRECISION && scale <= precision {
+        if precision <= DECIMAL128_MAX_PRECISION && scale <= precision {
             return Ok(ScalarValue::Decimal128(Some(value), precision, scale));
         }
         Err(DataFusionError::Internal(format!(
@@ -641,6 +659,11 @@ impl ScalarValue {
         ScalarValue::IntervalMonthDayNano(Some(val))
     }
 
+    /// Create a new nullable ScalarValue::List with the specified child_type
+    pub fn new_list(scalars: Option<Vec<Self>>, child_type: DataType) -> Self {
+        Self::List(scalars, Box::new(Field::new("item", child_type, true)))
+    }
+
     /// Getter for the `DataType` of the value
     pub fn get_datatype(&self) -> DataType {
         match self {
@@ -654,7 +677,7 @@ impl ScalarValue {
             ScalarValue::Int32(_) => DataType::Int32,
             ScalarValue::Int64(_) => DataType::Int64,
             ScalarValue::Decimal128(_, precision, scale) => {
-                DataType::Decimal(*precision, *scale)
+                DataType::Decimal128(*precision, *scale)
             }
             ScalarValue::TimestampSecond(_, tz_opt) => {
                 DataType::Timestamp(TimeUnit::Second, tz_opt.clone())
@@ -681,6 +704,7 @@ impl ScalarValue {
             ))),
             ScalarValue::Date32(_) => DataType::Date32,
             ScalarValue::Date64(_) => DataType::Date64,
+            ScalarValue::Time64(_) => DataType::Time64(TimeUnit::Nanosecond),
             ScalarValue::IntervalYearMonth(_) => {
                 DataType::Interval(IntervalUnit::YearMonth)
             }
@@ -697,24 +721,26 @@ impl ScalarValue {
     }
 
     /// Calculate arithmetic negation for a scalar value
-    pub fn arithmetic_negate(&self) -> Self {
+    pub fn arithmetic_negate(&self) -> Result<Self> {
         match self {
-            ScalarValue::Boolean(None)
-            | ScalarValue::Int8(None)
+            ScalarValue::Int8(None)
             | ScalarValue::Int16(None)
             | ScalarValue::Int32(None)
             | ScalarValue::Int64(None)
-            | ScalarValue::Float32(None) => self.clone(),
-            ScalarValue::Float64(Some(v)) => ScalarValue::Float64(Some(-v)),
-            ScalarValue::Float32(Some(v)) => ScalarValue::Float32(Some(-v)),
-            ScalarValue::Int8(Some(v)) => ScalarValue::Int8(Some(-v)),
-            ScalarValue::Int16(Some(v)) => ScalarValue::Int16(Some(-v)),
-            ScalarValue::Int32(Some(v)) => ScalarValue::Int32(Some(-v)),
-            ScalarValue::Int64(Some(v)) => ScalarValue::Int64(Some(-v)),
+            | ScalarValue::Float32(None) => Ok(self.clone()),
+            ScalarValue::Float64(Some(v)) => Ok(ScalarValue::Float64(Some(-v))),
+            ScalarValue::Float32(Some(v)) => Ok(ScalarValue::Float32(Some(-v))),
+            ScalarValue::Int8(Some(v)) => Ok(ScalarValue::Int8(Some(-v))),
+            ScalarValue::Int16(Some(v)) => Ok(ScalarValue::Int16(Some(-v))),
+            ScalarValue::Int32(Some(v)) => Ok(ScalarValue::Int32(Some(-v))),
+            ScalarValue::Int64(Some(v)) => Ok(ScalarValue::Int64(Some(-v))),
             ScalarValue::Decimal128(Some(v), precision, scale) => {
-                ScalarValue::Decimal128(Some(-v), *precision, *scale)
+                Ok(ScalarValue::Decimal128(Some(-v), *precision, *scale))
             }
-            _ => panic!("Cannot run arithmetic negate on scalar value: {:?}", self),
+            value => Err(DataFusionError::Internal(format!(
+                "Can not run arithmetic negative on scalar value {:?}",
+                value
+            ))),
         }
     }
 
@@ -741,6 +767,7 @@ impl ScalarValue {
             ScalarValue::List(v, _) => v.is_none(),
             ScalarValue::Date32(v) => v.is_none(),
             ScalarValue::Date64(v) => v.is_none(),
+            ScalarValue::Time64(v) => v.is_none(),
             ScalarValue::TimestampSecond(v, _) => v.is_none(),
             ScalarValue::TimestampMillisecond(v, _) => v.is_none(),
             ScalarValue::TimestampMicrosecond(v, _) => v.is_none(),
@@ -895,7 +922,7 @@ impl ScalarValue {
 
         macro_rules! build_array_list_string {
             ($BUILDER:ident, $SCALAR_TY:ident) => {{
-                let mut builder = ListBuilder::new($BUILDER::new(0));
+                let mut builder = ListBuilder::new($BUILDER::new());
                 for scalar in scalars.into_iter() {
                     match scalar {
                         ScalarValue::List(Some(xs), _) => {
@@ -935,9 +962,9 @@ impl ScalarValue {
         }
 
         let array: ArrayRef = match &data_type {
-            DataType::Decimal(precision, scale) => {
+            DataType::Decimal128(precision, scale) => {
                 let decimal_array =
-                    ScalarValue::iter_to_decimal_array(scalars, precision, scale)?;
+                    ScalarValue::iter_to_decimal_array(scalars, *precision, *scale)?;
                 Arc::new(decimal_array)
             }
             DataType::Decimal256(_, _) => {
@@ -963,6 +990,9 @@ impl ScalarValue {
             DataType::LargeBinary => build_array_string!(LargeBinaryArray, LargeBinary),
             DataType::Date32 => build_array_primitive!(Date32Array, Date32),
             DataType::Date64 => build_array_primitive!(Date64Array, Date64),
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                build_array_primitive!(Time64NanosecondArray, Time64)
+            }
             DataType::Timestamp(TimeUnit::Second, _) => {
                 build_array_primitive_tz!(TimestampSecondArray, TimestampSecond)
             }
@@ -1138,8 +1168,8 @@ impl ScalarValue {
 
     fn iter_to_decimal_array(
         scalars: impl IntoIterator<Item = ScalarValue>,
-        precision: &usize,
-        scale: &usize,
+        precision: u8,
+        scale: u8,
     ) -> Result<Decimal128Array> {
         let array = scalars
             .into_iter()
@@ -1148,7 +1178,7 @@ impl ScalarValue {
                 _ => unreachable!(),
             })
             .collect::<Decimal128Array>()
-            .with_precision_and_scale(*precision, *scale)?;
+            .with_precision_and_scale(precision, scale)?;
         Ok(array)
     }
 
@@ -1214,24 +1244,25 @@ impl ScalarValue {
     }
 
     fn build_decimal_array(
-        value: &Option<i128>,
-        precision: &usize,
-        scale: &usize,
+        value: Option<i128>,
+        precision: u8,
+        scale: u8,
         size: usize,
     ) -> Decimal128Array {
         std::iter::repeat(value)
             .take(size)
+            .into_iter()
             .collect::<Decimal128Array>()
-            .with_precision_and_scale(*precision, *scale)
+            .with_precision_and_scale(precision, scale)
             .unwrap()
     }
 
     /// Converts a scalar value into an array of `size` rows.
     pub fn to_array_of_size(&self, size: usize) -> ArrayRef {
         match self {
-            ScalarValue::Decimal128(e, precision, scale) => {
-                Arc::new(ScalarValue::build_decimal_array(e, precision, scale, size))
-            }
+            ScalarValue::Decimal128(e, precision, scale) => Arc::new(
+                ScalarValue::build_decimal_array(*e, *precision, *scale, size),
+            ),
             ScalarValue::Boolean(e) => {
                 Arc::new(BooleanArray::from(vec![*e; size])) as ArrayRef
             }
@@ -1357,6 +1388,15 @@ impl ScalarValue {
             ScalarValue::Date64(e) => {
                 build_array_from_option!(Date64, Date64Array, e, size)
             }
+            ScalarValue::Time64(e) => {
+                build_array_from_option!(
+                    Time64,
+                    TimeUnit::Nanosecond,
+                    Time64NanosecondArray,
+                    e,
+                    size
+                )
+            }
             ScalarValue::IntervalDayTime(e) => build_array_from_option!(
                 Interval,
                 IntervalUnit::DayTime,
@@ -1424,18 +1464,14 @@ impl ScalarValue {
     fn get_decimal_value_from_array(
         array: &ArrayRef,
         index: usize,
-        precision: &usize,
-        scale: &usize,
+        precision: u8,
+        scale: u8,
     ) -> ScalarValue {
         let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         if array.is_null(index) {
-            ScalarValue::Decimal128(None, *precision, *scale)
+            ScalarValue::Decimal128(None, precision, scale)
         } else {
-            ScalarValue::Decimal128(
-                Some(array.value(index).as_i128()),
-                *precision,
-                *scale,
-            )
+            ScalarValue::Decimal128(Some(array.value(index).as_i128()), precision, scale)
         }
     }
 
@@ -1448,8 +1484,10 @@ impl ScalarValue {
 
         Ok(match array.data_type() {
             DataType::Null => ScalarValue::Null,
-            DataType::Decimal(precision, scale) => {
-                ScalarValue::get_decimal_value_from_array(array, index, precision, scale)
+            DataType::Decimal128(precision, scale) => {
+                ScalarValue::get_decimal_value_from_array(
+                    array, index, *precision, *scale,
+                )
             }
             DataType::Boolean => typed_cast!(array, index, BooleanArray, Boolean),
             DataType::Float64 => typed_cast!(array, index, Float64Array, Float64),
@@ -1485,16 +1523,16 @@ impl ScalarValue {
                         Some(scalar_vec)
                     }
                 };
-                ScalarValue::List(
-                    value,
-                    Box::new(Field::new("item", nested_type.data_type().clone(), true)),
-                )
+                ScalarValue::new_list(value, nested_type.data_type().clone())
             }
             DataType::Date32 => {
                 typed_cast!(array, index, Date32Array, Date32)
             }
             DataType::Date64 => {
                 typed_cast!(array, index, Date64Array, Date64)
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                typed_cast!(array, index, Time64NanosecondArray, Time64)
             }
             DataType::Timestamp(TimeUnit::Second, tz_opt) => {
                 typed_cast_tz!(
@@ -1586,10 +1624,7 @@ impl ScalarValue {
                         Some(scalar_vec)
                     }
                 };
-                ScalarValue::List(
-                    value,
-                    Box::new(Field::new("item", nested_type.data_type().clone(), true)),
-                )
+                ScalarValue::new_list(value, nested_type.data_type().clone())
             }
             other => {
                 return Err(DataFusionError::NotImplemented(format!(
@@ -1612,8 +1647,8 @@ impl ScalarValue {
         array: &ArrayRef,
         index: usize,
         value: &Option<i128>,
-        precision: usize,
-        scale: usize,
+        precision: u8,
+        scale: u8,
     ) -> bool {
         let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         if array.precision() != precision || array.scale() != scale {
@@ -1690,6 +1725,9 @@ impl ScalarValue {
             }
             ScalarValue::Date64(val) => {
                 eq_array_primitive!(array, index, Date64Array, val)
+            }
+            ScalarValue::Time64(val) => {
+                eq_array_primitive!(array, index, Time64NanosecondArray, val)
             }
             ScalarValue::TimestampSecond(val, _) => {
                 eq_array_primitive!(array, index, TimestampSecondArray, val)
@@ -1845,6 +1883,7 @@ impl TryFrom<ScalarValue> for i64 {
         match value {
             ScalarValue::Int64(Some(inner_value))
             | ScalarValue::Date64(Some(inner_value))
+            | ScalarValue::Time64(Some(inner_value))
             | ScalarValue::TimestampNanosecond(Some(inner_value), _)
             | ScalarValue::TimestampMicrosecond(Some(inner_value), _)
             | ScalarValue::TimestampMillisecond(Some(inner_value), _)
@@ -1899,13 +1938,14 @@ impl TryFrom<&DataType> for ScalarValue {
             DataType::UInt16 => ScalarValue::UInt16(None),
             DataType::UInt32 => ScalarValue::UInt32(None),
             DataType::UInt64 => ScalarValue::UInt64(None),
-            DataType::Decimal(precision, scale) => {
+            DataType::Decimal128(precision, scale) => {
                 ScalarValue::Decimal128(None, *precision, *scale)
             }
             DataType::Utf8 => ScalarValue::Utf8(None),
             DataType::LargeUtf8 => ScalarValue::LargeUtf8(None),
             DataType::Date32 => ScalarValue::Date32(None),
             DataType::Date64 => ScalarValue::Date64(None),
+            DataType::Time64(TimeUnit::Nanosecond) => ScalarValue::Time64(None),
             DataType::Timestamp(TimeUnit::Second, tz_opt) => {
                 ScalarValue::TimestampSecond(None, tz_opt.clone())
             }
@@ -1922,10 +1962,9 @@ impl TryFrom<&DataType> for ScalarValue {
                 index_type.clone(),
                 Box::new(value_type.as_ref().try_into()?),
             ),
-            DataType::List(ref nested_type) => ScalarValue::List(
-                None,
-                Box::new(Field::new("item", nested_type.data_type().clone(), true)),
-            ),
+            DataType::List(ref nested_type) => {
+                ScalarValue::new_list(None, nested_type.data_type().clone())
+            }
             DataType::Struct(fields) => {
                 ScalarValue::Struct(None, Box::new(fields.clone()))
             }
@@ -2007,6 +2046,7 @@ impl fmt::Display for ScalarValue {
             },
             ScalarValue::Date32(e) => format_option!(f, e)?,
             ScalarValue::Date64(e) => format_option!(f, e)?,
+            ScalarValue::Time64(e) => format_option!(f, e)?,
             ScalarValue::IntervalDayTime(e) => format_option!(f, e)?,
             ScalarValue::IntervalYearMonth(e) => format_option!(f, e)?,
             ScalarValue::IntervalMonthDayNano(e) => format_option!(f, e)?,
@@ -2067,6 +2107,7 @@ impl fmt::Debug for ScalarValue {
             ScalarValue::List(_, _) => write!(f, "List([{}])", self),
             ScalarValue::Date32(_) => write!(f, "Date32(\"{}\")", self),
             ScalarValue::Date64(_) => write!(f, "Date64(\"{}\")", self),
+            ScalarValue::Time64(_) => write!(f, "Time64(\"{}\")", self),
             ScalarValue::IntervalDayTime(_) => {
                 write!(f, "IntervalDayTime(\"{}\")", self)
             }
@@ -2143,13 +2184,13 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn scalar_decimal_test() {
+    fn scalar_decimal_test() -> Result<()> {
         let decimal_value = ScalarValue::Decimal128(Some(123), 10, 1);
-        assert_eq!(DataType::Decimal(10, 1), decimal_value.get_datatype());
+        assert_eq!(DataType::Decimal128(10, 1), decimal_value.get_datatype());
         let try_into_value: i128 = decimal_value.clone().try_into().unwrap();
         assert_eq!(123_i128, try_into_value);
         assert!(!decimal_value.is_null());
-        let neg_decimal_value = decimal_value.arithmetic_negate();
+        let neg_decimal_value = decimal_value.arithmetic_negate()?;
         match neg_decimal_value {
             ScalarValue::Decimal128(v, _, _) => {
                 assert_eq!(-123, v.unwrap());
@@ -2163,14 +2204,14 @@ mod tests {
         let array = decimal_value.to_array();
         let array = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(1, array.len());
-        assert_eq!(DataType::Decimal(10, 1), array.data_type().clone());
+        assert_eq!(DataType::Decimal128(10, 1), array.data_type().clone());
         assert_eq!(123i128, array.value(0).as_i128());
 
         // decimal scalar to array with size
         let array = decimal_value.to_array_of_size(10);
         let array_decimal = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(10, array.len());
-        assert_eq!(DataType::Decimal(10, 1), array.data_type().clone());
+        assert_eq!(DataType::Decimal128(10, 1), array.data_type().clone());
         assert_eq!(123i128, array_decimal.value(0).as_i128());
         assert_eq!(123i128, array_decimal.value(9).as_i128());
         // test eq array
@@ -2208,7 +2249,7 @@ mod tests {
         // convert the vec to decimal array and check the result
         let array = ScalarValue::iter_to_array(decimal_vec.into_iter()).unwrap();
         assert_eq!(3, array.len());
-        assert_eq!(DataType::Decimal(10, 2), array.data_type().clone());
+        assert_eq!(DataType::Decimal128(10, 2), array.data_type().clone());
 
         let decimal_vec = vec![
             ScalarValue::Decimal128(Some(1), 10, 2),
@@ -2218,7 +2259,7 @@ mod tests {
         ];
         let array = ScalarValue::iter_to_array(decimal_vec.into_iter()).unwrap();
         assert_eq!(4, array.len());
-        assert_eq!(DataType::Decimal(10, 2), array.data_type().clone());
+        assert_eq!(DataType::Decimal128(10, 2), array.data_type().clone());
 
         assert!(ScalarValue::try_new_decimal128(1, 10, 2)
             .unwrap()
@@ -2237,6 +2278,8 @@ mod tests {
             ScalarValue::Decimal128(None, 10, 2),
             ScalarValue::try_from_array(&array, 4).unwrap()
         );
+
+        Ok(())
     }
 
     #[test]
@@ -2532,12 +2575,7 @@ mod tests {
         // The alignment requirements differ across architectures and
         // thus the size of the enum appears to as as well
 
-        let expected = match cfg!(target_arch = "aarch64") {
-            true => 64,
-            false => 48,
-        };
-
-        assert_eq!(std::mem::size_of::<ScalarValue>(), expected);
+        assert_eq!(std::mem::size_of::<ScalarValue>(), 48);
     }
 
     #[test]
@@ -2665,6 +2703,7 @@ mod tests {
             make_binary_test_case!(str_vals, LargeBinaryArray, LargeBinary),
             make_test_case!(i32_vals, Date32Array, Date32),
             make_test_case!(i64_vals, Date64Array, Date64),
+            make_test_case!(i64_vals, Time64NanosecondArray, Time64),
             make_test_case!(i64_vals, TimestampSecondArray, TimestampSecond, None),
             make_test_case!(
                 i64_vals,
@@ -3092,26 +3131,18 @@ mod tests {
         assert_eq!(array, &expected);
 
         // Define list-of-structs scalars
-        let nl0 = ScalarValue::List(
-            Some(vec![s0.clone(), s1.clone()]),
-            Box::new(Field::new("item", s0.get_datatype(), true)),
-        );
+        let nl0 =
+            ScalarValue::new_list(Some(vec![s0.clone(), s1.clone()]), s0.get_datatype());
 
-        let nl1 = ScalarValue::List(
-            Some(vec![s2]),
-            Box::new(Field::new("item", s0.get_datatype(), true)),
-        );
+        let nl1 = ScalarValue::new_list(Some(vec![s2]), s0.get_datatype());
 
-        let nl2 = ScalarValue::List(
-            Some(vec![s1]),
-            Box::new(Field::new("item", s0.get_datatype(), true)),
-        );
+        let nl2 = ScalarValue::new_list(Some(vec![s1]), s0.get_datatype());
         // iter_to_array for list-of-struct
         let array = ScalarValue::iter_to_array(vec![nl0, nl1, nl2]).unwrap();
         let array = array.as_any().downcast_ref::<ListArray>().unwrap();
 
         // Construct expected array with array builders
-        let field_a_builder = StringBuilder::new(4);
+        let field_a_builder = StringBuilder::with_capacity(4, 1024);
         let primitive_value_builder = Int32Array::builder(8);
         let field_primitive_list_builder = ListBuilder::new(primitive_value_builder);
 
@@ -3231,56 +3262,44 @@ mod tests {
     #[test]
     fn test_nested_lists() {
         // Define inner list scalars
-        let l1 = ScalarValue::List(
+        let l1 = ScalarValue::new_list(
             Some(vec![
-                ScalarValue::List(
+                ScalarValue::new_list(
                     Some(vec![
                         ScalarValue::from(1i32),
                         ScalarValue::from(2i32),
                         ScalarValue::from(3i32),
                     ]),
-                    Box::new(Field::new("item", DataType::Int32, true)),
+                    DataType::Int32,
                 ),
-                ScalarValue::List(
+                ScalarValue::new_list(
                     Some(vec![ScalarValue::from(4i32), ScalarValue::from(5i32)]),
-                    Box::new(Field::new("item", DataType::Int32, true)),
+                    DataType::Int32,
                 ),
             ]),
-            Box::new(Field::new(
-                "item",
-                DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
-                true,
-            )),
+            DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
         );
 
-        let l2 = ScalarValue::List(
+        let l2 = ScalarValue::new_list(
             Some(vec![
-                ScalarValue::List(
+                ScalarValue::new_list(
                     Some(vec![ScalarValue::from(6i32)]),
-                    Box::new(Field::new("item", DataType::Int32, true)),
+                    DataType::Int32,
                 ),
-                ScalarValue::List(
+                ScalarValue::new_list(
                     Some(vec![ScalarValue::from(7i32), ScalarValue::from(8i32)]),
-                    Box::new(Field::new("item", DataType::Int32, true)),
+                    DataType::Int32,
                 ),
             ]),
-            Box::new(Field::new(
-                "item",
-                DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
-                true,
-            )),
+            DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
         );
 
-        let l3 = ScalarValue::List(
-            Some(vec![ScalarValue::List(
+        let l3 = ScalarValue::new_list(
+            Some(vec![ScalarValue::new_list(
                 Some(vec![ScalarValue::from(9i32)]),
-                Box::new(Field::new("item", DataType::Int32, true)),
+                DataType::Int32,
             )]),
-            Box::new(Field::new(
-                "item",
-                DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
-                true,
-            )),
+            DataType::List(Box::new(Field::new("item", DataType::Int32, true))),
         );
 
         let array = ScalarValue::iter_to_array(vec![l1, l2, l3]).unwrap();
@@ -3380,5 +3399,21 @@ mod tests {
 
         // The datatype should be "Dictionary" but is actually Utf8!!!
         assert_eq!(array.data_type(), &desired_type)
+    }
+
+    #[test]
+    fn test_scalar_negative() -> Result<()> {
+        // positive test
+        let value = ScalarValue::Int32(Some(12));
+        assert_eq!(ScalarValue::Int32(Some(-12)), value.arithmetic_negate()?);
+        let value = ScalarValue::Int32(None);
+        assert_eq!(ScalarValue::Int32(None), value.arithmetic_negate()?);
+
+        // negative test
+        let value = ScalarValue::UInt8(Some(12));
+        assert!(value.arithmetic_negate().is_err());
+        let value = ScalarValue::Boolean(None);
+        assert!(value.arithmetic_negate().is_err());
+        Ok(())
     }
 }

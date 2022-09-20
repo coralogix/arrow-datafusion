@@ -32,17 +32,17 @@ use futures::{stream::BoxStream, TryStreamExt};
 use log::debug;
 
 use crate::{
-    datasource::MemTable,
-    error::Result,
-    execution::context::SessionContext,
-    logical_plan::{self, Expr, ExprVisitable, ExpressionVisitor, Recursion},
+    datasource::MemTable, error::Result, execution::context::SessionContext,
     scalar::ScalarValue,
 };
 
 use super::PartitionedFile;
 use crate::datasource::listing::ListingTableUrl;
-use datafusion_common::DataFusionError;
-use datafusion_expr::Volatility;
+use datafusion_common::{Column, DataFusionError};
+use datafusion_expr::{
+    expr_visitor::{ExprVisitable, ExpressionVisitor, Recursion},
+    Expr, Volatility,
+};
 use object_store::path::Path;
 use object_store::{ObjectMeta, ObjectStore};
 
@@ -74,7 +74,7 @@ impl ApplicabilityVisitor<'_> {
 impl ExpressionVisitor for ApplicabilityVisitor<'_> {
     fn pre_visit(self, expr: &Expr) -> Result<Recursion<Self>> {
         let rec = match expr {
-            Expr::Column(logical_plan::Column { ref name, .. }) => {
+            Expr::Column(Column { ref name, .. }) => {
                 *self.is_applicable &= self.col_names.contains(name);
                 Recursion::Stop(self) // leaf node anyway
             }
@@ -84,11 +84,20 @@ impl ExpressionVisitor for ApplicabilityVisitor<'_> {
             | Expr::Not(_)
             | Expr::IsNotNull(_)
             | Expr::IsNull(_)
+            | Expr::IsTrue(_)
+            | Expr::IsFalse(_)
+            | Expr::IsUnknown(_)
+            | Expr::IsNotTrue(_)
+            | Expr::IsNotFalse(_)
+            | Expr::IsNotUnknown(_)
             | Expr::Negative(_)
             | Expr::Cast { .. }
             | Expr::TryCast { .. }
             | Expr::BinaryExpr { .. }
             | Expr::Between { .. }
+            | Expr::Like { .. }
+            | Expr::ILike { .. }
+            | Expr::SimilarTo { .. }
             | Expr::InList { .. }
             | Expr::Exists { .. }
             | Expr::InSubquery { .. }
@@ -183,24 +192,27 @@ pub async fn pruned_partition_list<'a>(
         // Note: We might avoid parsing the partition values if they are not used in any projection,
         // but the cost of parsing will likely be far dominated by the time to fetch the listing from
         // the object store.
-        Ok(Box::pin(list.try_filter_map(move |file_meta| async move {
-            let parsed_path = parse_partitions_for_path(
-                table_path,
-                &file_meta.location,
-                table_partition_cols,
-            )
-            .map(|p| {
-                p.iter()
-                    .map(|&pn| ScalarValue::Utf8(Some(pn.to_owned())))
-                    .collect()
-            });
+        Ok(Box::pin(list.try_filter_map(
+            move |object_meta| async move {
+                let parsed_path = parse_partitions_for_path(
+                    table_path,
+                    &object_meta.location,
+                    table_partition_cols,
+                )
+                .map(|p| {
+                    p.iter()
+                        .map(|&pn| ScalarValue::Utf8(Some(pn.to_owned())))
+                        .collect()
+                });
 
-            Ok(parsed_path.map(|partition_values| PartitionedFile {
-                partition_values,
-                object_meta: file_meta,
-                range: None,
-            }))
-        })))
+                Ok(parsed_path.map(|partition_values| PartitionedFile {
+                    partition_values,
+                    object_meta,
+                    range: None,
+                    extensions: None,
+                }))
+            },
+        )))
     } else {
         // parse the partition values and serde them as a RecordBatch to filter them
         let metas: Vec<_> = list.try_collect().await?;
@@ -234,12 +246,12 @@ fn paths_to_batch(
     table_path: &ListingTableUrl,
     metas: &[ObjectMeta],
 ) -> Result<RecordBatch> {
-    let mut key_builder = StringBuilder::new(metas.len());
-    let mut length_builder = UInt64Builder::new(metas.len());
-    let mut modified_builder = Date64Builder::new(metas.len());
+    let mut key_builder = StringBuilder::with_capacity(metas.len(), 1024);
+    let mut length_builder = UInt64Builder::with_capacity(metas.len());
+    let mut modified_builder = Date64Builder::with_capacity(metas.len());
     let mut partition_builders = table_partition_cols
         .iter()
-        .map(|_| StringBuilder::new(metas.len()))
+        .map(|_| StringBuilder::with_capacity(metas.len(), 1024))
         .collect::<Vec<_>>();
     for file_meta in metas {
         if let Some(partition_values) = parse_partitions_for_path(
@@ -317,6 +329,7 @@ fn batches_to_paths(batches: &[RecordBatch]) -> Result<Vec<PartitionedFile>> {
                         })
                         .collect(),
                     range: None,
+                    extensions: None,
                 })
             })
         })
