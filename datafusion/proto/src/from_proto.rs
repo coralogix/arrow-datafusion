@@ -776,6 +776,22 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
                     }
                 }
             }
+            Value::DictionaryValue(v) => {
+                let index_type: DataType = v
+                    .index_type
+                    .as_ref()
+                    .ok_or_else(|| Error::required("index_type"))?
+                    .try_into()?;
+
+                let value: Self = v
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| Error::required("value"))?
+                    .as_ref()
+                    .try_into()?;
+
+                Self::Dictionary(Box::new(index_type), Box::new(value))
+            }
         })
     }
 }
@@ -1515,7 +1531,7 @@ fn unwrap_timezone(proto_value: &str) -> Option<String> {
     }
 }
 
-fn from_proto_binary_op(op: &str) -> Result<Operator, Error> {
+pub fn from_proto_binary_op(op: &str) -> Result<Operator, Error> {
     match op {
         "And" => Ok(Operator::And),
         "Or" => Ok(Operator::Or),
@@ -1536,6 +1552,7 @@ fn from_proto_binary_op(op: &str) -> Result<Operator, Error> {
         "IsNotDistinctFrom" => Ok(Operator::IsNotDistinctFrom),
         "BitwiseAnd" => Ok(Operator::BitwiseAnd),
         "BitwiseOr" => Ok(Operator::BitwiseOr),
+        "BitwiseXor" => Ok(Operator::BitwiseXor),
         "BitwiseShiftLeft" => Ok(Operator::BitwiseShiftLeft),
         "BitwiseShiftRight" => Ok(Operator::BitwiseShiftRight),
         "RegexIMatch" => Ok(Operator::RegexIMatch),

@@ -54,6 +54,7 @@ mod roundtrip_tests {
         logical_plan_to_bytes, logical_plan_to_bytes_with_extension_codec,
     };
     use crate::logical_plan::LogicalExtensionCodec;
+    use arrow::datatypes::Schema;
     use arrow::{
         array::ArrayRef,
         datatypes::{DataType, Field, IntervalUnit, TimeUnit, UnionMode},
@@ -125,6 +126,35 @@ mod roundtrip_tests {
             format!("{:?}", topk_plan),
             format!("{:?}", logical_round_trip)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn roundtrip_logical_plan_aggregation() -> Result<(), DataFusionError> {
+        let ctx = SessionContext::new();
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Decimal128(15, 2), true),
+        ]);
+
+        ctx.register_csv(
+            "t1",
+            "testdata/test.csv",
+            CsvReadOptions::default().schema(&schema),
+        )
+        .await?;
+
+        let query =
+            "SELECT a, SUM(b + 1) as b_sum FROM t1 GROUP BY a ORDER BY b_sum DESC";
+        let plan = ctx.sql(query).await?.to_logical_plan()?;
+
+        println!("{:?}", plan);
+
+        let bytes = logical_plan_to_bytes(&plan)?;
+        let logical_round_trip = logical_plan_from_bytes(&bytes, &ctx)?;
+        assert_eq!(format!("{:?}", plan), format!("{:?}", logical_round_trip));
+
         Ok(())
     }
 
@@ -451,11 +481,31 @@ mod roundtrip_tests {
                     true,
                 )),
             ),
+            ScalarValue::Dictionary(
+                Box::new(DataType::Int32),
+                Box::new(ScalarValue::Utf8(Some("foo".into()))),
+            ),
+            ScalarValue::Dictionary(
+                Box::new(DataType::Int32),
+                Box::new(ScalarValue::Utf8(None)),
+            ),
         ];
 
         for test_case in should_pass.into_iter() {
-            let proto: super::protobuf::ScalarValue = (&test_case).try_into().unwrap();
-            let _roundtrip: ScalarValue = (&proto).try_into().unwrap();
+            let proto: super::protobuf::ScalarValue = (&test_case)
+                .try_into()
+                .expect("failed conversion to protobuf");
+
+            let roundtrip: ScalarValue = (&proto)
+                .try_into()
+                .expect("failed conversion from protobuf");
+
+            assert_eq!(
+                test_case, roundtrip,
+                "ScalarValue was not the same after round trip!\n\n\
+                        Input: {:?}\n\nRoundtrip: {:?}",
+                test_case, roundtrip
+            );
         }
     }
 
@@ -858,6 +908,7 @@ mod roundtrip_tests {
         test(Operator::BitwiseShiftLeft);
         test(Operator::BitwiseAnd);
         test(Operator::BitwiseOr);
+        test(Operator::BitwiseXor);
         test(Operator::IsDistinctFrom);
         test(Operator::IsNotDistinctFrom);
         test(Operator::And);
