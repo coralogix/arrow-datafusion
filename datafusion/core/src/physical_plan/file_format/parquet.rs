@@ -152,7 +152,9 @@ impl ParquetExec {
             pruning_predicate,
             metadata_size_hint,
             parquet_file_reader_factory: None,
-            scan_options: ParquetScanOptions::default(),
+            scan_options: ParquetScanOptions::default()
+                .with_pushdown_filters(true)
+                .with_reorder_predicates(true),
         }
     }
 
