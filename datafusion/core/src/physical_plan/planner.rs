@@ -1066,18 +1066,13 @@ impl DefaultPhysicalPlanner {
                         }
 
                         let logical_input = e.node.inputs();
-                        let plan = planner.plan_extension(
+                        maybe_plan = planner.plan_extension(
                             self,
                             e.node.as_ref(),
                             &logical_input,
                             &physical_inputs,
                             session_state,
-                        );
-                        let plan = plan.await;
-                        if plan.is_err() {
-                            continue;
-                        }
-                        maybe_plan = plan.unwrap();
+                        ).await?;
                     }
 
                     let plan = maybe_plan.ok_or_else(|| DataFusionError::Plan(format!(
