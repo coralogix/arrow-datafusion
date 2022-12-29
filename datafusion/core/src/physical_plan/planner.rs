@@ -1938,6 +1938,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn error_during_extension_planning() {
+        let session_state = make_session_state();
+        let planner = DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(
+            ErrorExtensionPlanner {},
+        )]);
+
+        let logical_plan = LogicalPlan::Extension(Extension {
+            node: Arc::new(NoOpExtensionNode::default()),
+        });
+        match planner
+            .create_physical_plan(&logical_plan, &session_state)
+            .await
+        {
+            Ok(_) => panic!("Expected planning failure"),
+            Err(e) => assert!(e.to_string().contains("BOOM"),),
+        }
+    }
+
+    #[tokio::test]
     async fn in_list_types() -> Result<()> {
         // expression: "a in ('a', 1)"
         let list = vec![lit("a"), lit(1i64)];
@@ -2315,6 +2334,23 @@ mod tests {
                     false,
                 )])),
             })))
+        }
+    }
+
+    struct ErrorExtensionPlanner {}
+
+    #[async_trait]
+    impl ExtensionPlanner for ErrorExtensionPlanner {
+        /// Create a physical plan for an extension node
+        async fn plan_extension(
+            &self,
+            _planner: &dyn PhysicalPlanner,
+            _node: &dyn UserDefinedLogicalNode,
+            _logical_inputs: &[&LogicalPlan],
+            _physical_inputs: &[Arc<dyn ExecutionPlan>],
+            _session_state: &SessionState,
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Err(DataFusionError::Internal("BOOM".to_string()))
         }
     }
 
