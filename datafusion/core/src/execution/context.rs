@@ -82,7 +82,7 @@ use crate::physical_plan::PhysicalPlanner;
 use crate::variable::{VarProvider, VarType};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datafusion_common::ScalarValue;
+use datafusion_common::{config::Extensions, ScalarValue};
 use datafusion_sql::{
     parser::DFParser,
     planner::{ContextProvider, SqlToRel},
@@ -2007,27 +2007,29 @@ pub struct TaskContext {
 
 impl TaskContext {
     /// Create a new task context instance
-    pub fn new(
+    pub fn try_new(
         task_id: String,
         session_id: String,
         task_props: HashMap<String, String>,
         scalar_functions: HashMap<String, Arc<ScalarUDF>>,
         aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
         runtime: Arc<RuntimeEnv>,
-    ) -> Self {
+        extensions: Extensions,
+    ) -> Result<Self> {
         let mut config = ConfigOptions::new();
+        config.extensions = extensions;
         for (k, v) in task_props {
-            let _ = config.set(&k, &v);
+            config.set(&k, &v)?;
         }
 
-        Self {
+        Ok(Self {
             task_id: Some(task_id),
             session_id,
             session_config: config.into(),
             scalar_functions,
             aggregate_functions,
             runtime,
-        }
+        })
     }
 
     /// Return the SessionConfig associated with the Task
