@@ -42,7 +42,7 @@ path = "src/lib.rs"
 avro = ["apache-avro", "num-traits", "datafusion-common/avro"]
 compression = ["xz2", "bzip2", "flate2", "zstd", "async-compression"]
 crypto_expressions = ["datafusion-physical-expr/crypto_expressions"]
-default = ["crypto_expressions", "regex_expressions", "unicode_expressions", "compression"]
+default = ["crypto_expressions", "regex_expressions", "unicode_expressions", "compression", "scheduler"]
 # Enables support for non-scalar, binary operations on dictionaries
 # Note: this results in significant additional codegen
 dictionary_expressions = ["datafusion-physical-expr/dictionary_expressions"]
@@ -66,6 +66,7 @@ async-trait = "0.1.41"
 bytes = "1.1"
 bzip2 = { version = "0.4.3", optional = true }
 chrono = { version = "0.4.23", default-features = false }
+crossbeam-deque = "0.8.3"
 dashmap = "5.4.0"
 datafusion-common = { path = "../common", version = "19.0.0", features = ["parquet", "object_store"] }
 datafusion-execution = { path = "../execution", version = "19.0.0" }

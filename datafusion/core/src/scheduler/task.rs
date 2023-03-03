@@ -132,6 +132,7 @@ impl Task {
     pub fn do_work(self) {
         assert!(is_worker(), "Task::do_work called outside of worker pool");
         if self.context.is_cancelled() {
+            trace!("task is cancelled");
             return;
         }
 

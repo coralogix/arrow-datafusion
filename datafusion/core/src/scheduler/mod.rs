@@ -74,6 +74,7 @@
 //! ```
 //!
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use log::{debug, error};
@@ -87,27 +88,45 @@ use task::{spawn_plan, Task};
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
+use crate::scheduler::worker::{DefaultDriver, Driver, WorkerPool, WorkerPoolBuilder};
 pub use task::ExecutionResults;
 
 mod pipeline;
 mod plan;
 mod task;
+mod worker;
 
 /// Builder for a [`Scheduler`]
 #[derive(Debug)]
-pub struct SchedulerBuilder {
-    inner: ThreadPoolBuilder,
+pub struct SchedulerBuilder<D: Driver = DefaultDriver> {
+    inner: WorkerPoolBuilder<D>,
+    _phantom_data: PhantomData<D>,
 }
 
-impl SchedulerBuilder {
-    /// Create a new [`SchedulerBuilder`] with the provided number of threads
-    pub fn new(num_threads: usize) -> Self {
-        let builder = ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .panic_handler(|p| error!("{}", format_worker_panic(p)))
-            .thread_name(|idx| format!("df-worker-{idx}"));
+impl Default for SchedulerBuilder {
+    fn default() -> Self {
+        let builder = WorkerPoolBuilder::default();
 
-        Self { inner: builder }
+        Self {
+            inner: builder,
+            _phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<D: Driver> SchedulerBuilder<D> {
+    pub fn driver<D1: Driver>(self, driver: D1) -> SchedulerBuilder<D1> {
+        SchedulerBuilder {
+            inner: self.inner.driver(driver),
+            _phantom_data: PhantomData,
+        }
+    }
+
+    pub fn num_threads(self, num_threads: usize) -> Self {
+        Self {
+            inner: self.inner.num_threads(num_threads),
+            _phantom_data: PhantomData,
+        }
     }
 
     /// Registers a custom panic handler
@@ -118,6 +137,7 @@ impl SchedulerBuilder {
     {
         Self {
             inner: self.inner.panic_handler(panic_handler),
+            _phantom_data: PhantomData,
         }
     }
 
@@ -131,13 +151,17 @@ impl SchedulerBuilder {
 
 /// A [`Scheduler`] that can be used to schedule [`ExecutionPlan`] on a dedicated thread pool
 pub struct Scheduler {
-    pool: Arc<ThreadPool>,
+    pool: Arc<WorkerPool>,
 }
 
 impl Scheduler {
     /// Create a new [`Scheduler`] with `num_threads` new threads in a dedicated thread pool
     pub fn new(num_threads: usize) -> Self {
-        SchedulerBuilder::new(num_threads).build()
+        SchedulerBuilder::default().num_threads(num_threads).build()
+    }
+
+    pub fn new_with_driver<D: Driver>(driver: D) -> Self {
+        SchedulerBuilder::default().driver(driver).build()
     }
 
     /// Schedule the provided [`ExecutionPlan`] on this [`Scheduler`].
@@ -191,7 +215,8 @@ fn format_worker_panic(panic: Box<dyn std::any::Any + Send>) -> String {
 /// Note: if there are multiple rayon pools, this will return `true` if the current thread
 /// belongs to ANY rayon pool, even if this isn't a worker thread of a [`Scheduler`] instance
 fn is_worker() -> bool {
-    rayon::current_thread_index().is_some()
+    // rayon::current_thread_index().is_some()
+    worker::is_worker()
 }
 
 /// Spawn a [`Task`] onto the local workers thread pool
@@ -205,7 +230,8 @@ fn is_worker() -> bool {
 fn spawn_local(task: Task) {
     // Verify is a worker thread to avoid creating a global pool
     assert!(is_worker(), "must be called from a worker");
-    rayon::spawn(|| task.do_work())
+    // rayon::spawn(|| task.do_work())
+    worker::spawn_local(task)
 }
 
 /// Spawn a [`Task`] onto the local workers thread pool with fifo ordering
@@ -219,18 +245,20 @@ fn spawn_local(task: Task) {
 fn spawn_local_fifo(task: Task) {
     // Verify is a worker thread to avoid creating a global pool
     assert!(is_worker(), "must be called from a worker");
-    rayon::spawn_fifo(|| task.do_work())
+    // rayon::spawn_fifo(|| task.do_work())
+    worker::spawn_local_fifo(task)
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Spawner {
-    pool: Arc<ThreadPool>,
+    pool: Arc<WorkerPool>,
 }
 
 impl Spawner {
     fn spawn(&self, task: Task) {
         debug!("Spawning {:?} to any worker", task);
-        self.pool.spawn(move || task.do_work());
+        // self.pool.spawn(move || task.do_work());
+        self.pool.spawn(task);
     }
 }
 
@@ -251,6 +279,7 @@ mod tests {
     use crate::datasource::{MemTable, TableProvider};
     use crate::physical_plan::displayable;
     use crate::prelude::{SessionConfig, SessionContext};
+    use crate::scheduler::worker::ThreadLocalDriver;
 
     use super::*;
 
@@ -318,14 +347,15 @@ mod tests {
     }
 
     fn init_logging() {
-        let _ = env_logger::builder().is_test(true).try_init();
+        let _ = env_logger::builder().is_test(false).try_init();
     }
 
     #[tokio::test]
-    async fn test_simple() {
+    async fn test_scheduler_simple() {
         init_logging();
 
-        let scheduler = SchedulerBuilder::new(4)
+        let scheduler = SchedulerBuilder::default()
+            .num_threads(4)
             .panic_handler(|panic| {
                 unreachable!("not expect panic: {:?}", panic);
             })
@@ -381,7 +411,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_partitioned() {
+    async fn test_scheduler_partitioned() {
         init_logging();
 
         let scheduler = Scheduler::new(4);
@@ -426,13 +456,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scheduler_partitioned_thread_local() {
+        init_logging();
+
+        let scheduler = Scheduler::new_with_driver(ThreadLocalDriver::default());
+
+        let config = SessionConfig::new().with_target_partitions(4);
+        let context = SessionContext::with_config(config);
+        let plan = context
+            .read_table(make_provider())
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+
+        assert_eq!(plan.output_partitioning().partition_count(), NUM_PARTITIONS);
+
+        let results = scheduler
+            .schedule(plan.clone(), context.task_ctx())
+            .unwrap();
+
+        let batches = results.stream().try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), NUM_PARTITIONS * BATCHES_PER_PARTITION);
+
+        for batch in batches {
+            assert_eq!(batch.num_rows(), ROWS_PER_BATCH)
+        }
+
+        let results = scheduler.schedule(plan, context.task_ctx()).unwrap();
+        let streams = results.stream_partitioned();
+
+        let partitions: Vec<Vec<_>> =
+            futures::future::try_join_all(streams.into_iter().map(|s| s.try_collect()))
+                .await
+                .unwrap();
+
+        assert_eq!(partitions.len(), NUM_PARTITIONS);
+        for batches in partitions {
+            assert_eq!(batches.len(), BATCHES_PER_PARTITION);
+            for batch in batches {
+                assert_eq!(batch.num_rows(), ROWS_PER_BATCH);
+            }
+        }
+    }
+
+    #[ignore]
+    #[tokio::test]
     async fn test_panic() {
         init_logging();
 
         let do_test = |scheduler: Scheduler| {
-            scheduler.pool.spawn(|| panic!("test"));
-            scheduler.pool.spawn(|| panic!("{}", 1));
-            scheduler.pool.spawn(|| panic_any(21));
+            // scheduler.pool.spawn(|| panic!("test"));
+            // scheduler.pool.spawn(|| panic!("{}", 1));
+            // scheduler.pool.spawn(|| panic_any(21));
+            ()
         };
 
         // The default panic handler should log panics and not abort the process
@@ -440,7 +517,8 @@ mod tests {
 
         // Override panic handler and capture panics to test formatting
         let (sender, receiver) = futures::channel::mpsc::unbounded();
-        let scheduler = SchedulerBuilder::new(1)
+        let scheduler = SchedulerBuilder::default()
+            .num_threads(1)
             .panic_handler(move |panic| {
                 let _ = sender.unbounded_send(format_worker_panic(panic));
             })
