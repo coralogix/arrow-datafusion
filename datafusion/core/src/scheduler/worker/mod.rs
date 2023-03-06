@@ -3,13 +3,15 @@ use crossbeam_deque::{Injector, Worker};
 use log::{debug, error, trace};
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
+use std::future::Future;
 use std::io;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::thread;
 use std::thread_local;
-use tokio::task::LocalSet;
 
 thread_local! {
     static WORKER_CONTEXT: Cell<*const WorkerContext> = Cell::new(std::ptr::null());
@@ -23,7 +25,7 @@ pub(crate) fn spawn_local(task: Task) {
     assert!(is_worker(), "must be called from a worker");
     let ctx = unsafe { &*WORKER_CONTEXT.with(Cell::get) };
 
-    ctx.spawn(task);
+    ctx.spawn_local(task);
 }
 
 pub(crate) fn spawn_local_fifo(task: Task) {
@@ -72,6 +74,36 @@ impl Driver for DefaultDriver {
 #[derive(Default, Clone, Debug)]
 pub struct ThreadLocalDriver {}
 
+struct DriverTick<'a> {
+    ctx: &'a  WorkerContext,
+    yield_after: usize,
+}
+
+impl<'a> Future for DriverTick<'a> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut ticks = 0;
+        let mut return_early = true;
+        while !self.ctx.is_terminated() && ticks <= self.yield_after {
+            if let Some(task) = self.ctx.next_task() {
+                return_early = false;
+                trace!("executing task {:#?} on {}", task, self.ctx.name);
+                match std::panic::catch_unwind(AssertUnwindSafe(|| task.do_work())) {
+                    Ok(()) => {}
+                    Err(e) => error!("{}", format_worker_panic(e)),
+                }
+            } else if return_early {
+                break;
+            }
+
+            ticks += 1;
+        }
+
+        return Poll::Ready(());
+    }
+}
+
 impl Driver for ThreadLocalDriver {
     fn run(
         &mut self,
@@ -90,13 +122,14 @@ impl Driver for ThreadLocalDriver {
 
         rt.block_on(async {
             while !ctx.is_terminated() {
-                if let Some(task) = ctx.next_task() {
-                    trace!("executing task {:#?} on {}", task, ctx.name);
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| task.do_work())) {
-                        Ok(()) => {}
-                        Err(e) => panic_handler(e),
-                    }
-                }
+                let tick = DriverTick {
+                    ctx, yield_after: 32
+                };
+
+                tick.await;
+
+                // Yield to allow other tasks to run
+                tokio::task::yield_now().await;
             }
         });
 
@@ -125,15 +158,7 @@ impl WorkerContext {
 
     pub fn next_task(&self) -> Option<Task> {
         self.local.pop().or_else(|| {
-            // Otherwise, we need to look for a task elsewhere.
-            std::iter::repeat_with(|| {
-                // Try stealing a batch of tasks from the global queue.
-                self.injector.steal_batch_and_pop(&self.local)
-            })
-            // Loop while no task was stolen and any steal operation needs to be retried.
-            .find(|s| !s.is_retry())
-            // Extract the stolen task, if there is one.
-            .and_then(|s| s.success())
+            self.injector.steal().success()
         })
     }
 
@@ -141,7 +166,7 @@ impl WorkerContext {
         self.terminate.load(Ordering::Acquire)
     }
 
-    pub(crate) fn current() -> &'static WorkerContext {
+    pub fn current() -> &'static WorkerContext {
         assert!(is_worker(), "not on a worker thread");
         unsafe { &*WORKER_CONTEXT.with(Cell::get) }
     }

@@ -77,7 +77,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use log::{debug, error};
+use log::{debug};
 
 use crate::error::Result;
 use crate::execution::context::TaskContext;
@@ -86,15 +86,13 @@ use crate::physical_plan::ExecutionPlan;
 use plan::{PipelinePlan, PipelinePlanner, RoutablePipeline};
 use task::{spawn_plan, Task};
 
-use rayon::{ThreadPool, ThreadPoolBuilder};
-
-use crate::scheduler::worker::{DefaultDriver, Driver, WorkerPool, WorkerPoolBuilder};
+use crate::scheduler::worker::{DefaultDriver, Driver, ThreadLocalDriver, WorkerPool, WorkerPoolBuilder};
 pub use task::ExecutionResults;
 
 mod pipeline;
 mod plan;
 mod task;
-mod worker;
+pub mod worker;
 
 /// Builder for a [`Scheduler`]
 #[derive(Debug)]
@@ -164,6 +162,10 @@ impl Scheduler {
         SchedulerBuilder::default().driver(driver).build()
     }
 
+    pub fn new_thread_per_core() -> Self {
+        SchedulerBuilder::default().driver(ThreadLocalDriver::default()).build()
+    }
+
     /// Schedule the provided [`ExecutionPlan`] on this [`Scheduler`].
     ///
     /// Returns a [`ExecutionResults`] that can be used to receive results as they are produced,
@@ -230,7 +232,6 @@ fn is_worker() -> bool {
 fn spawn_local(task: Task) {
     // Verify is a worker thread to avoid creating a global pool
     assert!(is_worker(), "must be called from a worker");
-    // rayon::spawn(|| task.do_work())
     worker::spawn_local(task)
 }
 
@@ -245,7 +246,6 @@ fn spawn_local(task: Task) {
 fn spawn_local_fifo(task: Task) {
     // Verify is a worker thread to avoid creating a global pool
     assert!(is_worker(), "must be called from a worker");
-    // rayon::spawn_fifo(|| task.do_work())
     worker::spawn_local_fifo(task)
 }
 
