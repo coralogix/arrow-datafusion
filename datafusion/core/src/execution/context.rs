@@ -2016,7 +2016,7 @@ impl TaskContext {
         runtime: Arc<RuntimeEnv>,
         extensions: Extensions,
     ) -> Result<Self> {
-        let mut config = ConfigOptions::with_extensions(extensions);
+        let mut config = ConfigOptions::new().with_extensions(extensions);
 
         for (k, v) in task_props {
             config.set(&k, &v)?;
