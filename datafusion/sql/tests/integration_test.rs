@@ -3214,6 +3214,39 @@ fn test_select_join_key_inner_join() {
 }
 
 #[test]
+fn test_select_order_by() {
+    let sql = "SELECT '1' from person order by id";
+
+    let expected = "Projection: Utf8(\"1\")\n  Sort: person.id ASC NULLS LAST\n    Projection: Utf8(\"1\"), person.id\n      TableScan: person";
+    quick_test(sql, expected);
+}
+
+#[test]
+fn test_select_distinct_order_by() {
+    let sql = "SELECT distinct '1' from person order by id";
+
+    let expected =
+        "Error during planning: For SELECT DISTINCT, ORDER BY expressions id must appear in select list";
+
+    // It should return error.
+    let result = logical_plan(sql);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert_eq!(err.to_string(), expected);
+}
+
+#[test]
+fn select_order_by_with_cast() {
+    let sql =
+        "SELECT first_name AS first_name FROM (SELECT first_name AS first_name FROM person) ORDER BY CAST(first_name as INT)";
+    let expected = "Sort: CAST(first_name AS first_name AS Int32) ASC NULLS LAST\
+                        \n  Projection: first_name AS first_name\
+                        \n    Projection: person.first_name AS first_name\
+                        \n      TableScan: person";
+    quick_test(sql, expected);
+}
+
+#[test]
 fn test_duplicated_left_join_key_inner_join() {
     //  person.id * 2 happen twice in left side.
     let sql = "SELECT person.id, person.age
