@@ -80,16 +80,16 @@ impl CompressionTypeVariant {
 #[derive(Clone, Copy)]
 #[repr(u16)]
 enum IntervalType {
-    Century = 0b_00_0000_0001,
-    Decade = 0b_00_0000_0010,
-    Year = 0b_00_0000_0100,
-    Month = 0b_00_0000_1000,
-    Week = 0b_00_0001_0000,
-    Day = 0b_00_0010_0000,
-    Hour = 0b_00_0100_0000,
-    Minute = 0b_00_1000_0000,
-    Second = 0b_01_0000_0000,
-    Millisecond = 0b_10_0000_0000,
+    Century = 0b00_0000_0001,
+    Decade = 0b00_0000_0010,
+    Year = 0b00_0000_0100,
+    Month = 0b00_0000_1000,
+    Week = 0b00_0001_0000,
+    Day = 0b00_0010_0000,
+    Hour = 0b00_0100_0000,
+    Minute = 0b00_1000_0000,
+    Second = 0b01_0000_0000,
+    Millisecond = 0b10_0000_0000,
 }
 
 impl FromStr for IntervalType {
