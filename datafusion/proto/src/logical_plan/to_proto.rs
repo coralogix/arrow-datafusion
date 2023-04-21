@@ -912,8 +912,16 @@ impl TryFrom<&Expr> for protobuf::LogicalExprNode {
                     })),
                 }
             },
-
-            Expr::QualifiedWildcard { .. } | Expr::TryCast { .. } =>
+            Expr::TryCast(expr::TryCast {expr, data_type}) => {
+                let expr = Box::new(protobuf::TryCastNode {
+                    expr: Some(Box::new(expr.as_ref().try_into()?)),
+                    arrow_type: Some(data_type.try_into()?),
+                });
+                Self {
+                    expr_type: Some(ExprType::TryCast(expr)),
+                }
+            },
+            Expr::QualifiedWildcard { .. } =>
                 return Err(Error::General("Proto serialization error: Expr::QualifiedWildcard { .. } | Expr::TryCast { .. } not supported".to_string())),
         };
 
