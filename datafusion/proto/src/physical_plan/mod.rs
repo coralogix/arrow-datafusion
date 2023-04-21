@@ -1475,7 +1475,6 @@ mod roundtrip_tests {
                 AggregateMode::Final,
                 PhysicalGroupBy::new_single(groups.clone()),
                 aggregates.clone(),
-                vec![None],
                 Arc::new(EmptyExec::new(false, schema.clone())),
                 schema,
             )?),
