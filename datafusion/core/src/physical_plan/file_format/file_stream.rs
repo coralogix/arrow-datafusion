@@ -415,7 +415,7 @@ impl<F: FileOpener> FileStream<F> {
                             self.file_stream_metrics.time_scanning_total.start();
                             return Poll::Ready(Some(result.map_err(Into::into)));
                         }
-                        Some(Err(_err)) => {
+                        Some(Err(err)) => {
                             self.file_stream_metrics.file_scan_errors.add(1);
                             self.file_stream_metrics.time_scanning_until_data.stop();
                             self.file_stream_metrics.time_scanning_total.stop();
@@ -445,7 +445,10 @@ impl<F: FileOpener> FileStream<F> {
                                     }
                                     None => return Poll::Ready(None),
                                 },
-                                OnError::Fail => self.state = FileStreamState::Error,
+                                OnError::Fail => {
+                                    self.state = FileStreamState::Error;
+                                    return Poll::Ready(Some(Err(err.into())));
+                                }
                             }
                         }
                         None => {
