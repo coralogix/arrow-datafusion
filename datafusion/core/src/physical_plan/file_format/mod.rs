@@ -37,7 +37,7 @@ use arrow::{
 };
 pub use avro::AvroExec;
 use datafusion_physical_expr::PhysicalSortExpr;
-pub use file_stream::{FileOpenFuture, FileOpener, FileStream};
+pub use file_stream::{FileOpenFuture, FileOpener, FileStream, OnError};
 pub(crate) use json::plan_to_json;
 pub use json::{JsonOpener, NdJsonExec};
 
