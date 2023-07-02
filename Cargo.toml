@@ -45,12 +45,18 @@ repository = "https://github.com/apache/arrow-datafusion"
 rust-version = "1.64"
 
 [workspace.dependencies]
-arrow = { version = "42.0.0", features = ["prettyprint", "dyn_cmp_dict"] }
-arrow-flight = { version = "42.0.0", features = ["flight-sql-experimental"] }
-arrow-buffer = { version = "42.0.0", default-features = false }
-arrow-schema = { version = "42.0.0", default-features = false }
-arrow-array = { version = "42.0.0", default-features = false, features = ["chrono-tz"] }
-parquet = { version = "42.0.0", features = ["arrow", "async", "object_store"] }
+# arrow = { version = "42.0.0", features = ["prettyprint", "dyn_cmp_dict"] }
+# arrow-flight = { version = "42.0.0", features = ["flight-sql-experimental"] }
+# arrow-buffer = { version = "42.0.0", default-features = false }
+# arrow-schema = { version = "42.0.0", default-features = false }
+# arrow-array = { version = "42.0.0", default-features = false, features = ["chrono-tz"] }
+# parquet = { version = "42.0.0", features = ["arrow", "async", "object_store"] }
+arrow = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", features = ["prettyprint", "dyn_cmp_dict"] }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", features = ["flight-sql-experimental"] }
+arrow-buffer = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", default-features = false }
+arrow-schema = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", default-features = false }
+arrow-array = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", default-features = false, features = ["chrono-tz"] }
+parquet = { git = "https://github.com/coralogix/arrow-rs.git", branch = "parquet-col-datapage-size", features = ["arrow", "async", "object_store"] }
 sqlparser = { version = "0.35", features = ["visitor"] }
 
 [profile.release]
