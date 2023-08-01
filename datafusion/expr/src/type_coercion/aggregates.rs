@@ -19,6 +19,7 @@ use arrow::datatypes::{
     DataType, TimeUnit, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE,
 };
 use datafusion_common::{DataFusionError, Result};
+use lazy_static::lazy_static;
 use std::ops::Deref;
 
 use crate::{AggregateFunction, Signature, TypeSignature};
@@ -65,12 +66,20 @@ pub static NUMERICS: &[DataType] = &[
     DataType::Float64,
 ];
 
-pub static TIMESTAMPS: &[DataType] = &[
-    DataType::Timestamp(TimeUnit::Second, None),
-    DataType::Timestamp(TimeUnit::Millisecond, None),
-    DataType::Timestamp(TimeUnit::Microsecond, None),
-    DataType::Timestamp(TimeUnit::Nanosecond, None),
-];
+lazy_static! {
+    pub static ref TIMESTAMPS: Vec<DataType> = vec![
+        DataType::Timestamp(TimeUnit::Second, None),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+
+        // Support UTC as well
+        DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+    ];
+}
 
 pub static DATES: &[DataType] = &[DataType::Date32, DataType::Date64];
 
