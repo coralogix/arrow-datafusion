@@ -15,29 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Optimizer that rewrites [`ExecutionPlan`]s.
-//!
-//! These rules take advantage of physical plan properties , such as
-//! "Repartition" or "Sortedness"
-//!
-//! [`ExecutionPlan`]: crate::physical_plan::ExecutionPlan
-pub mod aggregate_statistics;
-pub mod coalesce_batches;
-pub mod combine_partial_final_agg;
-pub mod dist_enforcement;
-pub mod join_selection;
-pub mod optimizer;
-pub mod pipeline_checker;
-pub mod pruning;
-pub mod repartition;
-pub mod replace_repartition_execs;
-pub mod sort_enforcement;
-mod sort_pushdown;
-pub mod topk_aggregation;
-mod utils;
+//! TopK functionality for aggregates
 
-pub mod pipeline_fixer;
-#[cfg(test)]
-pub mod test_utils;
-
-pub use optimizer::PhysicalOptimizerRule;
+pub mod hash_table;
+pub mod heap;
+pub mod priority_map;
