@@ -25,7 +25,9 @@ use crate::type_coercion::binary::get_result_type;
 use crate::{LogicalPlan, Projection, Subquery};
 use arrow::compute::can_cast_types;
 use arrow::datatypes::DataType;
-use datafusion_common::{Column, DFField, DFSchema, DataFusionError, ExprSchema, Result};
+use datafusion_common::{
+    Column, DFField, DFSchema, DataFusionError, ExprSchema, Result, ScalarValue,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -318,6 +320,18 @@ impl ExprSchemable for Expr {
             return Ok(self);
         }
 
+        if let Expr::Literal(ScalarValue::Boolean(bool)) = &self {
+            if cast_to_type == &DataType::Utf8 {
+                return Ok(Expr::Literal(ScalarValue::Utf8(bool.map(|b| {
+                    if b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    }
+                }))));
+            }
+        }
+
         // TODO(kszucs): most of the operations do not validate the type correctness
         // like all of the binary expressions below. Perhaps Expr should track the
         // type of the expression?
@@ -508,6 +522,20 @@ mod tests {
 
         // verify to_field method populates metadata
         assert_eq!(&meta, expr.to_field(&schema).unwrap().metadata());
+    }
+
+    #[test]
+    fn test_bool_expr_cast() {
+        let schema = DFSchema::new_with_metadata(
+            vec![DFField::new_unqualified("foo", DataType::Boolean, true)],
+            HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            lit(true).cast_to(&DataType::Utf8, &schema).unwrap(),
+            lit("true")
+        );
     }
 
     #[derive(Debug)]
