@@ -211,7 +211,7 @@ fn concat_literals() -> Result<()> {
         FROM test";
     let plan = test_sql(sql)?;
     let expected =
-        "Projection: concat(Utf8(\"1\"), CAST(test.col_int32 AS Utf8), Utf8(\"0hello\"), test.col_utf8, Utf8(\"123.4\")) AS col\
+        "Projection: concat(Utf8(\"true\"), CAST(test.col_int32 AS Utf8), Utf8(\"falsehello\"), test.col_utf8, Utf8(\"123.4\")) AS col\
         \n  TableScan: test projection=[col_int32, col_utf8]";
     assert_eq!(expected, format!("{plan:?}"));
     Ok(())

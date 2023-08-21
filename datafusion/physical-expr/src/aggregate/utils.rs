@@ -22,7 +22,6 @@ use arrow::array::ArrayRef;
 use arrow::datatypes::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, TimestampNanosecondType};
-use arrow_array::Array;
 use arrow_schema::{DataType, Field};
 use datafusion_common::{DataFusionError, Result, ScalarValue};
 use datafusion_expr::Accumulator;
