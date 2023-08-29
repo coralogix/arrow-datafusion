@@ -3951,6 +3951,7 @@ impl ScalarType<i64> for TimestampNanosecondType {
 }
 
 #[cfg(test)]
+#[allow(clippy::useless_vec)]
 mod tests {
     use std::cmp::Ordering;
     use std::sync::Arc;
@@ -4176,7 +4177,7 @@ mod tests {
             ScalarValue::Decimal128(Some(3), 10, 2),
         ];
         // convert the vec to decimal array and check the result
-        let array = ScalarValue::iter_to_array(decimal_vec.into_iter()).unwrap();
+        let array = ScalarValue::iter_to_array(decimal_vec).unwrap();
         assert_eq!(3, array.len());
         assert_eq!(DataType::Decimal128(10, 2), array.data_type().clone());
 
@@ -4186,7 +4187,7 @@ mod tests {
             ScalarValue::Decimal128(Some(3), 10, 2),
             ScalarValue::Decimal128(None, 10, 2),
         ];
-        let array = ScalarValue::iter_to_array(decimal_vec.into_iter()).unwrap();
+        let array = ScalarValue::iter_to_array(decimal_vec).unwrap();
         assert_eq!(4, array.len());
         assert_eq!(DataType::Decimal128(10, 2), array.data_type().clone());
 
@@ -4398,12 +4399,12 @@ mod tests {
         check_scalar_iter_binary!(
             Binary,
             BinaryArray,
-            vec![Some(b"foo"), None, Some(b"bar")]
+            [Some(b"foo"), None, Some(b"bar")]
         );
         check_scalar_iter_binary!(
             LargeBinary,
             LargeBinaryArray,
-            vec![Some(b"foo"), None, Some(b"bar")]
+            [Some(b"foo"), None, Some(b"bar")]
         );
     }
 
@@ -4411,7 +4412,7 @@ mod tests {
     fn scalar_iter_to_array_empty() {
         let scalars = vec![] as Vec<ScalarValue>;
 
-        let result = ScalarValue::iter_to_array(scalars.into_iter()).unwrap_err();
+        let result = ScalarValue::iter_to_array(scalars).unwrap_err();
         assert!(
             result
                 .to_string()
@@ -4435,7 +4436,7 @@ mod tests {
             make_val(Some("Bar".into())),
         ];
 
-        let array = ScalarValue::iter_to_array(scalars.into_iter()).unwrap();
+        let array = ScalarValue::iter_to_array(scalars).unwrap();
         let array = as_dictionary_array::<Int32Type>(&array).unwrap();
         let values_array = as_string_array(array.values()).unwrap();
 
@@ -4459,7 +4460,7 @@ mod tests {
         // If the scalar values are not all the correct type, error here
         let scalars: Vec<ScalarValue> = vec![Boolean(Some(true)), Int32(Some(5))];
 
-        let result = ScalarValue::iter_to_array(scalars.into_iter()).unwrap_err();
+        let result = ScalarValue::iter_to_array(scalars).unwrap_err();
         assert!(result.to_string().contains("Inconsistent types in ScalarValue::iter_to_array. Expected Boolean, got Int32(5)"),
                 "{}", result);
     }
@@ -4545,21 +4546,21 @@ mod tests {
             }};
         }
 
-        let bool_vals = vec![Some(true), None, Some(false)];
-        let f32_vals = vec![Some(-1.0), None, Some(1.0)];
+        let bool_vals = [Some(true), None, Some(false)];
+        let f32_vals = [Some(-1.0), None, Some(1.0)];
         let f64_vals = make_typed_vec!(f32_vals, f64);
 
-        let i8_vals = vec![Some(-1), None, Some(1)];
+        let i8_vals = [Some(-1), None, Some(1)];
         let i16_vals = make_typed_vec!(i8_vals, i16);
         let i32_vals = make_typed_vec!(i8_vals, i32);
         let i64_vals = make_typed_vec!(i8_vals, i64);
 
-        let u8_vals = vec![Some(0), None, Some(1)];
+        let u8_vals = [Some(0), None, Some(1)];
         let u16_vals = make_typed_vec!(u8_vals, u16);
         let u32_vals = make_typed_vec!(u8_vals, u32);
         let u64_vals = make_typed_vec!(u8_vals, u64);
 
-        let str_vals = vec![Some("foo"), None, Some("bar")];
+        let str_vals = [Some("foo"), None, Some("bar")];
 
         /// Test each value in `scalar` with the corresponding element
         /// at `array`. Assumes each element is unique (aka not equal

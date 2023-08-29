@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::{AggregateUDF, LogicalPlan, ScalarUDF, TableSource, WindowUDF};
@@ -223,10 +223,11 @@ fn concat_ws_literals() -> Result<()> {
         AS col
         FROM test";
     let plan = test_sql(sql)?;
-    let expected =
-        "Projection: concat_ws(Utf8(\"-\"), Utf8(\"1\"), CAST(test.col_int32 AS Utf8), Utf8(\"0-hello\"), test.col_utf8, Utf8(\"12--3.4\")) AS col\
-        \n  TableScan: test projection=[col_int32, col_utf8]";
-    assert_eq!(expected, format!("{plan:?}"));
+    let expected = r#"
+Projection: concat_ws(Utf8("-"), Utf8("true"), CAST(test.col_int32 AS Utf8), Utf8("false-hello"), test.col_utf8, Utf8("12--3.4")) AS col
+  TableScan: test projection=[col_int32, col_utf8]
+    "#;
+    assert_eq!(format!("{plan:?}"), expected.trim());
     Ok(())
 }
 
@@ -345,7 +346,7 @@ fn test_sql(sql: &str) -> Result<LogicalPlan> {
 
     // hard code the return value of now()
     let ts = NaiveDateTime::from_timestamp_opt(1666615693, 0).unwrap();
-    let now_time = DateTime::<Utc>::from_utc(ts, Utc);
+    let now_time = TimeZone::from_utc_datetime(&Utc, &ts);
     let config = OptimizerContext::new()
         .with_skip_failing_rules(false)
         .with_query_execution_start_time(now_time);

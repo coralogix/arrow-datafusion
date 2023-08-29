@@ -1214,7 +1214,7 @@ mod tests {
         let result = lt.evaluate(&batch)?.into_array(batch.num_rows());
         assert_eq!(result.len(), 5);
 
-        let expected = vec![false, false, true, true, true];
+        let expected = [false, false, true, true, true];
         let result =
             as_boolean_array(&result).expect("failed to downcast to BooleanArray");
         for (i, &expected_item) in expected.iter().enumerate().take(5) {
@@ -1258,7 +1258,7 @@ mod tests {
         let result = expr.evaluate(&batch)?.into_array(batch.num_rows());
         assert_eq!(result.len(), 5);
 
-        let expected = vec![true, true, false, true, false];
+        let expected = [true, true, false, true, false];
         let result =
             as_boolean_array(&result).expect("failed to downcast to BooleanArray");
         for (i, &expected_item) in expected.iter().enumerate().take(5) {
@@ -1333,7 +1333,7 @@ mod tests {
             Operator::Plus,
             Int32Array,
             DataType::Int32,
-            vec![2i32, 4i32],
+            [2i32, 4i32],
         );
         test_coercion!(
             Int32Array,
@@ -1345,7 +1345,7 @@ mod tests {
             Operator::Plus,
             Int32Array,
             DataType::Int32,
-            vec![2i32],
+            [2i32],
         );
         test_coercion!(
             Float32Array,
@@ -1357,7 +1357,7 @@ mod tests {
             Operator::Plus,
             Float32Array,
             DataType::Float32,
-            vec![2f32],
+            [2f32],
         );
         test_coercion!(
             Float32Array,
@@ -1369,7 +1369,7 @@ mod tests {
             Operator::Multiply,
             Float32Array,
             DataType::Float32,
-            vec![2f32],
+            [2f32],
         );
         test_coercion!(
             StringArray,
@@ -1381,7 +1381,7 @@ mod tests {
             Operator::Eq,
             BooleanArray,
             DataType::Boolean,
-            vec![true, true],
+            [true, true],
         );
         test_coercion!(
             StringArray,
@@ -1393,7 +1393,7 @@ mod tests {
             Operator::Lt,
             BooleanArray,
             DataType::Boolean,
-            vec![true, false],
+            [true, false],
         );
         test_coercion!(
             StringArray,
@@ -1405,7 +1405,7 @@ mod tests {
             Operator::Eq,
             BooleanArray,
             DataType::Boolean,
-            vec![true, true],
+            [true, true],
         );
         test_coercion!(
             StringArray,
@@ -1417,7 +1417,7 @@ mod tests {
             Operator::Lt,
             BooleanArray,
             DataType::Boolean,
-            vec![true, false],
+            [true, false],
         );
         test_coercion!(
             StringArray,
@@ -1429,7 +1429,7 @@ mod tests {
             Operator::RegexMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![true, false, true, false, false],
+            [true, false, true, false, false],
         );
         test_coercion!(
             StringArray,
@@ -1441,7 +1441,7 @@ mod tests {
             Operator::RegexIMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![true, true, true, true, false],
+            [true, true, true, true, false],
         );
         test_coercion!(
             StringArray,
@@ -1453,7 +1453,7 @@ mod tests {
             Operator::RegexNotMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![false, true, false, true, true],
+            [false, true, false, true, true],
         );
         test_coercion!(
             StringArray,
@@ -1465,7 +1465,7 @@ mod tests {
             Operator::RegexNotIMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![false, false, false, false, true],
+            [false, false, false, false, true],
         );
         test_coercion!(
             LargeStringArray,
@@ -1477,7 +1477,7 @@ mod tests {
             Operator::RegexMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![true, false, true, false, false],
+            [true, false, true, false, false],
         );
         test_coercion!(
             LargeStringArray,
@@ -1489,7 +1489,7 @@ mod tests {
             Operator::RegexIMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![true, true, true, true, false],
+            [true, true, true, true, false],
         );
         test_coercion!(
             LargeStringArray,
@@ -1501,7 +1501,7 @@ mod tests {
             Operator::RegexNotMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![false, true, false, true, true],
+            [false, true, false, true, true],
         );
         test_coercion!(
             LargeStringArray,
@@ -1513,7 +1513,7 @@ mod tests {
             Operator::RegexNotIMatch,
             BooleanArray,
             DataType::Boolean,
-            vec![false, false, false, false, true],
+            [false, false, false, false, true],
         );
         test_coercion!(
             Int16Array,
@@ -1525,7 +1525,7 @@ mod tests {
             Operator::BitwiseAnd,
             Int64Array,
             DataType::Int64,
-            vec![0i64, 0i64, 1i64],
+            [0i64, 0i64, 1i64],
         );
         test_coercion!(
             UInt16Array,
@@ -1537,7 +1537,7 @@ mod tests {
             Operator::BitwiseAnd,
             UInt64Array,
             DataType::UInt64,
-            vec![0u64, 0u64, 1u64],
+            [0u64, 0u64, 1u64],
         );
         test_coercion!(
             Int16Array,
@@ -1549,7 +1549,7 @@ mod tests {
             Operator::BitwiseOr,
             Int64Array,
             DataType::Int64,
-            vec![11i64, 6i64, 7i64],
+            [11i64, 6i64, 7i64],
         );
         test_coercion!(
             UInt16Array,
@@ -1561,7 +1561,7 @@ mod tests {
             Operator::BitwiseOr,
             UInt64Array,
             DataType::UInt64,
-            vec![11u64, 6u64, 7u64],
+            [11u64, 6u64, 7u64],
         );
         test_coercion!(
             Int16Array,
@@ -1573,7 +1573,7 @@ mod tests {
             Operator::BitwiseXor,
             Int64Array,
             DataType::Int64,
-            vec![9i64, 4i64, 6i64],
+            [9i64, 4i64, 6i64],
         );
         test_coercion!(
             UInt16Array,
@@ -1585,7 +1585,7 @@ mod tests {
             Operator::BitwiseXor,
             UInt64Array,
             DataType::UInt64,
-            vec![9u64, 4u64, 6u64],
+            [9u64, 4u64, 6u64],
         );
         test_coercion!(
             Int16Array,
@@ -1597,7 +1597,7 @@ mod tests {
             Operator::BitwiseShiftRight,
             Int64Array,
             DataType::Int64,
-            vec![1i64, 3i64, 2i64],
+            [1i64, 3i64, 2i64],
         );
         test_coercion!(
             UInt16Array,
@@ -1609,7 +1609,7 @@ mod tests {
             Operator::BitwiseShiftRight,
             UInt64Array,
             DataType::UInt64,
-            vec![1u64, 3u64, 2u64],
+            [1u64, 3u64, 2u64],
         );
         test_coercion!(
             Int16Array,
@@ -1621,7 +1621,7 @@ mod tests {
             Operator::BitwiseShiftLeft,
             Int64Array,
             DataType::Int64,
-            vec![32i64, 12288i64, 512i64],
+            [32i64, 12288i64, 512i64],
         );
         test_coercion!(
             UInt16Array,
@@ -1633,7 +1633,7 @@ mod tests {
             Operator::BitwiseShiftLeft,
             UInt64Array,
             DataType::UInt64,
-            vec![32u64, 12288u64, 512u64],
+            [32u64, 12288u64, 512u64],
         );
         Ok(())
     }
@@ -2961,14 +2961,14 @@ mod tests {
     /// Returns (schema, BooleanArray) with [true, NULL, false]
     fn scalar_bool_test_array() -> (SchemaRef, ArrayRef) {
         let schema = Schema::new(vec![Field::new("a", DataType::Boolean, true)]);
-        let a: BooleanArray = vec![Some(true), None, Some(false)].iter().collect();
+        let a: BooleanArray = [Some(true), None, Some(false)].iter().collect();
         (Arc::new(schema), Arc::new(a))
     }
 
     #[test]
     fn eq_op_bool() {
         let (schema, a, b) = bool_test_arrays();
-        let expected = vec![
+        let expected = [
             Some(true),
             None,
             Some(false),

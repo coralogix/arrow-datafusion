@@ -1421,7 +1421,7 @@ mod tests {
             ScalarValue::new_one(&DataType::Int8)?,
         ];
 
-        let _ = zeros.into_iter().zip(ones.into_iter()).map(|(z, o)| {
+        let _ = zeros.into_iter().zip(ones).map(|(z, o)| {
             assert_eq!(next_value::<true>(z.clone()), o);
             assert_eq!(next_value::<false>(o), z);
         });
@@ -1437,7 +1437,7 @@ mod tests {
             ScalarValue::Float64(Some(1e-6)),
         ];
 
-        let _ = values.into_iter().zip(eps.into_iter()).map(|(v, e)| {
+        let _ = values.into_iter().zip(eps).map(|(v, e)| {
             assert!(next_value::<true>(v.clone()).sub(v.clone()).unwrap().lt(&e));
             assert!(v.clone().sub(next_value::<false>(v)).unwrap().lt(&e));
         });
@@ -1456,7 +1456,7 @@ mod tests {
             ScalarValue::Float64(Some(f64::MAX)),
         ];
 
-        let _ = min.into_iter().zip(max.into_iter()).map(|(min, max)| {
+        let _ = min.into_iter().zip(max).map(|(min, max)| {
             assert_eq!(next_value::<true>(max.clone()), max);
             assert_eq!(next_value::<false>(min.clone()), min);
         });

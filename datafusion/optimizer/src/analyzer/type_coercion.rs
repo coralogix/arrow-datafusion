@@ -1214,8 +1214,10 @@ mod test {
 
             let plan =
                 LogicalPlan::Projection(Projection::try_new(vec![expr], empty.clone())?);
-            let expected =
-                "Projection: concat(a, Utf8(\"b\"), CAST(Boolean(true) AS Utf8), CAST(Boolean(false) AS Utf8), CAST(Int32(13) AS Utf8))\n  EmptyRelation";
+            let expected = r#"
+Projection: concat(a, Utf8("b"), Utf8("true"), Utf8("false"), CAST(Int32(13) AS Utf8)) AS concat(a,Utf8("b"),Boolean(true),Boolean(false),Int32(13))
+  EmptyRelation
+            "#.trim();
             assert_analyzed_plan_eq(Arc::new(TypeCoercion::new()), &plan, expected)?;
         }
 
@@ -1224,8 +1226,10 @@ mod test {
             let expr = concat_ws(lit("-"), args.to_vec());
 
             let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
-            let expected =
-                "Projection: concat_ws(Utf8(\"-\"), a, Utf8(\"b\"), CAST(Boolean(true) AS Utf8), CAST(Boolean(false) AS Utf8), CAST(Int32(13) AS Utf8))\n  EmptyRelation";
+            let expected = r#"
+Projection: concat_ws(Utf8("-"), a, Utf8("b"), Utf8("true"), Utf8("false"), CAST(Int32(13) AS Utf8)) AS concat_ws(Utf8("-"),a,Utf8("b"),Boolean(true),Boolean(false),Int32(13))
+  EmptyRelation
+            "#.trim();
             assert_analyzed_plan_eq(Arc::new(TypeCoercion::new()), &plan, expected)?;
         }
 
