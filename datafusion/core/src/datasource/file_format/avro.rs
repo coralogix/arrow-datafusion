@@ -176,7 +176,7 @@ mod tests {
         let batches = collect(exec, task_ctx).await?;
         assert_eq!(batches.len(), 1);
 
-        let expected =  vec![
+        let expected =  [
             "+----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+",
             "| id | bool_col | tinyint_col | smallint_col | int_col | bigint_col | float_col | double_col | date_string_col  | string_col | timestamp_col       |",
             "+----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+",
