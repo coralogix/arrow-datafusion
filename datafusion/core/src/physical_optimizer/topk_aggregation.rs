@@ -21,6 +21,7 @@ use crate::physical_optimizer::PhysicalOptimizerRule;
 use crate::physical_plan::aggregates::AggregateExec;
 use crate::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use crate::physical_plan::filter::FilterExec;
+use crate::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use crate::physical_plan::repartition::RepartitionExec;
 use crate::physical_plan::sorts::sort::SortExec;
 use crate::physical_plan::ExecutionPlan;
@@ -91,11 +92,12 @@ impl TopKAggregation {
         let limit = sort.fetch()?;
 
         let is_cardinality_preserving = |plan: Arc<dyn ExecutionPlan>| {
-            plan.as_any()
-                .downcast_ref::<CoalesceBatchesExec>()
-                .is_some()
-                || plan.as_any().downcast_ref::<RepartitionExec>().is_some()
-                || plan.as_any().downcast_ref::<FilterExec>().is_some()
+            let any = plan.as_any();
+            any.downcast_ref::<CoalesceBatchesExec>().is_some()
+                || any.downcast_ref::<RepartitionExec>().is_some()
+                || any.downcast_ref::<FilterExec>().is_some()
+                || any.downcast_ref::<GlobalLimitExec>().is_some()
+                || any.downcast_ref::<LocalLimitExec>().is_some()
         };
 
         let mut cardinality_preserved = true;
