@@ -223,10 +223,11 @@ fn concat_ws_literals() -> Result<()> {
         AS col
         FROM test";
     let plan = test_sql(sql)?;
-    let expected =
-        "Projection: concat_ws(Utf8(\"-\"), Utf8(\"1\"), CAST(test.col_int32 AS Utf8), Utf8(\"0-hello\"), test.col_utf8, Utf8(\"12--3.4\")) AS col\
-        \n  TableScan: test projection=[col_int32, col_utf8]";
-    assert_eq!(expected, format!("{plan:?}"));
+    let expected = r#"
+Projection: concat_ws(Utf8("-"), Utf8("true"), CAST(test.col_int32 AS Utf8), Utf8("false-hello"), test.col_utf8, Utf8("12--3.4")) AS col
+  TableScan: test projection=[col_int32, col_utf8]
+    "#;
+    assert_eq!(format!("{plan:?}"), expected.trim());
     Ok(())
 }
 
