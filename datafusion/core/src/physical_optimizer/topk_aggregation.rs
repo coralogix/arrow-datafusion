@@ -20,6 +20,7 @@
 use crate::physical_optimizer::PhysicalOptimizerRule;
 use crate::physical_plan::aggregates::AggregateExec;
 use crate::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use crate::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use crate::physical_plan::filter::FilterExec;
 use crate::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use crate::physical_plan::repartition::RepartitionExec;
@@ -98,6 +99,7 @@ impl TopKAggregation {
                 || any.downcast_ref::<FilterExec>().is_some()
                 || any.downcast_ref::<GlobalLimitExec>().is_some()
                 || any.downcast_ref::<LocalLimitExec>().is_some()
+                || any.downcast_ref::<CoalescePartitionsExec>().is_some()
         };
 
         let mut cardinality_preserved = true;
