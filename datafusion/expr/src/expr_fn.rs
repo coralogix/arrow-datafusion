@@ -873,7 +873,7 @@ mod test {
 
     macro_rules! test_scalar_expr {
         ($ENUM:ident, $FUNC:ident, $($arg:ident),*) => {
-            let expected = vec![$(stringify!($arg)),*];
+            let expected = [$(stringify!($arg)),*];
             let result = $FUNC(
                 $(
                     col(stringify!($arg.to_string()))
@@ -891,7 +891,7 @@ mod test {
 
     macro_rules! test_nary_scalar_expr {
         ($ENUM:ident, $FUNC:ident, $($arg:ident),*) => {
-            let expected = vec![$(stringify!($arg)),*];
+            let expected = [$(stringify!($arg)),*];
             let result = $FUNC(
                 vec![
                     $(

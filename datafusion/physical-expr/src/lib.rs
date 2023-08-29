@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![allow(clippy::single_range_in_vec_init)]
+
 pub mod aggregate;
 pub mod array_expressions;
 pub mod conditional_expressions;
