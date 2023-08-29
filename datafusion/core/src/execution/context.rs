@@ -2159,7 +2159,7 @@ mod tests {
             plan_and_collect(&ctx, "SELECT @@version, @name, @integer + 1 FROM dual")
                 .await?;
 
-        let expected = vec![
+        let expected = [
             "+----------------------+------------------------+---------------------+",
             "| @@version            | @name                  | @integer + Int64(1) |",
             "+----------------------+------------------------+---------------------+",
@@ -2229,7 +2229,7 @@ mod tests {
         // Can call it if you put quotes
         let result = plan_and_collect(&ctx, "SELECT \"MY_FUNC\"(i) FROM t").await?;
 
-        let expected = vec![
+        let expected = [
             "+--------------+",
             "| MY_FUNC(t.i) |",
             "+--------------+",
@@ -2275,7 +2275,7 @@ mod tests {
         // Can call it if you put quotes
         let result = plan_and_collect(&ctx, "SELECT \"MY_AVG\"(i) FROM t").await?;
 
-        let expected = vec![
+        let expected = [
             "+-------------+",
             "| MY_AVG(t.i) |",
             "+-------------+",
@@ -2308,7 +2308,7 @@ mod tests {
             plan_and_collect(&ctx, "SELECT SUM(c1), SUM(c2), COUNT(*) FROM test").await?;
 
         assert_eq!(results.len(), 1);
-        let expected = vec![
+        let expected = [
             "+--------------+--------------+-----------------+",
             "| SUM(test.c1) | SUM(test.c2) | COUNT(UInt8(1)) |",
             "+--------------+--------------+-----------------+",
@@ -2456,7 +2456,7 @@ mod tests {
             .await
             .unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+-------+",
                 "| count |",
                 "+-------+",
@@ -2498,7 +2498,7 @@ mod tests {
         )
         .await?;
 
-        let expected = vec![
+        let expected = [
             "+-----+-------+",
             "| cat | total |",
             "+-----+-------+",

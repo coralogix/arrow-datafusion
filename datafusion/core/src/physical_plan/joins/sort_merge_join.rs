@@ -1689,7 +1689,7 @@ mod tests {
 
         let (_, batches) = join_collect(left, right, on, JoinType::Inner).await?;
 
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b1 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1727,7 +1727,7 @@ mod tests {
         ];
 
         let (_columns, batches) = join_collect(left, right, on, JoinType::Inner).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b2 | c1 | a1 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1765,7 +1765,7 @@ mod tests {
         ];
 
         let (_columns, batches) = join_collect(left, right, on, JoinType::Inner).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b2 | c1 | a1 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1804,7 +1804,7 @@ mod tests {
         ];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Inner).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b2 | c1 | a1 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1855,7 +1855,7 @@ mod tests {
             true,
         )
         .await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b2 | c1 | a1 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1895,7 +1895,7 @@ mod tests {
 
         let (_, batches) =
             join_collect_batch_size_equals_two(left, right, on, JoinType::Inner).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b2 | c1 | a1 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1930,7 +1930,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Left).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b1 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1962,7 +1962,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Right).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b1 | c2 |",
             "+----+----+----+----+----+----+",
@@ -1994,7 +1994,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Full).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -2026,7 +2026,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::LeftAnti).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+",
             "| a1 | b1 | c1 |",
             "+----+----+----+",
@@ -2057,7 +2057,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::LeftSemi).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+",
             "| a1 | b1 | c1 |",
             "+----+----+----+",
@@ -2090,7 +2090,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Inner).await?;
-        let expected = vec![
+        let expected = [
             "+---+---+---+----+---+----+",
             "| a | b | c | a  | b | c  |",
             "+---+---+---+----+---+----+",
@@ -2123,15 +2123,13 @@ mod tests {
 
         let (_, batches) = join_collect(left, right, on, JoinType::Inner).await?;
 
-        let expected = vec![
-            "+------------+------------+------------+------------+------------+------------+",
+        let expected = ["+------------+------------+------------+------------+------------+------------+",
             "| a1         | b1         | c1         | a2         | b1         | c2         |",
             "+------------+------------+------------+------------+------------+------------+",
             "| 1970-01-02 | 2022-04-25 | 1970-01-08 | 1970-01-11 | 2022-04-25 | 1970-03-12 |",
             "| 1970-01-03 | 2022-04-26 | 1970-01-09 | 1970-01-21 | 2022-04-26 | 1970-03-22 |",
             "| 1970-01-04 | 2022-04-26 | 1970-01-10 | 1970-01-21 | 2022-04-26 | 1970-03-22 |",
-            "+------------+------------+------------+------------+------------+------------+",
-        ];
+            "+------------+------------+------------+------------+------------+------------+"];
         // The output order is important as SMJ preserves sortedness
         assert_batches_eq!(expected, &batches);
         Ok(())
@@ -2157,15 +2155,13 @@ mod tests {
 
         let (_, batches) = join_collect(left, right, on, JoinType::Inner).await?;
 
-        let expected = vec![
-            "+-------------------------+---------------------+-------------------------+-------------------------+---------------------+-------------------------+",
+        let expected = ["+-------------------------+---------------------+-------------------------+-------------------------+---------------------+-------------------------+",
             "| a1                      | b1                  | c1                      | a2                      | b1                  | c2                      |",
             "+-------------------------+---------------------+-------------------------+-------------------------+---------------------+-------------------------+",
             "| 1970-01-01T00:00:00.001 | 2022-04-23T08:44:01 | 1970-01-01T00:00:00.007 | 1970-01-01T00:00:00.010 | 2022-04-23T08:44:01 | 1970-01-01T00:00:00.070 |",
             "| 1970-01-01T00:00:00.002 | 2022-04-25T16:17:21 | 1970-01-01T00:00:00.008 | 1970-01-01T00:00:00.030 | 2022-04-25T16:17:21 | 1970-01-01T00:00:00.090 |",
             "| 1970-01-01T00:00:00.003 | 2022-04-25T16:17:21 | 1970-01-01T00:00:00.009 | 1970-01-01T00:00:00.030 | 2022-04-25T16:17:21 | 1970-01-01T00:00:00.090 |",
-            "+-------------------------+---------------------+-------------------------+-------------------------+---------------------+-------------------------+",
-        ];
+            "+-------------------------+---------------------+-------------------------+-------------------------+---------------------+-------------------------+"];
         // The output order is important as SMJ preserves sortedness
         assert_batches_eq!(expected, &batches);
         Ok(())
@@ -2189,7 +2185,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Left).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -2225,7 +2221,7 @@ mod tests {
         )];
 
         let (_, batches) = join_collect(left, right, on, JoinType::Right).await?;
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b2 | c2 |",
             "+----+----+----+----+----+----+",

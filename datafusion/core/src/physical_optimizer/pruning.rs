@@ -1219,7 +1219,7 @@ mod tests {
 
         let batch =
             build_statistics_record_batch(&statistics, &required_columns).unwrap();
-        let expected = vec![
+        let expected = [
             "+--------+--------+--------+--------+",
             "| s1_min | s2_max | s3_max | s3_min |",
             "+--------+--------+--------+--------+",
@@ -1258,7 +1258,7 @@ mod tests {
 
         let batch =
             build_statistics_record_batch(&statistics, &required_columns).unwrap();
-        let expected = vec![
+        let expected = [
             "+-------------------------------+",
             "| s1_min                        |",
             "+-------------------------------+",
@@ -1304,7 +1304,7 @@ mod tests {
 
         let batch =
             build_statistics_record_batch(&statistics, &required_columns).unwrap();
-        let expected = vec![
+        let expected = [
             "+--------+",
             "| s1_min |",
             "+--------+",

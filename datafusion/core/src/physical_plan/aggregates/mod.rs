@@ -594,7 +594,7 @@ impl AggregateExec {
         // Reset ordering requirement to `None` if aggregator is not order-sensitive
         order_by_expr = aggr_expr
             .iter()
-            .zip(order_by_expr.into_iter())
+            .zip(order_by_expr)
             .map(|(aggr_expr, fn_reqs)| {
                 // If aggregation function is ordering sensitive, keep ordering requirement as is; otherwise ignore requirement
                 if is_order_sensitive(aggr_expr) {
@@ -1518,7 +1518,7 @@ mod tests {
         let result =
             common::collect(partial_aggregate.execute(0, task_ctx.clone())?).await?;
 
-        let expected = vec![
+        let expected = [
             "+---+---------------+-------------+",
             "| a | AVG(b)[count] | AVG(b)[sum] |",
             "+---+---------------+-------------+",

@@ -897,7 +897,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1", "a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+----+",
             "| a1 | b1 | c1 | a2 | b2 | c2 |",
             "+----+----+----+----+----+----+",
@@ -927,7 +927,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1", "a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+-----+----+----+----+",
             "| a1 | b1 | c1  | a2 | b2 | c2 |",
             "+----+----+-----+----+----+----+",
@@ -959,7 +959,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1", "a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+----+----+----+-----+",
             "| a1 | b1 | c1 | a2 | b2 | c2  |",
             "+----+----+----+----+----+-----+",
@@ -991,7 +991,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1", "a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+-----+----+----+-----+",
             "| a1 | b1 | c1  | a2 | b2 | c2  |",
             "+----+----+-----+----+----+-----+",
@@ -1025,7 +1025,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1"]);
-        let expected = vec![
+        let expected = [
             "+----+----+----+",
             "| a1 | b1 | c1 |",
             "+----+----+----+",
@@ -1055,7 +1055,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a1", "b1", "c1"]);
-        let expected = vec![
+        let expected = [
             "+----+----+-----+",
             "| a1 | b1 | c1  |",
             "+----+----+-----+",
@@ -1086,7 +1086,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+----+",
             "| a2 | b2 | c2 |",
             "+----+----+----+",
@@ -1116,7 +1116,7 @@ mod tests {
         )
         .await?;
         assert_eq!(columns, vec!["a2", "b2", "c2"]);
-        let expected = vec![
+        let expected = [
             "+----+----+-----+",
             "| a2 | b2 | c2  |",
             "+----+----+-----+",

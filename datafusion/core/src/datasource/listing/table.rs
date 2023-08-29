@@ -1582,7 +1582,7 @@ mod tests {
         // Execute the physical plan and collect the results
         let res = collect(plan, session_ctx.task_ctx()).await?;
         // Insert returns the number of rows written, in our case this would be 6.
-        let expected = vec![
+        let expected = [
             "+-------+",
             "| count |",
             "+-------+",
@@ -1607,7 +1607,7 @@ mod tests {
             .map_err(|e| DataFusionError::Internal(e.to_string()))?;
 
         // Define the expected result as a vector of strings.
-        let expected = vec![
+        let expected = [
             "+---------+",
             "| column1 |",
             "+---------+",
@@ -1632,7 +1632,7 @@ mod tests {
         // Again, execute the physical plan and collect the results
         let res = collect(plan, session_ctx.task_ctx()).await?;
         // Insert returns the number of rows written, in our case this would be 6.
-        let expected = vec![
+        let expected = [
             "+-------+",
             "| count |",
             "+-------+",
