@@ -163,11 +163,11 @@ name = "sql_query_with_io"
 harness = false
 name = "sort"
 
+[[bench]]
+harness = false
+name = "topk_aggregate"
+
 [[test]]
 harness = false
 name = "sqllogictests"
 path = "tests/sqllogictests/src/main.rs"
-
-[[bench]]
-harness = false
-name = "topk_aggregate"
