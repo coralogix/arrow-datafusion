@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::{AggregateUDF, LogicalPlan, ScalarUDF, TableSource, WindowUDF};
@@ -346,7 +346,7 @@ fn test_sql(sql: &str) -> Result<LogicalPlan> {
 
     // hard code the return value of now()
     let ts = NaiveDateTime::from_timestamp_opt(1666615693, 0).unwrap();
-    let now_time = DateTime::<Utc>::from_utc(ts, Utc);
+    let now_time = TimeZone::from_utc_datetime(&Utc, &ts);
     let config = OptimizerContext::new()
         .with_skip_failing_rules(false)
         .with_query_execution_start_time(now_time);
