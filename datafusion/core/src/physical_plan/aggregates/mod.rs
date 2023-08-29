@@ -681,6 +681,16 @@ impl AggregateExec {
         })
     }
 
+    /// Get the maximum number of accumulators
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+
+    /// Set the maximum number of accumulators
+    pub fn set_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
+    }
+
     /// Aggregation mode (full, partial)
     pub fn mode(&self) -> &AggregateMode {
         &self.mode

@@ -1353,6 +1353,7 @@ message AggregateExecNode {
   repeated bool groups = 9;
   repeated MaybeFilter filter_expr = 10;
   repeated MaybePhysicalSortExprs order_by_expr = 11;
+  uint64 limit = 12;
 }
 
 message GlobalLimitExecNode {

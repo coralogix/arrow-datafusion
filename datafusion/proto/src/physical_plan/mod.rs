@@ -484,7 +484,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                Ok(Arc::new(AggregateExec::try_new(
+                let mut agg = AggregateExec::try_new(
                     agg_mode,
                     PhysicalGroupBy::new(group_expr, null_expr, groups),
                     physical_aggr_expr,
@@ -492,7 +492,12 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     physical_order_by_expr,
                     input,
                     Arc::new((&input_schema).try_into()?),
-                )?))
+                )?;
+                if hash_agg.limit != 0 {
+                    agg.set_limit(Some(hash_agg.limit as usize))
+                }
+
+                Ok(Arc::new(agg))
             }
             PhysicalPlanType::HashJoin(hashjoin) => {
                 let left: Arc<dyn ExecutionPlan> = into_physical_plan(
@@ -1023,6 +1028,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .map(|expr| expr.0.to_owned().try_into())
                 .collect::<Result<Vec<_>>>()?;
 
+            let limit = match exec.limit() {
+                None => 0u64,
+                Some(limit) => limit as u64,
+            };
+
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Aggregate(Box::new(
                     protobuf::AggregateExecNode {
@@ -1037,6 +1047,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         input_schema: Some(input_schema.as_ref().try_into()?),
                         null_expr,
                         groups,
+                        limit,
                     },
                 ))),
             })
@@ -1595,6 +1606,37 @@ mod roundtrip_tests {
             Arc::new(EmptyExec::new(false, schema.clone())),
             schema,
         )?))
+    }
+
+    #[test]
+    fn rountrip_aggregate_limit() -> Result<()> {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Int64, false);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+
+        let groups: Vec<(Arc<dyn PhysicalExpr>, String)> =
+            vec![(col("a", &schema)?, "unused".to_string())];
+
+        let aggregates: Vec<Arc<dyn AggregateExpr>> =
+            vec![Arc::new(Avg::new_with_pre_cast(
+                col("b", &schema)?,
+                "AVG(b)".to_string(),
+                DataType::Float64,
+                DataType::Float64,
+                true,
+            ))];
+
+        let mut agg = AggregateExec::try_new(
+            AggregateMode::Final,
+            PhysicalGroupBy::new_single(groups.clone()),
+            aggregates.clone(),
+            vec![None],
+            vec![None],
+            Arc::new(EmptyExec::new(false, schema.clone())),
+            schema,
+        )?;
+        agg.set_limit(Some(10));
+        roundtrip_test(Arc::new(agg))
     }
 
     #[test]

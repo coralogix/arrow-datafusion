@@ -1905,6 +1905,8 @@ pub struct AggregateExecNode {
     pub filter_expr: ::prost::alloc::vec::Vec<MaybeFilter>,
     #[prost(message, repeated, tag = "11")]
     pub order_by_expr: ::prost::alloc::vec::Vec<MaybePhysicalSortExprs>,
+    #[prost(uint64, tag = "12")]
+    pub limit: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
