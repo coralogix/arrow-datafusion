@@ -484,7 +484,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let mut agg = AggregateExec::try_new(
+                let mut res = AggregateExec::try_new(
                     agg_mode,
                     PhysicalGroupBy::new(group_expr, null_expr, groups),
                     physical_aggr_expr,
@@ -493,11 +493,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     input,
                     Arc::new((&input_schema).try_into()?),
                 )?;
-                if hash_agg.limit != 0 {
-                    agg.set_limit(Some(hash_agg.limit as usize))
+                if hash_agg.limit > 0 {
+                    res.set_limit(Some(hash_agg.limit as usize));
                 }
-
-                Ok(Arc::new(agg))
+                Ok(Arc::new(res))
             }
             PhysicalPlanType::HashJoin(hashjoin) => {
                 let left: Arc<dyn ExecutionPlan> = into_physical_plan(
@@ -1028,11 +1027,6 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .map(|expr| expr.0.to_owned().try_into())
                 .collect::<Result<Vec<_>>>()?;
 
-            let limit = match exec.limit() {
-                None => 0u64,
-                Some(limit) => limit as u64,
-            };
-
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Aggregate(Box::new(
                     protobuf::AggregateExecNode {
@@ -1047,7 +1041,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         input_schema: Some(input_schema.as_ref().try_into()?),
                         null_expr,
                         groups,
-                        limit,
+                        limit: exec.limit().unwrap_or(0) as u64,
                     },
                 ))),
             })
@@ -1398,7 +1392,7 @@ mod roundtrip_tests {
     };
     use datafusion::physical_plan::functions::make_scalar_function;
     use datafusion::physical_plan::projection::ProjectionExec;
-    use datafusion::physical_plan::{functions, udaf};
+    use datafusion::physical_plan::{displayable, functions, udaf};
     use datafusion::{
         arrow::{
             compute::kernels::sort::SortOptions,
@@ -1439,7 +1433,9 @@ mod roundtrip_tests {
         let result_exec_plan: Arc<dyn ExecutionPlan> = proto
             .try_into_physical_plan(&ctx, runtime.deref(), &codec)
             .expect("from proto");
-        assert_eq!(format!("{exec_plan:?}"), format!("{result_exec_plan:?}"));
+        let expected = format!("{}", displayable(&*exec_plan).indent(true));
+        let actual = format!("{}", displayable(&*result_exec_plan).indent(true));
+        assert_eq!(actual, expected);
         Ok(())
     }
 

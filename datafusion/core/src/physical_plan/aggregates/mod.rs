@@ -681,14 +681,14 @@ impl AggregateExec {
         })
     }
 
-    /// Get the maximum number of accumulators
-    pub fn limit(&self) -> Option<usize> {
-        self.limit
-    }
-
-    /// Set the maximum number of accumulators
+    /// Set limit (if output is truncated by an orderby-limit operation)
     pub fn set_limit(&mut self, limit: Option<usize>) {
         self.limit = limit;
+    }
+
+    /// The number of accumulators to maintain if the output will be truncates by an orderby-limit
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
     }
 
     /// Aggregation mode (full, partial)

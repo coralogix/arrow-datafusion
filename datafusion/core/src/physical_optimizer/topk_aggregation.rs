@@ -21,7 +21,6 @@ use crate::physical_optimizer::PhysicalOptimizerRule;
 use crate::physical_plan::aggregates::AggregateExec;
 use crate::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use crate::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use crate::physical_plan::filter::FilterExec;
 use crate::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use crate::physical_plan::repartition::RepartitionExec;
 use crate::physical_plan::sorts::sort::SortExec;
@@ -94,12 +93,26 @@ impl TopKAggregation {
 
         let is_cardinality_preserving = |plan: Arc<dyn ExecutionPlan>| {
             let any = plan.as_any();
-            any.downcast_ref::<CoalesceBatchesExec>().is_some()
+            if any.downcast_ref::<CoalesceBatchesExec>().is_some()
                 || any.downcast_ref::<RepartitionExec>().is_some()
-                || any.downcast_ref::<FilterExec>().is_some()
-                || any.downcast_ref::<GlobalLimitExec>().is_some()
-                || any.downcast_ref::<LocalLimitExec>().is_some()
                 || any.downcast_ref::<CoalescePartitionsExec>().is_some()
+            {
+                return true;
+            }
+            if let Some(target) = any.downcast_ref::<LocalLimitExec>() {
+                if target.fetch() >= limit {
+                    return true;
+                }
+            }
+            if let Some(target) = any.downcast_ref::<GlobalLimitExec>() {
+                if let Some(target) = target.fetch() {
+                    if target >= limit {
+                        return true;
+                    }
+                }
+            }
+            // TODO: whitelist other stuff
+            false
         };
 
         let mut cardinality_preserved = true;
