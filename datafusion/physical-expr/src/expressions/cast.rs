@@ -357,7 +357,7 @@ mod tests {
                 Some(3_000),
                 Some(4_000_000),
                 Some(5_000_000),
-                None,
+                None
             ],
             None
         );
@@ -372,7 +372,7 @@ mod tests {
             DataType::Decimal128(10, 3),
             Decimal128Array,
             DataType::Decimal128(10, 2),
-            [Some(123), Some(222), Some(0), Some(400), Some(500), None,],
+            [Some(123), Some(222), Some(0), Some(400), Some(500), None],
             None
         );
 
@@ -399,7 +399,7 @@ mod tests {
                 Some(3_i8),
                 Some(4_i8),
                 Some(5_i8),
-                None,
+                None
             ],
             None
         );
@@ -421,7 +421,7 @@ mod tests {
                 Some(3_i16),
                 Some(4_i16),
                 Some(5_i16),
-                None,
+                None
             ],
             None
         );
@@ -443,7 +443,7 @@ mod tests {
                 Some(3_i32),
                 Some(4_i32),
                 Some(5_i32),
-                None,
+                None
             ],
             None
         );
@@ -464,7 +464,7 @@ mod tests {
                 Some(3_i64),
                 Some(4_i64),
                 Some(5_i64),
-                None,
+                None
             ],
             None
         );
@@ -494,7 +494,7 @@ mod tests {
                 Some(0.003_f32),
                 Some(4.0_f32),
                 Some(5.0_f32),
-                None,
+                None
             ],
             None
         );
@@ -515,7 +515,7 @@ mod tests {
                 Some(0.000003_f64),
                 Some(0.004_f64),
                 Some(0.005_f64),
-                None,
+                None
             ],
             None
         );
@@ -531,7 +531,7 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             Decimal128Array,
             DataType::Decimal128(3, 0),
-            [Some(1), Some(2), Some(3), Some(4), Some(5),],
+            [Some(1), Some(2), Some(3), Some(4), Some(5)],
             None
         );
 
@@ -542,7 +542,7 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             Decimal128Array,
             DataType::Decimal128(5, 0),
-            [Some(1), Some(2), Some(3), Some(4), Some(5),],
+            [Some(1), Some(2), Some(3), Some(4), Some(5)],
             None
         );
 
@@ -553,7 +553,7 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             Decimal128Array,
             DataType::Decimal128(10, 0),
-            [Some(1), Some(2), Some(3), Some(4), Some(5),],
+            [Some(1), Some(2), Some(3), Some(4), Some(5)],
             None
         );
 
@@ -564,7 +564,7 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             Decimal128Array,
             DataType::Decimal128(20, 0),
-            [Some(1), Some(2), Some(3), Some(4), Some(5),],
+            [Some(1), Some(2), Some(3), Some(4), Some(5)],
             None
         );
 
@@ -575,7 +575,7 @@ mod tests {
             vec![1, 2, 3, 4, 5],
             Decimal128Array,
             DataType::Decimal128(20, 2),
-            [Some(100), Some(200), Some(300), Some(400), Some(500),],
+            [Some(100), Some(200), Some(300), Some(400), Some(500)],
             None
         );
 
@@ -586,7 +586,7 @@ mod tests {
             vec![1.5, 2.5, 3.0, 1.123_456_8, 5.50],
             Decimal128Array,
             DataType::Decimal128(10, 2),
-            [Some(150), Some(250), Some(300), Some(112), Some(550),],
+            [Some(150), Some(250), Some(300), Some(112), Some(550)],
             None
         );
 
@@ -602,7 +602,7 @@ mod tests {
                 Some(25000),
                 Some(30000),
                 Some(11235),
-                Some(55000),
+                Some(55000)
             ],
             None
         );

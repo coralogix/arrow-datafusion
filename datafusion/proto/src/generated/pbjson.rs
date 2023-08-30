@@ -39,6 +39,9 @@ impl serde::Serialize for AggregateExecNode {
         if !self.order_by_expr.is_empty() {
             len += 1;
         }
+        if self.limit != 0 {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.AggregateExecNode", len)?;
         if !self.group_expr.is_empty() {
             struct_ser.serialize_field("groupExpr", &self.group_expr)?;
@@ -75,6 +78,9 @@ impl serde::Serialize for AggregateExecNode {
         if !self.order_by_expr.is_empty() {
             struct_ser.serialize_field("orderByExpr", &self.order_by_expr)?;
         }
+        if self.limit != 0 {
+            struct_ser.serialize_field("limit", ToString::to_string(&self.limit).as_str())?;
+        }
         struct_ser.end()
     }
 }
@@ -104,6 +110,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
             "filterExpr",
             "order_by_expr",
             "orderByExpr",
+            "limit",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -119,6 +126,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
             Groups,
             FilterExpr,
             OrderByExpr,
+            Limit,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -151,6 +159,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
                             "groups" => Ok(GeneratedField::Groups),
                             "filterExpr" | "filter_expr" => Ok(GeneratedField::FilterExpr),
                             "orderByExpr" | "order_by_expr" => Ok(GeneratedField::OrderByExpr),
+                            "limit" => Ok(GeneratedField::Limit),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -181,6 +190,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
                 let mut groups__ = None;
                 let mut filter_expr__ = None;
                 let mut order_by_expr__ = None;
+                let mut limit__ = None;
                 while let Some(k) = map.next_key()? {
                     match k {
                         GeneratedField::GroupExpr => {
@@ -249,6 +259,14 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
                             }
                             order_by_expr__ = Some(map.next_value()?);
                         }
+                        GeneratedField::Limit => {
+                            if limit__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("limit"));
+                            }
+                            limit__ = 
+                                Some(map.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
+                            ;
+                        }
                     }
                 }
                 Ok(AggregateExecNode {
@@ -263,6 +281,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExecNode {
                     groups: groups__.unwrap_or_default(),
                     filter_expr: filter_expr__.unwrap_or_default(),
                     order_by_expr: order_by_expr__.unwrap_or_default(),
+                    limit: limit__.unwrap_or_default(),
                 })
             }
         }
