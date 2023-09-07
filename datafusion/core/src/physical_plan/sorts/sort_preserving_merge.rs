@@ -85,7 +85,7 @@ impl SortPreservingMergeExec {
         Self {
             input,
             expr,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("SortPreservingMergeExec".to_owned()),
             fetch: None,
         }
     }
@@ -835,7 +835,7 @@ mod tests {
             streams.push(builder.build());
         }
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         let merge_stream = streaming_merge(
             streams,

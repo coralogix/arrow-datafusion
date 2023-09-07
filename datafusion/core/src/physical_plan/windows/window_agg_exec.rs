@@ -89,7 +89,7 @@ impl WindowAggExec {
             schema,
             input_schema,
             partition_keys,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("WindowAggExec".to_owned()),
             ordered_partition_by_indices,
         })
     }

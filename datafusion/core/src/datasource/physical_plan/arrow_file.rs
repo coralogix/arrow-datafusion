@@ -59,7 +59,7 @@ impl ArrowExec {
             projected_schema,
             projected_statistics,
             projected_output_ordering,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("ArrowExec".to_owned()),
         }
     }
     /// Ref to the base configs

@@ -56,7 +56,7 @@ impl AvroExec {
             projected_schema,
             projected_statistics,
             projected_output_ordering,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("AvroExec".to_owned()),
         }
     }
     /// Ref to the base configs
