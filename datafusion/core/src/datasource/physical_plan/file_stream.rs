@@ -670,7 +670,7 @@ mod tests {
                 output_ordering: vec![],
                 infinite_source: false,
             };
-            let metrics_set = ExecutionPlanMetricsSet::new();
+            let metrics_set = ExecutionPlanMetricsSet::new("FileStreamTest".to_owned());
             let file_stream = FileStream::new(&config, 0, self.opener, &metrics_set)
                 .unwrap()
                 .with_on_error(on_error);

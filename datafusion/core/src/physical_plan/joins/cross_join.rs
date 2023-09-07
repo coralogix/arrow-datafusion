@@ -82,7 +82,7 @@ impl CrossJoinExec {
             right,
             schema,
             left_fut: Default::default(),
-            metrics: ExecutionPlanMetricsSet::default(),
+            metrics: ExecutionPlanMetricsSet::new("CrossJoinExec".to_owned()),
         }
     }
 

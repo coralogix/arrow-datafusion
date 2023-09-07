@@ -451,7 +451,7 @@ impl SortExec {
         Self {
             expr,
             input,
-            metrics_set: ExecutionPlanMetricsSet::new(),
+            metrics_set: ExecutionPlanMetricsSet::new("SortExec".to_owned()),
             preserve_partitioning: false,
             fetch: None,
         }

@@ -837,7 +837,7 @@ mod tests {
     }
 
     fn parquet_file_metrics() -> ParquetFileMetrics {
-        let metrics = Arc::new(ExecutionPlanMetricsSet::new());
+        let metrics = Arc::new(ExecutionPlanMetricsSet::new("for ParquetFileMetrics".to_owned()));
         ParquetFileMetrics::new(0, "file.parquet", &metrics)
     }
 

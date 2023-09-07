@@ -110,7 +110,7 @@ impl ParquetExec {
         debug!("Creating ParquetExec, files: {:?}, projection {:?}, predicate: {:?}, limit: {:?}",
         base_config.file_groups, base_config.projection, predicate, base_config.limit);
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("ParquetExec".to_owned());
         let predicate_creation_errors =
             MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
 

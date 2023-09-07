@@ -144,7 +144,7 @@ impl BoundedWindowAggExec {
             schema,
             input_schema,
             partition_keys,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("BoundedWindowAggExec".to_owned()),
             partition_search_mode,
             ordered_partition_by_indices,
         })
