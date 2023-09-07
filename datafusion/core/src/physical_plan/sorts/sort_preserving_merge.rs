@@ -92,7 +92,7 @@ impl SortPreservingMergeExec {
         Self {
             input,
             expr,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("SortPreservingMergeExec".to_owned()),
         }
     }
 
@@ -1186,7 +1186,7 @@ mod tests {
             ));
         }
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
         let tracking_metrics = MemTrackingMetrics::new(&metrics, 0);
 
         let merge_stream = SortPreservingMergeStream::new_from_streams(

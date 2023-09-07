@@ -69,7 +69,7 @@ impl WindowAggExec {
             window_expr,
             schema,
             input_schema,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("WindowAggExec".to_owned()),
         })
     }
 

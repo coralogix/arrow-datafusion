@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(runtime.memory_manager.get_tracker_total(), 20);
 
         // MemTrackingMetrics as an easy way to track memory
-        let ms = ExecutionPlanMetricsSet::new();
+        let ms = ExecutionPlanMetricsSet::new("foo".to_owned());
         let tracking_metric = MemTrackingMetrics::new_with_rt(&ms, 0, runtime.clone());
         tracking_metric.init_mem_used(15);
         assert_eq!(runtime.memory_manager.get_tracker_total(), 35);

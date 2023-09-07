@@ -373,7 +373,7 @@ mod tests {
             0,
             ctx.task_ctx(),
             reader,
-            ExecutionPlanMetricsSet::new(),
+            ExecutionPlanMetricsSet::new("FileStream".to_owned()),
         )
         .unwrap();
 

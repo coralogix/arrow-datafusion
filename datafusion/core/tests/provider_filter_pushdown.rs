@@ -90,7 +90,7 @@ impl ExecutionPlan for CustomPlan {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("CustomPlan".to_owned());
         let tracking_metrics = MemTrackingMetrics::new(&metrics, partition);
         Ok(Box::pin(SizedRecordBatchStream::new(
             self.schema(),

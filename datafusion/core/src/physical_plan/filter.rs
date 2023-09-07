@@ -63,7 +63,7 @@ impl FilterExec {
             DataType::Boolean => Ok(Self {
                 predicate,
                 input: input.clone(),
-                metrics: ExecutionPlanMetricsSet::new(),
+                metrics: ExecutionPlanMetricsSet::new("FilterExec".to_owned()),
             }),
             other => Err(DataFusionError::Plan(format!(
                 "Filter predicate must return boolean values, not {:?}",

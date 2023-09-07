@@ -228,7 +228,7 @@ impl HashJoinExec {
             left_fut: Default::default(),
             random_state,
             mode: partition_mode,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("HashJoinExec".to_owned()),
             column_indices,
             null_equals_null: *null_equals_null,
         })

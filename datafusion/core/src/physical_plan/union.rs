@@ -80,7 +80,7 @@ impl UnionExec {
 
         UnionExec {
             inputs,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("UnionExec".to_owned()),
             schema,
         }
     }

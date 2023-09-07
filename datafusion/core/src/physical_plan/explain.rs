@@ -155,7 +155,7 @@ impl ExecutionPlan for ExplainExec {
             ],
         )?;
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("ExplainExec".to_owned());
         let tracking_metrics = MemTrackingMetrics::new(&metrics, partition);
 
         debug!(

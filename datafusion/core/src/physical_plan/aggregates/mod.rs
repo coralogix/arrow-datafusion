@@ -193,7 +193,10 @@ impl AggregateExec {
             input,
             schema,
             input_schema,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new(format!(
+                "AggregateExec mode={:?}",
+                mode
+            )),
         })
     }
 

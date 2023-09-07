@@ -124,7 +124,7 @@ impl ParquetExec {
         debug!("Creating ParquetExec, files: {:?}, projection {:?}, predicate: {:?}, limit: {:?}",
         base_config.file_groups, base_config.projection, predicate, base_config.limit);
 
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("ParquetExec".to_owned());
         let predicate_creation_errors =
             MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
 
@@ -1651,7 +1651,9 @@ mod tests {
     }
 
     fn parquet_file_metrics() -> ParquetFileMetrics {
-        let metrics = Arc::new(ExecutionPlanMetricsSet::new());
+        let metrics = Arc::new(ExecutionPlanMetricsSet::new(
+            "for ParquetFileMetrics".to_owned(),
+        ));
         ParquetFileMetrics::new(0, "file.parquet", &metrics)
     }
 

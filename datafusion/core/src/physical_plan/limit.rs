@@ -64,7 +64,7 @@ impl GlobalLimitExec {
             input,
             skip,
             fetch,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("GlobalLimitExec".to_owned()),
         }
     }
 
@@ -240,7 +240,7 @@ impl LocalLimitExec {
         Self {
             input,
             fetch,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("LocalLimitExec".to_owned()),
         }
     }
 
@@ -551,7 +551,10 @@ mod tests {
 
         // limit of six needs to consume the entire first record batch
         // (5 rows) and 1 row from the second (1 row)
-        let baseline_metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let baseline_metrics = BaselineMetrics::new(
+            &ExecutionPlanMetricsSet::new("BaselineMetrics".to_owned()),
+            0,
+        );
         let limit_stream =
             LimitStream::new(Box::pin(input), 0, Some(6), baseline_metrics);
         assert_eq!(index.value(), 0);

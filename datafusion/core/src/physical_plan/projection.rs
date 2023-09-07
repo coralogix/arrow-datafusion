@@ -86,7 +86,7 @@ impl ProjectionExec {
             expr,
             schema,
             input: input.clone(),
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("ProjectionExec".to_owned()),
         })
     }
 

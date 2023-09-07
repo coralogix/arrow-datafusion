@@ -61,7 +61,7 @@ impl NdJsonExec {
             base_config,
             projected_schema,
             projected_statistics,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("NdJsonExec".to_owned()),
         }
     }
 }

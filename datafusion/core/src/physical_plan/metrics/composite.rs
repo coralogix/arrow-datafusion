@@ -36,22 +36,18 @@ use std::time::Duration;
 /// Therefore, We need a separation of metrics for which are final metrics (for output_rows accumulation),
 /// and which are intermediate metrics that we only account for elapsed_compute time.
 pub struct CompositeMetricsSet {
+    name: String,
     mid: ExecutionPlanMetricsSet,
     final_: ExecutionPlanMetricsSet,
 }
 
-impl Default for CompositeMetricsSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CompositeMetricsSet {
     /// Create a new aggregated set
-    pub fn new() -> Self {
+    pub fn new(name: String) -> Self {
         Self {
-            mid: ExecutionPlanMetricsSet::new(),
-            final_: ExecutionPlanMetricsSet::new(),
+            name: name.clone(),
+            mid: ExecutionPlanMetricsSet::new(name.clone()),
+            final_: ExecutionPlanMetricsSet::new(name),
         }
     }
 
@@ -161,7 +157,7 @@ impl CompositeMetricsSet {
 
     /// Aggregate all metrics into a one
     pub fn aggregate_all(&self) -> MetricsSet {
-        let mut metrics = MetricsSet::new();
+        let mut metrics = MetricsSet::new(self.name.clone());
         let elapsed_time = Time::new();
         let spill_count = Count::new();
         let spilled_bytes = Count::new();

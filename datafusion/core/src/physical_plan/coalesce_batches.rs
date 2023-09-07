@@ -59,7 +59,7 @@ impl CoalesceBatchesExec {
         Self {
             input,
             target_batch_size,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("CoalesceBatchesExec".to_owned()),
         }
     }
 

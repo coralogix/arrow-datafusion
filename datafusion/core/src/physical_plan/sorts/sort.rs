@@ -690,7 +690,7 @@ impl SortExec {
         Self {
             expr,
             input,
-            metrics_set: CompositeMetricsSet::new(),
+            metrics_set: CompositeMetricsSet::new("SortExec".to_owned()),
             preserve_partitioning,
             fetch,
         }

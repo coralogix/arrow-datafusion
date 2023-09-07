@@ -409,7 +409,7 @@ impl RepartitionExec {
                 channels: HashMap::new(),
                 abort_helper: Arc::new(AbortOnDropMany::<()>(vec![])),
             })),
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("RepaititionExec".to_owned()),
         })
     }
 

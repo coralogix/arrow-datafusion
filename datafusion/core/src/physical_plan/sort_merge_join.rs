@@ -105,7 +105,7 @@ impl SortMergeJoinExec {
             on,
             join_type,
             schema,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("SortMergeJoinExec".to_string()),
             sort_options,
             null_equals_null,
         })

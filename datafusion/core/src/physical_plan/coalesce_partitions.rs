@@ -54,7 +54,7 @@ impl CoalescePartitionsExec {
     pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         CoalescePartitionsExec {
             input,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("CoallescePartitionsExec".to_owned()),
         }
     }
 

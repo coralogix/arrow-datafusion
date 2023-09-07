@@ -65,7 +65,7 @@ impl CsvExec {
             projected_statistics,
             has_header,
             delimiter,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("CsvExec".to_owned()),
         }
     }
 
