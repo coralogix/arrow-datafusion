@@ -115,7 +115,7 @@ impl NestedLoopJoinExec {
             schema: Arc::new(schema),
             inner_table: Default::default(),
             column_indices,
-            metrics: Default::default(),
+            metrics: ExecutionPlanMetricsSet::new("NestedLoopJoinExec".to_owned()),
         })
     }
 

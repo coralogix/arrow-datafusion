@@ -212,7 +212,7 @@ impl SortMergeJoinExec {
             on,
             join_type,
             schema,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("SortMergeJoinExec".to_string()),
             left_sort_exprs,
             right_sort_exprs,
             output_ordering,

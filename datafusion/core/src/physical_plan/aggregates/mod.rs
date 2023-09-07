@@ -674,7 +674,10 @@ impl AggregateExec {
             schema,
             input_schema,
             columns_map,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new(format!(
+                "AggregateExec mode={:?}",
+                mode
+            )),
             aggregation_ordering,
             required_input_ordering,
             limit: None,

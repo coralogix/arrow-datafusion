@@ -143,7 +143,7 @@ impl ProjectionExec {
             input: input.clone(),
             output_ordering,
             columns_map,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("ProjectionExec".to_owned()),
         })
     }
 

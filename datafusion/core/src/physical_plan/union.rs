@@ -134,7 +134,7 @@ impl UnionExec {
 
         UnionExec {
             inputs,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("UnionExec".to_owned()),
             schema,
         }
     }
@@ -334,7 +334,7 @@ impl InterleaveExec {
 
         Ok(InterleaveExec {
             inputs,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("InterleaveExec".to_owned()),
             schema,
         })
     }

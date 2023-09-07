@@ -167,15 +167,19 @@ impl Metric {
 /// A snapshot of the metrics for a particular ([`ExecutionPlan`]).
 ///
 /// [`ExecutionPlan`]: super::ExecutionPlan
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct MetricsSet {
+    pub name: String,
     metrics: Vec<Arc<Metric>>,
 }
 
 impl MetricsSet {
     /// Create a new container of metrics
-    pub fn new() -> Self {
-        Default::default()
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            metrics: vec![],
+        }
     }
 
     /// Add the specified metric
@@ -287,6 +291,7 @@ impl MetricsSet {
             .collect::<Vec<_>>();
 
         Self {
+            name: self.name.clone(),
             metrics: new_metrics,
         }
     }
@@ -300,14 +305,14 @@ impl MetricsSet {
 
     /// Remove all timestamp metrics (for more compact display)
     pub fn timestamps_removed(self) -> Self {
-        let Self { metrics } = self;
+        let Self { name, metrics } = self;
 
         let metrics = metrics
             .into_iter()
             .filter(|m| !m.value.is_timestamp())
             .collect::<Vec<_>>();
 
-        Self { metrics }
+        Self { name, metrics }
     }
 }
 
@@ -339,16 +344,16 @@ impl Display for MetricsSet {
 /// underlying metrics set
 ///
 /// [`ExecutionPlan`]: super::ExecutionPlan
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct ExecutionPlanMetricsSet {
     inner: Arc<Mutex<MetricsSet>>,
 }
 
 impl ExecutionPlanMetricsSet {
     /// Create a new empty shared metrics set
-    pub fn new() -> Self {
+    pub fn new(name: String) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(MetricsSet::new())),
+            inner: Arc::new(Mutex::new(MetricsSet::new(name))),
         }
     }
 
@@ -467,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_output_rows() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
         assert!(metrics.clone_inner().output_rows().is_none());
 
         let partition = 1;
@@ -481,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_elapsed_compute() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
         assert!(metrics.clone_inner().elapsed_compute().is_none());
 
         let partition = 1;
@@ -495,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_sum() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         let count1 = MetricBuilder::new(&metrics)
             .with_new_label("foo", "bar")
@@ -522,7 +527,7 @@ mod tests {
     #[should_panic(expected = "Mismatched metric types. Can not aggregate Count")]
     fn test_bad_sum() {
         // can not add different kinds of metrics
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         let count = MetricBuilder::new(&metrics).counter("my_metric", 1);
         count.add(1);
@@ -536,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_by_name() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         // Note cpu_time1 has labels but it is still aggregated with metrics 2 and 3
         let elapsed_compute1 = MetricBuilder::new(&metrics)
@@ -577,7 +582,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Mismatched metric types. Can not aggregate Count")]
     fn test_aggregate_partition_bad_sum() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         let count = MetricBuilder::new(&metrics).counter("my_metric", 1);
         count.add(1);
@@ -591,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_partition_timestamps() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
 
         // 1431648000000000 == 1970-01-17 13:40:48 UTC
         let t1 = Utc.timestamp_nanos(1431648000000000);
@@ -653,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_sorted_for_display() {
-        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics = ExecutionPlanMetricsSet::new("foo".to_owned());
         MetricBuilder::new(&metrics).end_timestamp(0);
         MetricBuilder::new(&metrics).start_timestamp(0);
         MetricBuilder::new(&metrics).elapsed_compute(0);
