@@ -309,7 +309,7 @@ impl SymmetricHashJoinExec {
             filter_state,
             schema: Arc::new(schema),
             random_state,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("SymmetricHashJoinExec".to_owned()),
             column_indices,
             null_equals_null,
             mode,

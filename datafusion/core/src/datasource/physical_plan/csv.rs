@@ -84,7 +84,7 @@ impl CsvExec {
             projected_output_ordering,
             has_header,
             delimiter,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("CsvExec".to_owned()),
             file_compression_type,
         }
     }

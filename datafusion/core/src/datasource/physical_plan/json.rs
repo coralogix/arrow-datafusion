@@ -73,7 +73,7 @@ impl NdJsonExec {
             projected_schema,
             projected_statistics,
             projected_output_ordering,
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics: ExecutionPlanMetricsSet::new("NdJsonExec".to_owned()),
             file_compression_type,
         }
     }
