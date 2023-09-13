@@ -238,6 +238,10 @@ impl MemSink {
 
 #[async_trait]
 impl DataSink for MemSink {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     async fn write_all(
         &self,
         mut data: SendableRecordBatchStream,
