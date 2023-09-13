@@ -136,6 +136,11 @@ impl InsertExec {
             )))
         }
     }
+
+    /// returns insert sink
+    pub fn sink(&self) -> &dyn DataSink {
+        self.sink.as_ref()
+    }
 }
 
 impl DisplayAs for InsertExec {
