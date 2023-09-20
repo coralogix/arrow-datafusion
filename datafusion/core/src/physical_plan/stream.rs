@@ -106,7 +106,11 @@ impl RecordBatchReceiverStreamBuilder {
     ) {
         let output = self.tx();
 
-        self.spawn(async move {
+        let monitor = context
+            .session_config()
+            .get_extension::<tokio_metrics::TaskMonitor>();
+
+        let task = async move {
             let mut stream = match input.execute(partition, context) {
                 Err(e) => {
                     // If send fails, the plan being torn down, there
@@ -146,7 +150,13 @@ impl RecordBatchReceiverStreamBuilder {
                     return;
                 }
             }
-        });
+        };
+
+        if let Some(monitor) = monitor {
+            self.spawn(monitor.instrument(task));
+        } else {
+            self.spawn(task);
+        }
     }
 
     /// Create a stream of all `RecordBatch`es written to `tx`

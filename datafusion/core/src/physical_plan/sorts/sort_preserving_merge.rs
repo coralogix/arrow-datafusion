@@ -39,6 +39,7 @@ use datafusion_physical_expr::{
 };
 
 use log::{debug, trace};
+use tokio_metrics::TaskMonitor;
 
 /// Sort preserving merge execution plan
 ///
@@ -193,6 +194,7 @@ impl ExecutionPlan for SortPreservingMergeExec {
             "Start SortPreservingMergeExec::execute for partition: {}",
             partition
         );
+        let monitor = context.session_config().get_extension::<TaskMonitor>();
         if 0 != partition {
             return Err(DataFusionError::Internal(format!(
                 "SortPreservingMergeExec invalid partition {partition}"
@@ -221,7 +223,7 @@ impl ExecutionPlan for SortPreservingMergeExec {
                 let receivers = (0..input_partitions)
                     .map(|partition| {
                         let stream = self.input.execute(partition, context.clone())?;
-                        Ok(spawn_buffered(stream, 1))
+                        Ok(spawn_buffered(stream, 1, monitor.clone()))
                     })
                     .collect::<Result<_>>()?;
 

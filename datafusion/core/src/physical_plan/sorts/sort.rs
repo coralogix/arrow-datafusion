@@ -282,7 +282,11 @@ impl ExternalSorter {
             .into_iter()
             .map(|batch| {
                 let metrics = self.metrics.baseline.intermediate();
-                Ok(spawn_buffered(self.sort_batch_stream(batch, metrics)?, 1))
+                Ok(spawn_buffered(
+                    self.sort_batch_stream(batch, metrics)?,
+                    1,
+                    None,
+                ))
             })
             .collect::<Result<_>>()?;
 

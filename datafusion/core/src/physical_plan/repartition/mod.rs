@@ -473,6 +473,10 @@ impl ExecutionPlan for RepartitionExec {
             self.name(),
             partition
         );
+
+        let monitor = context
+            .session_config()
+            .get_extension::<tokio_metrics::TaskMonitor>();
         // lock mutexes
         let mut state = self.state.lock();
 
@@ -522,15 +526,20 @@ impl ExecutionPlan for RepartitionExec {
 
                 let r_metrics = RepartitionMetrics::new(i, partition, &self.metrics);
 
+                let task = Self::pull_from_input(
+                    self.input.clone(),
+                    i,
+                    txs.clone(),
+                    self.partitioning.clone(),
+                    r_metrics,
+                    context.clone(),
+                );
                 let input_task: JoinHandle<Result<()>> =
-                    tokio::spawn(Self::pull_from_input(
-                        self.input.clone(),
-                        i,
-                        txs.clone(),
-                        self.partitioning.clone(),
-                        r_metrics,
-                        context.clone(),
-                    ));
+                    if let Some(monitor) = monitor.as_deref() {
+                        tokio::spawn(monitor.instrument(task))
+                    } else {
+                        tokio::spawn(task)
+                    };
 
                 // In a separate task, wait for each input to be done
                 // (and pass along any errors, including panic!s)

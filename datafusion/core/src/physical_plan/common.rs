@@ -98,6 +98,7 @@ fn build_file_list_recurse(
 pub(crate) fn spawn_buffered(
     mut input: SendableRecordBatchStream,
     buffer: usize,
+    monitor: Option<Arc<tokio_metrics::TaskMonitor>>,
 ) -> SendableRecordBatchStream {
     // Use tokio only if running from a tokio context (#2201)
     if tokio::runtime::Handle::try_current().is_err() {
@@ -108,13 +109,19 @@ pub(crate) fn spawn_buffered(
 
     let sender = builder.tx();
 
-    builder.spawn(async move {
+    let task = async move {
         while let Some(item) = input.next().await {
             if sender.send(item).await.is_err() {
                 return;
             }
         }
-    });
+    };
+
+    if let Some(monitor) = monitor {
+        builder.spawn(monitor.instrument(task));
+    } else {
+        builder.spawn(task);
+    }
 
     builder.build()
 }
