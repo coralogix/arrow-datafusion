@@ -63,9 +63,7 @@ pub trait DataSink: DisplayAs + Debug + Send + Sync {
     /// resolved) for all available partitions, the set of metrics
     /// should be complete. If this function is called prior to
     /// `execute()` new metrics may appear in subsequent calls.
-    fn metrics(&self) -> Option<MetricsSet> {
-        None
-    }
+    fn metrics(&self) -> Option<MetricsSet>;
 
     // TODO add desired input ordering
     // How does this sink want its input ordered?

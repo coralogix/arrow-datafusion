@@ -51,6 +51,7 @@ use crate::datasource::physical_plan::{
 use crate::error::Result;
 use crate::execution::context::SessionState;
 use crate::physical_plan::insert::{DataSink, InsertExec};
+use crate::physical_plan::metrics::MetricsSet;
 use crate::physical_plan::{DisplayAs, DisplayFormatType, Statistics};
 use crate::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 
@@ -530,6 +531,10 @@ impl CsvSink {
 impl DataSink for CsvSink {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        None
     }
 
     async fn write_all(
