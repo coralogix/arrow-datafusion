@@ -18,6 +18,7 @@
 //! Execution plan for writing data to [`DataSink`]s
 
 use super::expressions::PhysicalSortExpr;
+use super::metrics::MetricsSet;
 use super::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
     Statistics,
@@ -50,6 +51,19 @@ pub trait DataSink: DisplayAs + Debug + Send + Sync {
     /// Returns the data sink as [`Any`](std::any::Any) so that it can be
     /// downcast to a specific implementation.
     fn as_any(&self) -> &dyn Any;
+
+    /// Return a snapshot of the set of [`Metric`]s for this
+    /// [`ExecutionPlan`].
+    ///
+    /// While the values of the metrics in the returned
+    /// [`MetricsSet`]s may change as execution progresses, the
+    /// specific metrics will not.
+    ///
+    /// Once `self.execute()` has returned (technically the future is
+    /// resolved) for all available partitions, the set of metrics
+    /// should be complete. If this function is called prior to
+    /// `execute()` new metrics may appear in subsequent calls.
+    fn metrics(&self) -> Option<MetricsSet>;
 
     // TODO add desired input ordering
     // How does this sink want its input ordered?
@@ -258,6 +272,10 @@ impl ExecutionPlan for InsertExec {
 
     fn statistics(&self) -> Statistics {
         Statistics::default()
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        self.sink().metrics()
     }
 }
 

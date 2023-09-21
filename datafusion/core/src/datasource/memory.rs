@@ -37,6 +37,7 @@ use crate::execution::context::SessionState;
 use crate::logical_expr::Expr;
 use crate::physical_plan::insert::{DataSink, InsertExec};
 use crate::physical_plan::memory::MemoryExec;
+use crate::physical_plan::metrics::MetricsSet;
 use crate::physical_plan::{common, SendableRecordBatchStream};
 use crate::physical_plan::{repartition::RepartitionExec, Partitioning};
 use crate::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
@@ -240,6 +241,10 @@ impl MemSink {
 impl DataSink for MemSink {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        None
     }
 
     async fn write_all(
