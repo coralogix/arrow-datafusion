@@ -424,7 +424,11 @@ impl PhysicalPlanner for DefaultPhysicalPlanner {
                     .await?;
 
                 println!("INITIAL PHYSICAL PLAN:\n{:#?}", plan);
-                self.optimize_internal(plan, session_state, |_, _| {})
+                let optimized = self.optimize_internal(plan, session_state, |_, _| {});
+
+                println!("OPTIMIZED PHYSICAL PLAN:\n{:#?}", optimized);
+
+                optimized
             }
         }
     }
