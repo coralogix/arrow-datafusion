@@ -419,6 +419,7 @@ impl PhysicalPlanner for DefaultPhysicalPlanner {
         match self.handle_explain(logical_plan, session_state).await? {
             Some(plan) => Ok(plan),
             None => {
+                println!("INITIAL LOGICAL PLAN:\n{:#?}", logical_plan);
                 let plan = self
                     .create_initial_plan(logical_plan, session_state)
                     .await?;
