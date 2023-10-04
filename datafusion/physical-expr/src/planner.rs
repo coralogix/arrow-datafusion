@@ -65,6 +65,7 @@ pub fn create_physical_expr(
         )?),
         Expr::Column(c) => {
             let idx = input_dfschema.index_of_column(c)?;
+            println!("COLUMN: {:?} and idx: {}", c, idx);
             Ok(Arc::new(Column::new(&c.name, idx)))
         }
         Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
