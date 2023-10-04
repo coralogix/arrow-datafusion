@@ -231,6 +231,8 @@ impl LogicalPlanBuilder {
         table_source: Arc<dyn TableSource>,
         projection: Option<Vec<usize>>,
     ) -> Result<Self> {
+        println!("TABLE SOURCE PROJECTIONS: {:#?}", projection);
+
         Self::scan_with_filters(table_name, table_source, projection, vec![])
     }
 
