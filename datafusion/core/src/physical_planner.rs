@@ -758,6 +758,7 @@ impl DefaultPhysicalPlanner {
                     )?))
                 }
                 LogicalPlan::Projection(Projection { input, expr, .. }) => {
+                    println!("PROJECTIONS: {:#?}", logical_plan);
                     let input_exec = self.create_initial_plan(input, session_state).await?;
                     let input_schema = input.as_ref().schema();
 
