@@ -482,6 +482,7 @@ fn push_down_scan(
     // Use BTreeSet to remove potential duplicates (e.g. union) as
     // well as to sort the projection to ensure deterministic behavior
     let schema = scan.source.schema();
+    println!("USED COLUMNS: {:?}, SCHEMA: {:#?}", used_columns, schema);
     let mut projection: BTreeSet<usize> = used_columns
         .iter()
         .filter(|c| {
@@ -532,6 +533,7 @@ fn push_down_scan(
 
     let projected_schema = projected_fields.to_dfschema_ref()?;
 
+    println!("FINAL PROJECTIONS: {:#?}", projection);
     Ok(LogicalPlan::TableScan(TableScan {
         table_name: scan.table_name.clone(),
         source: scan.source.clone(),
