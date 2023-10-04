@@ -423,7 +423,7 @@ impl PhysicalPlanner for DefaultPhysicalPlanner {
                     .create_initial_plan(logical_plan, session_state)
                     .await?;
 
-                println!("INITIAL PHYSICAL PLAN:\n{:?}", plan);
+                println!("INITIAL PHYSICAL PLAN:\n{:#?}", plan);
                 self.optimize_internal(plan, session_state, |_, _| {})
             }
         }
