@@ -483,6 +483,7 @@ fn push_down_scan(
     // well as to sort the projection to ensure deterministic behavior
     let schema = scan.source.schema();
     println!("USED COLUMNS: {:?}, SCHEMA: {:#?}", used_columns, schema);
+    println!("SCAN PROJECTIONS: {:?}", scan.projection);
     let mut projection: BTreeSet<usize> = used_columns
         .iter()
         .filter(|c| {
@@ -500,9 +501,7 @@ fn push_down_scan(
             projection.insert(0);
         } else {
             // for table scan without projection, we default to return all columns
-            projection = scan
-                .source
-                .schema()
+            projection = schema
                 .fields()
                 .iter()
                 .enumerate()
@@ -533,7 +532,10 @@ fn push_down_scan(
 
     let projected_schema = projected_fields.to_dfschema_ref()?;
 
-    println!("FINAL PROJECTIONS: {:#?}, PROJECTED SCHEMA: {:#?}", projection, projected_schema);
+    println!(
+        "FINAL PROJECTIONS: {:#?}, PROJECTED SCHEMA: {:#?}",
+        projection, projected_schema
+    );
     Ok(LogicalPlan::TableScan(TableScan {
         table_name: scan.table_name.clone(),
         source: scan.source.clone(),
