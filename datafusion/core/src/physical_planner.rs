@@ -522,6 +522,7 @@ impl DefaultPhysicalPlanner {
                     fetch,
                     ..
                 }) => {
+                    println!("TS PROJECTIONS: {:?}", projection);
                     let source = source_as_provider(source)?;
                     // Remove all qualifiers from the scan as the provider
                     // doesn't know (nor should care) how the relation was
