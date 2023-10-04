@@ -533,7 +533,7 @@ fn push_down_scan(
 
     let projected_schema = projected_fields.to_dfschema_ref()?;
 
-    println!("FINAL PROJECTIONS: {:#?}", projection);
+    println!("FINAL PROJECTIONS: {:#?}, PROJECTED SCHEMA: {:#?}", projection, projected_schema);
     Ok(LogicalPlan::TableScan(TableScan {
         table_name: scan.table_name.clone(),
         source: scan.source.clone(),
