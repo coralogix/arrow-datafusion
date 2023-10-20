@@ -620,26 +620,30 @@ macro_rules! build_timestamp_list {
                         TimestampSecondBuilder,
                         TimestampSecond,
                         values,
-                        $SIZE
+                        $SIZE,
+                        $TIME_ZONE
                     )
                 }
                 TimeUnit::Millisecond => build_values_list_tz!(
                     TimestampMillisecondBuilder,
                     TimestampMillisecond,
                     values,
-                    $SIZE
+                    $SIZE,
+                    $TIME_ZONE
                 ),
                 TimeUnit::Microsecond => build_values_list_tz!(
                     TimestampMicrosecondBuilder,
                     TimestampMicrosecond,
                     values,
-                    $SIZE
+                    $SIZE,
+                    $TIME_ZONE
                 ),
                 TimeUnit::Nanosecond => build_values_list_tz!(
                     TimestampNanosecondBuilder,
                     TimestampNanosecond,
                     values,
-                    $SIZE
+                    $SIZE,
+                    $TIME_ZONE
                 ),
             },
         }
@@ -683,9 +687,10 @@ macro_rules! build_values_list {
 }
 
 macro_rules! build_values_list_tz {
-    ($VALUE_BUILDER_TY:ident, $SCALAR_TY:ident, $VALUES:expr, $SIZE:expr) => {{
-        let mut builder =
-            ListBuilder::new($VALUE_BUILDER_TY::with_capacity($VALUES.len()));
+    ($VALUE_BUILDER_TY:ident, $SCALAR_TY:ident, $VALUES:expr, $SIZE:expr, $TIME_ZONE: expr) => {{
+        let mut builder = ListBuilder::new(
+            $VALUE_BUILDER_TY::with_capacity($VALUES.len()).with_timezone_opt($TIME_ZONE),
+        );
 
         for _ in 0..$SIZE {
             for scalar_value in $VALUES {
