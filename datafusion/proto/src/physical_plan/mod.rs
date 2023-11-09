@@ -22,7 +22,10 @@ use std::sync::Arc;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
-use datafusion::datasource::physical_plan::{AvroExec, CsvExec, ParquetExec};
+use datafusion::datasource::file_format::json::JsonSink;
+#[cfg(feature = "parquet")]
+use datafusion::datasource::physical_plan::ParquetExec;
+use datafusion::datasource::physical_plan::{AvroExec, CsvExec};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode};
@@ -34,6 +37,7 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::{Column, PhysicalSortExpr};
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::insert::FileSinkExec;
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::{CrossJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
@@ -62,7 +66,9 @@ use crate::protobuf::physical_aggregate_expr_node::AggregateFunction;
 use crate::protobuf::physical_expr_node::ExprType;
 use crate::protobuf::physical_plan_node::PhysicalPlanType;
 use crate::protobuf::repartition_exec_node::PartitionMethod;
-use crate::protobuf::{self, window_agg_exec_node, PhysicalPlanNode};
+use crate::protobuf::{
+    self, window_agg_exec_node, PhysicalPlanNode, PhysicalSortExprNodeCollection,
+};
 use crate::{convert_required, into_required};
 
 use self::from_proto::parse_physical_window_expr;
@@ -171,6 +177,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 },
                 FileCompressionType::UNCOMPRESSED,
             ))),
+            #[cfg(feature = "parquet")]
             PhysicalPlanType::ParquetScan(scan) => {
                 let base_config = parse_protobuf_file_scan_config(
                     scan.base_conf.as_ref().unwrap(),
@@ -779,7 +786,38 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     analyze.verbose,
                     analyze.show_statistics,
                     input,
-                    Arc::new(analyze.schema.as_ref().unwrap().try_into()?),
+                    Arc::new(convert_required!(analyze.schema)?),
+                )))
+            }
+            PhysicalPlanType::JsonSink(sink) => {
+                let input =
+                    into_physical_plan(&sink.input, registry, runtime, extension_codec)?;
+
+                let data_sink: JsonSink = sink
+                    .sink
+                    .as_ref()
+                    .ok_or_else(|| proto_error("Missing required field in protobuf"))?
+                    .try_into()?;
+                let sink_schema = convert_required!(sink.sink_schema)?;
+                let sort_order = sink
+                    .sort_order
+                    .as_ref()
+                    .map(|collection| {
+                        collection
+                            .physical_sort_expr_nodes
+                            .iter()
+                            .map(|proto| {
+                                parse_physical_sort_expr(proto, registry, &sink_schema)
+                                    .map(Into::into)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?;
+                Ok(Arc::new(FileSinkExec::new(
+                    input,
+                    Arc::new(data_sink),
+                    Arc::new(sink_schema),
+                    sort_order,
                 )))
             }
         }
@@ -796,7 +834,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
         let plan = plan.as_any();
 
         if let Some(exec) = plan.downcast_ref::<ExplainExec>() {
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Explain(
                     protobuf::ExplainExecNode {
                         schema: Some(exec.schema().as_ref().try_into()?),
@@ -808,8 +846,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         verbose: exec.verbose(),
                     },
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<ProjectionExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<ProjectionExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -820,7 +860,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .map(|expr| expr.0.clone().try_into())
                 .collect::<Result<Vec<_>>>()?;
             let expr_name = exec.expr().iter().map(|expr| expr.1.clone()).collect();
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Projection(Box::new(
                     protobuf::ProjectionExecNode {
                         input: Some(Box::new(input)),
@@ -828,13 +868,15 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         expr_name,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<AnalyzeExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<AnalyzeExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Analyze(Box::new(
                     protobuf::AnalyzeExecNode {
                         verbose: exec.verbose(),
@@ -843,27 +885,31 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         schema: Some(exec.schema().as_ref().try_into()?),
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<FilterExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<FilterExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Filter(Box::new(
                     protobuf::FilterExecNode {
                         input: Some(Box::new(input)),
                         expr: Some(exec.predicate().clone().try_into()?),
                     },
                 ))),
-            })
-        } else if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() {
+            });
+        }
+
+        if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 limit.input().to_owned(),
                 extension_codec,
             )?;
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
@@ -874,21 +920,25 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         },
                     },
                 ))),
-            })
-        } else if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
+            });
+        }
+
+        if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 limit.input().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
                         fetch: limit.fetch() as u32,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<HashJoinExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<HashJoinExec>() {
             let left = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.left().to_owned(),
                 extension_codec,
@@ -943,7 +993,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 PartitionMode::Auto => protobuf::PartitionMode::Auto,
             };
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::HashJoin(Box::new(
                     protobuf::HashJoinExecNode {
                         left: Some(Box::new(left)),
@@ -955,8 +1005,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         filter,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<CrossJoinExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<CrossJoinExec>() {
             let left = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.left().to_owned(),
                 extension_codec,
@@ -965,15 +1017,16 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 exec.right().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::CrossJoin(Box::new(
                     protobuf::CrossJoinExecNode {
                         left: Some(Box::new(left)),
                         right: Some(Box::new(right)),
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
+            });
+        }
+        if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
             let groups: Vec<bool> = exec
                 .group_expr()
                 .groups()
@@ -1046,7 +1099,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .map(|expr| expr.0.to_owned().try_into())
                 .collect::<Result<Vec<_>>>()?;
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Aggregate(Box::new(
                     protobuf::AggregateExecNode {
                         group_expr,
@@ -1062,33 +1115,38 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         groups,
                     },
                 ))),
-            })
-        } else if let Some(empty) = plan.downcast_ref::<EmptyExec>() {
+            });
+        }
+
+        if let Some(empty) = plan.downcast_ref::<EmptyExec>() {
             let schema = empty.schema().as_ref().try_into()?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Empty(
                     protobuf::EmptyExecNode {
                         produce_one_row: empty.produce_one_row(),
                         schema: Some(schema),
                     },
                 )),
-            })
-        } else if let Some(coalesce_batches) = plan.downcast_ref::<CoalesceBatchesExec>()
-        {
+            });
+        }
+
+        if let Some(coalesce_batches) = plan.downcast_ref::<CoalesceBatchesExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 coalesce_batches.input().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::CoalesceBatches(Box::new(
                     protobuf::CoalesceBatchesExecNode {
                         input: Some(Box::new(input)),
                         target_batch_size: coalesce_batches.target_batch_size() as u32,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<CsvExec>() {
-            Ok(protobuf::PhysicalPlanNode {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<CsvExec>() {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::CsvScan(
                     protobuf::CsvScanExecNode {
                         base_conf: Some(exec.base_config().try_into()?),
@@ -1104,41 +1162,50 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         },
                     },
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<ParquetExec>() {
+            });
+        }
+
+        #[cfg(feature = "parquet")]
+        if let Some(exec) = plan.downcast_ref::<ParquetExec>() {
             let predicate = exec
                 .predicate()
                 .map(|pred| pred.clone().try_into())
                 .transpose()?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ParquetScan(
                     protobuf::ParquetScanExecNode {
                         base_conf: Some(exec.base_config().try_into()?),
                         predicate,
                     },
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<AvroExec>() {
-            Ok(protobuf::PhysicalPlanNode {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<AvroExec>() {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::AvroScan(
                     protobuf::AvroScanExecNode {
                         base_conf: Some(exec.base_config().try_into()?),
                     },
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<CoalescePartitionsExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
             )?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Merge(Box::new(
                     protobuf::CoalescePartitionsExecNode {
                         input: Some(Box::new(input)),
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<RepartitionExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<RepartitionExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -1162,15 +1229,17 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 }
             };
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Repartition(Box::new(
                     protobuf::RepartitionExecNode {
                         input: Some(Box::new(input)),
                         partition_method: Some(pb_partition_method),
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<SortExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<SortExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -1191,7 +1260,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Sort(Box::new(
                     protobuf::SortExecNode {
                         input: Some(Box::new(input)),
@@ -1203,8 +1272,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         preserve_partitioning: exec.preserve_partitioning(),
                     },
                 ))),
-            })
-        } else if let Some(union) = plan.downcast_ref::<UnionExec>() {
+            });
+        }
+
+        if let Some(union) = plan.downcast_ref::<UnionExec>() {
             let mut inputs: Vec<PhysicalPlanNode> = vec![];
             for input in union.inputs() {
                 inputs.push(protobuf::PhysicalPlanNode::try_from_physical_plan(
@@ -1212,12 +1283,14 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     extension_codec,
                 )?);
             }
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Union(
                     protobuf::UnionExecNode { inputs },
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<SortPreservingMergeExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<SortPreservingMergeExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -1238,7 +1311,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::SortPreservingMerge(
                     Box::new(protobuf::SortPreservingMergeExecNode {
                         input: Some(Box::new(input)),
@@ -1246,8 +1319,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         fetch: exec.fetch().map(|f| f as i64).unwrap_or(-1),
                     }),
                 )),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<NestedLoopJoinExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<NestedLoopJoinExec>() {
             let left = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.left().to_owned(),
                 extension_codec,
@@ -1283,7 +1358,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 })
                 .map_or(Ok(None), |v: Result<protobuf::JoinFilter>| v.map(Some))?;
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::NestedLoopJoin(Box::new(
                     protobuf::NestedLoopJoinExecNode {
                         left: Some(Box::new(left)),
@@ -1292,8 +1367,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         filter,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<WindowAggExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<WindowAggExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -1311,7 +1388,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .map(|e| e.clone().try_into())
                 .collect::<Result<Vec<protobuf::PhysicalExprNode>>>()?;
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Window(Box::new(
                     protobuf::WindowAggExecNode {
                         input: Some(Box::new(input)),
@@ -1320,8 +1397,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         partition_search_mode: None,
                     },
                 ))),
-            })
-        } else if let Some(exec) = plan.downcast_ref::<BoundedWindowAggExec>() {
+            });
+        }
+
+        if let Some(exec) = plan.downcast_ref::<BoundedWindowAggExec>() {
             let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec.input().to_owned(),
                 extension_codec,
@@ -1359,7 +1438,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 }
             };
 
-            Ok(protobuf::PhysicalPlanNode {
+            return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Window(Box::new(
                     protobuf::WindowAggExecNode {
                         input: Some(Box::new(input)),
@@ -1368,32 +1447,74 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         partition_search_mode: Some(partition_search_mode),
                     },
                 ))),
-            })
-        } else {
-            let mut buf: Vec<u8> = vec![];
-            match extension_codec.try_encode(plan_clone.clone(), &mut buf) {
-                Ok(_) => {
-                    let inputs: Vec<protobuf::PhysicalPlanNode> = plan_clone
-                        .children()
-                        .into_iter()
-                        .map(|i| {
-                            protobuf::PhysicalPlanNode::try_from_physical_plan(
-                                i,
-                                extension_codec,
-                            )
-                        })
-                        .collect::<Result<_>>()?;
+            });
+        }
 
-                    Ok(protobuf::PhysicalPlanNode {
-                        physical_plan_type: Some(PhysicalPlanType::Extension(
-                            protobuf::PhysicalExtensionNode { node: buf, inputs },
-                        )),
+        if let Some(exec) = plan.downcast_ref::<FileSinkExec>() {
+            let input = protobuf::PhysicalPlanNode::try_from_physical_plan(
+                exec.input().to_owned(),
+                extension_codec,
+            )?;
+            let sort_order = match exec.sort_order() {
+                Some(requirements) => {
+                    let expr = requirements
+                        .iter()
+                        .map(|requirement| {
+                            let expr: PhysicalSortExpr = requirement.to_owned().into();
+                            let sort_expr = protobuf::PhysicalSortExprNode {
+                                expr: Some(Box::new(expr.expr.to_owned().try_into()?)),
+                                asc: !expr.options.descending,
+                                nulls_first: expr.options.nulls_first,
+                            };
+                            Ok(sort_expr)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Some(PhysicalSortExprNodeCollection {
+                        physical_sort_expr_nodes: expr,
                     })
                 }
-                Err(e) => internal_err!(
-                    "Unsupported plan and extension codec failed with [{e}]. Plan: {plan_clone:?}"
-                ),
+                None => None,
+            };
+
+            if let Some(sink) = exec.sink().as_any().downcast_ref::<JsonSink>() {
+                return Ok(protobuf::PhysicalPlanNode {
+                    physical_plan_type: Some(PhysicalPlanType::JsonSink(Box::new(
+                        protobuf::JsonSinkExecNode {
+                            input: Some(Box::new(input)),
+                            sink: Some(sink.try_into()?),
+                            sink_schema: Some(exec.schema().as_ref().try_into()?),
+                            sort_order,
+                        },
+                    ))),
+                });
             }
+
+            // If unknown DataSink then let extension handle it
+        }
+
+        let mut buf: Vec<u8> = vec![];
+        match extension_codec.try_encode(plan_clone.clone(), &mut buf) {
+            Ok(_) => {
+                let inputs: Vec<protobuf::PhysicalPlanNode> = plan_clone
+                    .children()
+                    .into_iter()
+                    .map(|i| {
+                        protobuf::PhysicalPlanNode::try_from_physical_plan(
+                            i,
+                            extension_codec,
+                        )
+                    })
+                    .collect::<Result<_>>()?;
+
+                Ok(protobuf::PhysicalPlanNode {
+                    physical_plan_type: Some(PhysicalPlanType::Extension(
+                        protobuf::PhysicalExtensionNode { node: buf, inputs },
+                    )),
+                })
+            }
+            Err(e) => internal_err!(
+                "Unsupported plan and extension codec failed with [{e}]. Plan: {plan_clone:?}"
+            ),
         }
     }
 }
