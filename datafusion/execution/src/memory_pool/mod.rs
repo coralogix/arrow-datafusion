@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_memory_pool_underflow() {
-        let pool = Arc::new(GreedyMemoryPool::new(50)) as _;
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(50)) as _;
         assert_eq!(pool.pool_size(), Some(50));
 
         let mut a1 = MemoryConsumer::new("a1").register(&pool);
