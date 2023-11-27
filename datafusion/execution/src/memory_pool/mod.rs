@@ -78,7 +78,6 @@ pub trait MemoryPool: Send + Sync + std::fmt::Debug {
 
     /// Return the configured pool size (if any)
     fn pool_size(&self) -> Option<usize>;
-
 }
 
 /// A memory consumer that can be tracked by [`MemoryReservation`] in
