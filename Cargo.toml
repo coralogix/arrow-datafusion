@@ -108,3 +108,6 @@ opt-level = 3
 overflow-checks = false
 panic = 'unwind'
 rpath = false
+
+[patch.crates-io]
+object_store = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "object-store0.8.0-cx-0" }
