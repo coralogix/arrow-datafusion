@@ -202,6 +202,7 @@ fn logical_nulls(array: &dyn Array) -> Option<Cow<'_, NullBuffer>> {
     match array.data_type() {
         // These types have computed null buffers, so need a call to logical nulls
         // TODO remove when upstream is released
+        // https://github.com/apache/arrow-rs/issues/5208
         DataType::Null | DataType::Dictionary(_, _) => {
             array.logical_nulls().map(Cow::Owned)
         }
