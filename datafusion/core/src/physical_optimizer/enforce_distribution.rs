@@ -3570,7 +3570,7 @@ mod tests {
         // should not repartition / sort (as the data was already sorted)
         let expected = &[
             "SortPreservingMergeExec: [c@2 ASC]",
-            "UnionExec",
+            "UnionExec: sort_expr=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
@@ -3580,7 +3580,7 @@ mod tests {
         let expected = &[
             "SortExec: expr=[c@2 ASC]",
             "CoalescePartitionsExec",
-            "UnionExec",
+            "UnionExec: sort_expr=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
@@ -4172,13 +4172,13 @@ mod tests {
         // should not sort (as the data was already sorted)
         let expected_parquet = &[
             "SortPreservingMergeExec: [c@2 ASC]",
-            "UnionExec",
+            "UnionExec: sort_expr=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
         let expected_csv = &[
             "SortPreservingMergeExec: [c@2 ASC]",
-            "UnionExec",
+            "UnionExec: sort_expr=[c@2 ASC]",
             "CsvExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC], has_header=false",
             "CsvExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC], has_header=false",
         ];
