@@ -152,7 +152,16 @@ impl DisplayAs for UnionExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "UnionExec")
+                match self.output_ordering() {
+                    Some(exprs) => {
+                        write!(
+                            f,
+                            "UnionExec: sort_expr=[{}]",
+                            PhysicalSortExpr::format_list(exprs)
+                        )
+                    }
+                    _ => write!(f, "UnionExec"),
+                }
             }
         }
     }
