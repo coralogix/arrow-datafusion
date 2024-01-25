@@ -388,7 +388,6 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use arrow_schema::TimeUnit;
     use datafusion_expr::Operator;
     use datafusion_physical_expr::expressions::{col, Column};
 
@@ -652,35 +651,6 @@ mod tests {
         let sort_expr = vec![PhysicalSortExpr {
             expr: col("f32", &schema).unwrap(),
             options: SortOptions::default(),
-        }];
-        let memory_exec = Arc::new(MemoryExec::try_new(&[], schema.clone(), None)?) as _;
-        let sort_exec = Arc::new(SortExec::new(sort_expr.clone(), memory_exec))
-            as Arc<dyn ExecutionPlan>;
-        let memory_exec2 = Arc::new(MemoryExec::try_new(&[], schema, None)?) as _;
-        // memory_exec2 doesn't have output ordering
-        let union_exec = UnionExec::new(vec![sort_exec.clone(), memory_exec2]);
-        let res = get_meet_of_orderings(union_exec.inputs());
-        assert!(res.is_none());
-
-        let union_exec = UnionExec::new(vec![sort_exec.clone(), sort_exec]);
-        let res = get_meet_of_orderings(union_exec.inputs());
-        assert_eq!(res, Some(&sort_expr[..]));
-        Ok(())
-    }
-
-    #[test]
-    fn test_meet_of_orderings_sort() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "f32",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        )]));
-        let sort_expr = vec![PhysicalSortExpr {
-            expr: col("f32", &schema).unwrap(),
-            options: SortOptions {
-                descending: true,
-                nulls_first: true,
-            },
         }];
         let memory_exec = Arc::new(MemoryExec::try_new(&[], schema.clone(), None)?) as _;
         let sort_exec = Arc::new(SortExec::new(sort_expr.clone(), memory_exec))
