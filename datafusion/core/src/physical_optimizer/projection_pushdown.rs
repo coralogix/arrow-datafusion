@@ -985,6 +985,7 @@ fn join_table_borders(
 
 /// Tries to update the equi-join `Column`'s of a join as if the the input of
 /// the join was replaced by a projection.
+#[allow(clippy::map_identity)]
 fn update_join_on(
     proj_left_exprs: &[(Column, String)],
     proj_right_exprs: &[(Column, String)],
