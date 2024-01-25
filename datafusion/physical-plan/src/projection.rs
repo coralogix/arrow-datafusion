@@ -141,7 +141,17 @@ impl DisplayAs for ProjectionExec {
                     })
                     .collect();
 
-                write!(f, "ProjectionExec: expr=[{}]", expr.join(", "))
+                match self.output_ordering() {
+                    Some(exprs) => {
+                        write!(
+                            f,
+                            "ProjectionExec: expr=[{}], sort_expr=[{}]",
+                            expr.join(", "),
+                            PhysicalSortExpr::format_list(exprs)
+                        )
+                    }
+                    _ => write!(f, "ProjectionExec: expr=[{}]", expr.join(", ")),
+                }
             }
         }
     }
