@@ -2755,7 +2755,7 @@ Right Join: CAST(t1.c3 AS Decimal128(10, 2)) = t2.c3
 --SubqueryAlias: t2
 ----TableScan: hashjoin_datatype_table_t2 projection=[c1, c2, c3, c4]
 physical_plan
-ProjectionExec: expr=[c1@0 as c1, c2@1 as c2, c3@2 as c3, c4@3 as c4, c1@5 as c1, c2@6 as c2, c3@7 as c3, c4@8 as c4], sort_expr=[c3@6 ASC]
+ProjectionExec: expr=[c1@0 as c1, c2@1 as c2, c3@2 as c3, c4@3 as c4, c1@5 as c1, c2@6 as c2, c3@7 as c3, c4@8 as c4]
 --SortMergeJoin: join_type=Right, on=[(CAST(t1.c3 AS Decimal128(10, 2))@4, c3@2)]
 ----SortExec: expr=[CAST(t1.c3 AS Decimal128(10, 2))@4 ASC]
 ------CoalesceBatchesExec: target_batch_size=2

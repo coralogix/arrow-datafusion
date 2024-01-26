@@ -901,7 +901,7 @@ Sort: annotated_data_finite2.a ASC NULLS LAST
 ----TableScan: annotated_data_finite2 projection=[a, b]
 physical_plan
 SortPreservingMergeExec: [a@0 ASC NULLS LAST]
---ProjectionExec: expr=[a@0 as a, a@0 + b@1 as annotated_data_finite2.a + annotated_data_finite2.b], sort_expr=[a@0 ASC NULLS LAST,annotated_data_finite2.a + annotated_data_finite2.b@1 ASC NULLS LAST]
+--ProjectionExec: expr=[a@0 as a, a@0 + b@1 as annotated_data_finite2.a + annotated_data_finite2.b]
 ----RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
 ------CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/core/tests/data/window_2.csv]]}, projection=[a, b], output_ordering=[a@0 ASC NULLS LAST, b@1 ASC NULLS LAST], has_header=true
 
