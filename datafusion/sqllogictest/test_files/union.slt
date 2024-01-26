@@ -383,7 +383,7 @@ explain SELECT c1, c9 FROM aggregate_test_100 UNION ALL SELECT c1, c3 FROM aggre
 logical_plan
 Limit: skip=0, fetch=5
 --Sort: aggregate_test_100.c9 DESC NULLS FIRST, fetch=5
-----Union sort_expr=[c9@1 DESC]
+----Union
 ------Projection: aggregate_test_100.c1, CAST(aggregate_test_100.c9 AS Int64) AS c9
 --------TableScan: aggregate_test_100 projection=[c1, c9]
 ------Projection: aggregate_test_100.c1, CAST(aggregate_test_100.c3 AS Int64) AS c9
@@ -391,7 +391,7 @@ Limit: skip=0, fetch=5
 physical_plan
 GlobalLimitExec: skip=0, fetch=5
 --SortPreservingMergeExec: [c9@1 DESC], fetch=5
-----UnionExec
+----UnionExec: sort_expr=[c9@1 DESC]
 ------SortExec: expr=[c9@1 DESC]
 --------ProjectionExec: expr=[c1@0 as c1, CAST(c9@1 AS Int64) as c9]
 ----------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1

@@ -439,7 +439,7 @@ Sort: result ASC NULLS LAST
 ----TableScan: multiple_ordered_table projection=[a, b, c]
 physical_plan
 SortPreservingMergeExec: [result@0 ASC NULLS LAST]
---ProjectionExec: expr=[b@1 + a@0 + c@2 as result]
+--ProjectionExec: expr=[b@1 + a@0 + c@2 as result], sort_expr=[result@0 ASC NULLS LAST]
 ----RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
 ------CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/core/tests/data/window_2.csv]]}, projection=[a, b, c], output_orderings=[[a@0 ASC NULLS LAST], [b@1 ASC NULLS LAST], [c@2 ASC NULLS LAST]], has_header=true
 
