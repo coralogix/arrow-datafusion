@@ -122,6 +122,7 @@ impl DisplayAs for UnionExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "UnionExec")
             }
+        }
     }
 }
 

@@ -143,6 +143,7 @@ impl DisplayAs for ProjectionExec {
 
                 write!(f, "ProjectionExec: expr=[{}]", expr.join(", "))
             }
+        }
     }
 }
 
