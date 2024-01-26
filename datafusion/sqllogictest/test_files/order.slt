@@ -469,7 +469,7 @@ Sort: db15 ASC NULLS LAST
 ----TableScan: csv_with_timestamps projection=[ts]
 physical_plan
 SortPreservingMergeExec: [db15@0 ASC NULLS LAST]
---ProjectionExec: expr=[date_bin(900000000000, ts@0, 1659537600000000000) as db15], sort_expr=[db15@0 ASC NULLS LAST]
+--ProjectionExec: expr=[date_bin(900000000000, ts@0, 1659537600000000000) as db15]
 ----RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
 ------CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/core/tests/data/timestamps.csv]]}, projection=[ts], output_ordering=[ts@0 ASC NULLS LAST], has_header=false
 
