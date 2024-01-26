@@ -126,33 +126,33 @@ impl DisplayAs for ProjectionExec {
         t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                let expr: Vec<String> = self
-                    .expr
-                    .iter()
-                    .map(|(e, alias)| {
-                        let e = e.to_string();
-                        if &e != alias {
-                            format!("{e} as {alias}")
-                        } else {
-                            e
-                        }
-                    })
-                    .collect();
-
-                match self.output_ordering() {
-                    Some(exprs) => {
-                        write!(
-                            f,
-                            "ProjectionExec: expr=[{}], sort_expr=[{}]",
-                            expr.join(", "),
-                            PhysicalSortExpr::format_list(exprs)
-                        )
-                    }
-                    _ => write!(f, "ProjectionExec: expr=[{}]", expr.join(", ")),
+        let expr: Vec<String> = self
+            .expr
+            .iter()
+            .map(|(e, alias)| {
+                let e = e.to_string();
+                if &e != alias {
+                    format!("{e} as {alias}")
+                } else {
+                    e
                 }
+            })
+            .collect();
+        match t {
+            DisplayFormatType::Default => {
+                write!(f, "ProjectionExec: expr=[{}]", expr.join(", "))
             }
+            DisplayFormatType::Verbose => match self.output_ordering() {
+                Some(exprs) => {
+                    write!(
+                        f,
+                        "ProjectionExec: expr=[{}], sort_expr=[{}]",
+                        expr.join(", "),
+                        PhysicalSortExpr::format_list(exprs)
+                    )
+                }
+                _ => write!(f, "ProjectionExec: expr=[{}]", expr.join(", ")),
+            },
         }
     }
 }
