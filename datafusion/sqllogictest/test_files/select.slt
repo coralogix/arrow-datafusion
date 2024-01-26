@@ -919,7 +919,7 @@ Sort: annotated_data_finite2.a ASC NULLS LAST
 --Projection: annotated_data_finite2.a, annotated_data_finite2.b, Int64(2)
 ----TableScan: annotated_data_finite2 projection=[a, b]
 physical_plan
-ProjectionExec: expr=[a@0 as a, b@1 as b, 2 as Int64(2)], sort_expr=[a@0 ASC NULLS LAST,b@1 ASC NULLS LAST]
+ProjectionExec: expr=[a@0 as a, b@1 as b, 2 as Int64(2)]
 --CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/core/tests/data/window_2.csv]]}, projection=[a, b], output_ordering=[a@0 ASC NULLS LAST, b@1 ASC NULLS LAST], has_header=true
 
 # source is ordered by a,b,c
