@@ -1185,7 +1185,7 @@ mod tests {
 
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "  RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=2",
-            "    UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "    UnionExec",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "      GlobalLimitExec: skip=0, fetch=100",
             "        LocalLimitExec: fetch=100",
@@ -1196,7 +1196,7 @@ mod tests {
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "  SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "    RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=2",
-            "      UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "      UnionExec",
             "        ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "        GlobalLimitExec: skip=0, fetch=100",
             "          LocalLimitExec: fetch=100",
@@ -1272,7 +1272,7 @@ mod tests {
         // one input to the union is already sorted, one is not.
         let expected_input = vec![
             "SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
@@ -1303,7 +1303,7 @@ mod tests {
         // one input to the union is already sorted, one is not.
         let expected_input = vec![
             "SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC, non_nullable_col@1 ASC]",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
@@ -1335,13 +1335,13 @@ mod tests {
         // First ParquetExec has output ordering(nullable_col@0 ASC). However, it doesn't satisfy the
         // required ordering of SortPreservingMergeExec.
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
 
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
@@ -1373,7 +1373,7 @@ mod tests {
         // Second input to the union is already Sorted (matches with the required ordering by the SortPreservingMergeExec above).
         // Third input to the union is not Sorted (SortExec is matches required ordering by the SortPreservingMergeExec above).
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
@@ -1381,7 +1381,7 @@ mod tests {
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
         // should adjust sorting in the first input of the union such that it is not unnecessarily fine
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
@@ -1414,14 +1414,14 @@ mod tests {
         // `UnionExec` satisfy the ordering, OR add a single sort after
         // the `UnionExec` (both of which are equally good for this example).
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
@@ -1463,13 +1463,13 @@ mod tests {
         // example below. However, we should be able to change the unnecessarily
         // fine `SortExec`s below with required `SortExec`s that are absolutely necessary.
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 DESC NULLS LAST]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    SortExec: expr=[nullable_col@0 ASC]",
@@ -1515,7 +1515,7 @@ mod tests {
         // Should adjust the requirement in the third input of the union so
         // that it is not unnecessarily fine.
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
@@ -1544,14 +1544,14 @@ mod tests {
 
         // Union has unnecessarily fine ordering below it. We should be able to replace them with absolutely necessary ordering.
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
         // Union preserves the inputs ordering and we should not change any of the SortExecs under UnionExec
         let expected_output = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    SortExec: expr=[nullable_col@0 ASC]",
@@ -1642,7 +1642,7 @@ mod tests {
         let expected_input = [
             "BoundedWindowAggExec: wdw=[count: Ok(Field { name: \"count\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Range, start_bound: Preceding(NULL), end_bound: CurrentRow }], mode=[Sorted]",
             "  SortPreservingMergeExec: [nullable_col@0 DESC NULLS LAST]",
-            "    UnionExec: sort_expr=[nullable_col@0 DESC NULLS LAST]",
+            "    UnionExec",
             "      SortExec: expr=[nullable_col@0 DESC NULLS LAST]",
             "        ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC, non_nullable_col@1 ASC]",
             "      SortExec: expr=[nullable_col@0 DESC NULLS LAST]",
@@ -1650,7 +1650,7 @@ mod tests {
         let expected_optimized = [
             "WindowAggExec: wdw=[count: Ok(Field { name: \"count\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Range, start_bound: CurrentRow, end_bound: Following(NULL) }]",
             "  SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "    UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "    UnionExec",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC, non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]"];
         assert_optimized!(expected_input, expected_optimized, physical_plan, true);
@@ -1679,14 +1679,14 @@ mod tests {
         // The unnecessary SortExecs should be removed
         let expected_input = ["BoundedWindowAggExec: wdw=[count: Ok(Field { name: \"count\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Range, start_bound: Preceding(NULL), end_bound: CurrentRow }], mode=[Sorted]",
             "  SortPreservingMergeExec: [nullable_col@0 ASC,non_nullable_col@1 ASC]",
-            "    UnionExec: sort_expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
+            "    UnionExec",
             "      SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "        ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "      SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "        ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]"];
         let expected_optimized = ["BoundedWindowAggExec: wdw=[count: Ok(Field { name: \"count\", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Range, start_bound: Preceding(NULL), end_bound: CurrentRow }], mode=[Sorted]",
             "  SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "    UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "    UnionExec",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col], output_ordering=[nullable_col@0 ASC]"];
         assert_optimized!(expected_input, expected_optimized, physical_plan, true);
@@ -1725,7 +1725,7 @@ mod tests {
 
         // Should not change the unnecessarily fine `SortExec`s because there is `LimitExec`
         let expected_input = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    GlobalLimitExec: skip=0, fetch=100",
@@ -1733,7 +1733,7 @@ mod tests {
             "        SortExec: expr=[nullable_col@0 ASC,non_nullable_col@1 DESC NULLS LAST]",
             "          ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]"];
         let expected_optimized = ["SortPreservingMergeExec: [nullable_col@0 ASC]",
-            "  UnionExec: sort_expr=[nullable_col@0 ASC]",
+            "  UnionExec",
             "    SortExec: expr=[nullable_col@0 ASC]",
             "      ParquetExec: file_groups={1 group: [[x]]}, projection=[nullable_col, non_nullable_col]",
             "    GlobalLimitExec: skip=0, fetch=100",
