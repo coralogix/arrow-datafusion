@@ -2200,7 +2200,7 @@ mod tests {
 
         let initial = get_plan_string(&projection);
         let expected_initial = [
-            "ProjectionExec: expr=[c@2 as c, a@0 as new_a, b@1 as b], sort_expr=[b@2 ASC,c@0 + new_a@1 ASC]",
+            "ProjectionExec: expr=[c@2 as c, a@0 as new_a, b@1 as b]",
             "  SortExec: expr=[b@1 ASC,c@2 + a@0 ASC]",
             "    CsvExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], has_header=false"
             ];

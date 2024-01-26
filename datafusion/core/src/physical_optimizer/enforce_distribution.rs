@@ -3718,7 +3718,7 @@ pub(crate) mod tests {
         let expected = &[
             "SortRequiredExec: [c@2 ASC]",
             // Since this projection is trivial, increasing parallelism is not beneficial
-            "ProjectionExec: expr=[a@0 as a, b@1 as b, c@2 as c], sort_expr=[c@2 ASC]",
+            "ProjectionExec: expr=[a@0 as a, b@1 as b, c@2 as c]",
             "ParquetExec: file_groups={2 groups: [[x], [y]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
 
@@ -4250,14 +4250,14 @@ pub(crate) mod tests {
             sort_preserving_merge_exec(sort_key_after_projection, proj_parquet);
         let expected = &[
             "SortPreservingMergeExec: [c2@1 ASC]",
-            "  ProjectionExec: expr=[a@0 as a2, c@2 as c2], sort_expr=[c2@1 ASC]",
+            "  ProjectionExec: expr=[a@0 as a2, c@2 as c2]",
             "    ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
         plans_matches_expected!(expected, &plan_parquet);
 
         // data should not be repartitioned / resorted
         let expected_parquet = &[
-            "ProjectionExec: expr=[a@0 as a2, c@2 as c2], sort_expr=[c2@1 ASC]",
+            "ProjectionExec: expr=[a@0 as a2, c@2 as c2]",
             "ParquetExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC]",
         ];
 
@@ -4289,14 +4289,14 @@ pub(crate) mod tests {
         let plan_csv = sort_preserving_merge_exec(sort_key_after_projection, proj_csv);
         let expected = &[
             "SortPreservingMergeExec: [c2@1 ASC]",
-            "  ProjectionExec: expr=[a@0 as a2, c@2 as c2], sort_expr=[c2@1 ASC]",
+            "  ProjectionExec: expr=[a@0 as a2, c@2 as c2]",
             "    CsvExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC], has_header=false",
         ];
         plans_matches_expected!(expected, &plan_csv);
 
         // data should not be repartitioned / resorted
         let expected_csv = &[
-            "ProjectionExec: expr=[a@0 as a2, c@2 as c2], sort_expr=[c2@1 ASC]",
+            "ProjectionExec: expr=[a@0 as a2, c@2 as c2]",
             "CsvExec: file_groups={1 group: [[x]]}, projection=[a, b, c, d, e], output_ordering=[c@2 ASC], has_header=false",
         ];
 
