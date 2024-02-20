@@ -32,12 +32,13 @@ rust-version = "1.64"
 version = "28.0.0"
 
 [workspace.dependencies]
-arrow = { version = "43.0.0", features = ["prettyprint", "dyn_cmp_dict"] }
-arrow-array = { version = "43.0.0", default-features = false, features = ["chrono-tz"] }
-arrow-buffer = { version = "43.0.0", default-features = false }
-arrow-flight = { version = "43.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "43.0.0", default-features = false }
-parquet = { version = "43.0.0", features = ["arrow", "async", "object_store"] }
+datafusion-expr = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" }
+arrow = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , features = ["prettyprint", "dyn_cmp_dict"] }
+arrow-array = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , default-features = false, features = ["chrono-tz"] }
+arrow-buffer = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , default-features = false }
+arrow-flight = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , features = ["flight-sql-experimental"] }
+arrow-schema = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , default-features = false }
+parquet = { git = "ssh://git@github.com/coralogix/arrow-rs", branch = "43.0-internal" , features = ["arrow", "async", "object_store"] }
 sqlparser = { version = "0.35", features = ["visitor"] }
 
 [profile.release]
