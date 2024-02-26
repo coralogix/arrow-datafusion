@@ -45,6 +45,7 @@ use datafusion_common::ScalarValue;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{ready, FutureExt, Stream, StreamExt};
+use log::warn;
 
 /// A fallible future that resolves to a stream of [`RecordBatch`]
 pub type FileOpenFuture =
@@ -429,28 +430,31 @@ impl<F: FileOpener> FileStream<F> {
 
                             match self.on_error {
                                 // If `OnError::Skip` we skip the file as soon as we hit the first error
-                                OnError::Skip => match mem::take(next) {
-                                    Some((future, partition_values)) => {
-                                        self.file_stream_metrics.time_opening.start();
-
-                                        match future {
-                                            NextOpen::Pending(future) => {
-                                                self.state = FileStreamState::Open {
-                                                    future,
-                                                    partition_values,
+                                OnError::Skip => {
+                                    warn!("Error while scanning file: {err}");
+                                    match mem::take(next) {
+                                        Some((future, partition_values)) => {
+                                            self.file_stream_metrics.time_opening.start();
+    
+                                            match future {
+                                                NextOpen::Pending(future) => {
+                                                    self.state = FileStreamState::Open {
+                                                        future,
+                                                        partition_values,
+                                                    }
                                                 }
-                                            }
-                                            NextOpen::Ready(reader) => {
-                                                self.state = FileStreamState::Open {
-                                                    future: Box::pin(std::future::ready(
-                                                        reader,
-                                                    )),
-                                                    partition_values,
+                                                NextOpen::Ready(reader) => {
+                                                    self.state = FileStreamState::Open {
+                                                        future: Box::pin(std::future::ready(
+                                                            reader,
+                                                        )),
+                                                        partition_values,
+                                                    }
                                                 }
                                             }
                                         }
+                                        None => return Poll::Ready(None),
                                     }
-                                    None => return Poll::Ready(None),
                                 },
                                 OnError::Fail => {
                                     self.state = FileStreamState::Error;
