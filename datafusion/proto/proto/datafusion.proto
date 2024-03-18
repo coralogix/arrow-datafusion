@@ -955,10 +955,24 @@ message IntervalMonthDayNanoValue {
 
 message StructValue {
   // Note that a null struct value must have one or more fields, so we
-  // encode a null StructValue as one witth an empty field_values
+  // encode a null StructValue as one with an empty field_values
   // list.
   repeated ScalarValue field_values = 2;
   repeated Field fields = 3;
+}
+
+message UnionField {
+  int32 field_id = 1;
+  Field field = 2;
+}
+
+message UnionValue {
+  // Note that a null union value must have one or more fields, so we
+  // encode a null UnionValue as one with value_id == 128
+  int32 value_id = 1;
+  ScalarValue value = 2;
+  repeated UnionField fields = 3;
+  UnionMode mode = 4;
 }
 
 message ScalarFixedSizeBinary{
@@ -1015,6 +1029,7 @@ message ScalarValue{
     IntervalMonthDayNanoValue interval_month_day_nano = 31;
     StructValue struct_value = 32;
     ScalarFixedSizeBinary fixed_size_binary_value = 34;
+    UnionValue union_value = 42;
   }
 }
 
