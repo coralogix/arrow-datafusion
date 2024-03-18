@@ -267,7 +267,6 @@ where
     Ok(())
 }
 
-
 /// Test version of `create_hashes` that produces the same value for
 /// all hashes (to test collisions)
 ///

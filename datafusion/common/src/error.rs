@@ -530,7 +530,6 @@ macro_rules! sql_err {
 
 // To avoid compiler error when using macro in the same crate:
 // macros from the current crate cannot be referred to by absolute paths
-pub use exec_err as _exec_err;
 pub use internal_err as _internal_err;
 pub use not_impl_err as _not_impl_err;
 pub use plan_err as _plan_err;
