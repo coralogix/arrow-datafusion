@@ -1080,9 +1080,9 @@ mod tests {
 
         let exec = FilterExec::try_new(
             binary(
-                binary(col("c1", &schema)?, Operator::GtEq, lit(1u32), &schema)?,
+                binary(col("c1", &schema)?, Operator::GtEq, lit(1i32), &schema)?,
                 Operator::And,
-                binary(col("c1", &schema)?, Operator::LtEq, lit(4u32), &schema)?,
+                binary(col("c1", &schema)?, Operator::LtEq, lit(4i32), &schema)?,
                 &schema,
             )?,
             Arc::new(EmptyExec::new(schema.clone())),
