@@ -48,6 +48,8 @@ use arrow::{
 use arrow_array::cast::as_list_array;
 use arrow_array::types::ArrowTimestampType;
 use arrow_array::{ArrowNativeTypeOp, Scalar};
+use arrow_buffer::Buffer;
+use arrow_schema::{UnionFields, UnionMode};
 
 /// A dynamically typed, nullable single value, (the single-valued counter-part
 /// to arrow's [`Array`])
@@ -185,8 +187,11 @@ pub enum ScalarValue {
     DurationMicrosecond(Option<i64>),
     /// Duration in nanoseconds
     DurationNanosecond(Option<i64>),
-    /// struct of nested ScalarValue
-    Struct(Option<Vec<ScalarValue>>, Fields),
+    /// A nested datatype that can represent slots of differing types. Components:
+    /// `.0`: a tuple of union `type_id` and the single value held by this Scalar
+    /// `.1`: the list of fields, zero-to-one of which will by set in `.0`
+    /// `.2`: the physical storage of the source/destination UnionArray from which this Scalar came
+    Union(Option<(i8, Box<ScalarValue>)>, UnionFields, UnionMode),
     /// Dictionary type: index type and value
     Dictionary(Box<DataType>, Box<ScalarValue>),
 }
@@ -285,8 +290,10 @@ impl PartialEq for ScalarValue {
             (IntervalDayTime(_), _) => false,
             (IntervalMonthDayNano(v1), IntervalMonthDayNano(v2)) => v1.eq(v2),
             (IntervalMonthDayNano(_), _) => false,
-            (Struct(v1, t1), Struct(v2, t2)) => v1.eq(v2) && t1.eq(t2),
-            (Struct(_, _), _) => false,
+            (Union(val1, fields1, mode1), Union(val2, fields2, mode2)) => {
+                val1.eq(val2) && fields1.eq(fields2) && mode1.eq(mode2)
+            }
+            (Union(_, _, _), _) => false,
             (Dictionary(k1, v1), Dictionary(k2, v2)) => k1.eq(k2) && v1.eq(v2),
             (Dictionary(_, _), _) => false,
             (Null, Null) => true,
@@ -440,14 +447,14 @@ impl PartialOrd for ScalarValue {
             (DurationMicrosecond(_), _) => None,
             (DurationNanosecond(v1), DurationNanosecond(v2)) => v1.partial_cmp(v2),
             (DurationNanosecond(_), _) => None,
-            (Struct(v1, t1), Struct(v2, t2)) => {
-                if t1.eq(t2) {
+            (Union(v1, t1, m1), Union(v2, t2, m2)) => {
+                if t1.eq(t2) && m1.eq(m2) {
                     v1.partial_cmp(v2)
                 } else {
                     None
                 }
             }
-            (Struct(_, _), _) => None,
+            (Union(_, _, _), _) => None,
             (Dictionary(k1, v1), Dictionary(k2, v2)) => {
                 // Don't compare if the key types don't match (it is effectively a different datatype)
                 if k1 == k2 {
@@ -542,9 +549,10 @@ impl std::hash::Hash for ScalarValue {
             IntervalYearMonth(v) => v.hash(state),
             IntervalDayTime(v) => v.hash(state),
             IntervalMonthDayNano(v) => v.hash(state),
-            Struct(v, t) => {
+            Union(v, t, m) => {
                 v.hash(state);
                 t.hash(state);
+                m.hash(state);
             }
             Dictionary(k, v) => {
                 k.hash(state);
@@ -967,7 +975,7 @@ impl ScalarValue {
             ScalarValue::DurationNanosecond(_) => {
                 DataType::Duration(TimeUnit::Nanosecond)
             }
-            ScalarValue::Struct(_, fields) => DataType::Struct(fields.clone()),
+            ScalarValue::Union(_, fields, mode) => DataType::Union(fields.clone(), *mode),
             ScalarValue::Dictionary(k, v) => {
                 DataType::Dictionary(k.clone(), Box::new(v.data_type()))
             }
@@ -1166,7 +1174,7 @@ impl ScalarValue {
             ScalarValue::DurationMillisecond(v) => v.is_none(),
             ScalarValue::DurationMicrosecond(v) => v.is_none(),
             ScalarValue::DurationNanosecond(v) => v.is_none(),
-            ScalarValue::Struct(v, _) => v.is_none(),
+            ScalarValue::Union(v, _, _) => v.is_none(),
             ScalarValue::Dictionary(_, v) => v.is_null(),
         }
     }
@@ -1975,17 +1983,33 @@ impl ScalarValue {
                 e,
                 size
             ),
-            ScalarValue::Struct(values, fields) => match values {
-                Some(values) => {
-                    let field_values = fields
-                        .iter()
-                        .zip(values.iter())
-                        .map(|(field, value)| {
-                            Ok((field.clone(), value.to_array_of_size(size)?))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-
-                    Arc::new(StructArray::from(field_values))
+            ScalarValue::Union(value, fields, _mode) => match value {
+                Some((v_id, value)) => {
+                    let mut field_type_ids = Vec::<i8>::with_capacity(fields.len());
+                    let mut child_arrays =
+                        Vec::<(Field, ArrayRef)>::with_capacity(fields.len());
+                    for (f_id, field) in fields.iter() {
+                        let ar = if f_id == *v_id {
+                            value.to_array_of_size(size)?
+                        } else {
+                            let dt = field.data_type();
+                            new_null_array(dt, size)
+                        };
+                        let field = (**field).clone();
+                        child_arrays.push((field, ar));
+                        field_type_ids.push(f_id);
+                    }
+                    let type_ids = repeat(*v_id).take(size).collect::<Vec<_>>();
+                    let type_ids = Buffer::from_slice_ref(type_ids);
+                    let value_offsets: Option<Buffer> = None;
+                    let ar = UnionArray::try_new(
+                        field_type_ids.as_slice(),
+                        type_ids,
+                        value_offsets,
+                        child_arrays,
+                    )
+                    .map_err(|e| DataFusionError::ArrowError(e, None))?;
+                    Arc::new(ar)
                 }
                 None => {
                     let dt = self.data_type();
@@ -2489,8 +2513,8 @@ impl ScalarValue {
             ScalarValue::DurationNanosecond(val) => {
                 eq_array_primitive!(array, index, DurationNanosecondArray, val)?
             }
-            ScalarValue::Struct(_, _) => {
-                return _not_impl_err!("Struct is not supported yet")
+            ScalarValue::Union(_, _, _) => {
+                return _not_impl_err!("Union is not supported yet")
             }
             ScalarValue::Dictionary(key_type, v) => {
                 let (values_array, values_index) = match key_type.as_ref() {
@@ -2560,22 +2584,18 @@ impl ScalarValue {
                 | ScalarValue::LargeBinary(b) => {
                     b.as_ref().map(|b| b.capacity()).unwrap_or_default()
                 }
-                ScalarValue::List(arr)
-                | ScalarValue::LargeList(arr)
-                | ScalarValue::FixedSizeList(arr) => arr.get_array_memory_size(),
-                ScalarValue::Struct(vals, fields) => {
+                ScalarValue::List(arr) => arr.get_array_memory_size(),
+                ScalarValue::LargeList(arr) => arr.get_array_memory_size(),
+                ScalarValue::FixedSizeList(arr) => arr.get_array_memory_size(),
+                ScalarValue::Struct(arr) => arr.get_array_memory_size(),
+                ScalarValue::Union(vals, fields, _mode) => {
                     vals.as_ref()
-                        .map(|vals| {
-                            vals.iter()
-                                .map(|sv| sv.size() - std::mem::size_of_val(sv))
-                                .sum::<usize>()
-                                + (std::mem::size_of::<ScalarValue>() * vals.capacity())
-                        })
+                        .map(|(_id, sv)| sv.size() - std::mem::size_of_val(sv))
                         .unwrap_or_default()
                         // `fields` is boxed, so it is NOT already included in `self`
                         + std::mem::size_of_val(fields)
                         + (std::mem::size_of::<Field>() * fields.len())
-                        + fields.iter().map(|field| field.size() - std::mem::size_of_val(field)).sum::<usize>()
+                        + fields.iter().map(|(_idx, field)| field.size() - std::mem::size_of_val(field)).sum::<usize>()
                 }
                 ScalarValue::Dictionary(dt, sv) => {
                     // `dt` and `sv` are boxed, so they are NOT already included in `self`
@@ -2873,6 +2893,9 @@ impl TryFrom<&DataType> for ScalarValue {
                 1,
             )),
             DataType::Struct(fields) => ScalarValue::Struct(None, fields.clone()),
+            DataType::Union(fields, mode) => {
+                ScalarValue::Union(None, fields.clone(), *mode)
+            }
             DataType::Null => ScalarValue::Null,
             _ => {
                 return _not_impl_err!(
@@ -2970,6 +2993,10 @@ impl fmt::Display for ScalarValue {
                         .join(",")
                 )?,
                 None => write!(f, "NULL")?,
+            }
+            ScalarValue::Union(val, _fields, _mode) => match val {
+                Some((id, val)) => write!(f, "{}:{}", id, val)?,
+                None => write!(f, "NULL")?,
             },
             ScalarValue::Dictionary(_k, v) => write!(f, "{v}")?,
             ScalarValue::Null => write!(f, "NULL")?,
@@ -3054,21 +3081,10 @@ impl fmt::Debug for ScalarValue {
             ScalarValue::DurationNanosecond(_) => {
                 write!(f, "DurationNanosecond(\"{self}\")")
             }
-            ScalarValue::Struct(e, fields) => {
-                // Use Debug representation of field values
-                match e {
-                    Some(l) => write!(
-                        f,
-                        "Struct({{{}}})",
-                        l.iter()
-                            .zip(fields.iter())
-                            .map(|(value, field)| format!("{}:{:?}", field.name(), value))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ),
-                    None => write!(f, "Struct(NULL)"),
-                }
-            }
+            ScalarValue::Union(val, _fields, _mode) => match val {
+                Some((id, val)) => write!(f, "Union {}:{}", id, val),
+                None => write!(f, "Union(NULL)"),
+            },
             ScalarValue::Dictionary(k, v) => write!(f, "Dictionary({k:?}, {v:?})"),
             ScalarValue::Null => write!(f, "NULL"),
         }

@@ -30,6 +30,7 @@ use crate::protobuf::{
     },
     AnalyzedLogicalPlanType, CubeNode, EmptyMessage, GroupingSetNode, LogicalExprList,
     OptimizedLogicalPlanType, OptimizedPhysicalPlanType, PlaceholderNode, RollupNode,
+    UnionField, UnionValue,
 };
 use arrow::{
     datatypes::{
@@ -1419,31 +1420,31 @@ impl TryFrom<&ScalarValue> for protobuf::ScalarValue {
                 Ok(protobuf::ScalarValue { value: Some(value) })
             }
 
-            ScalarValue::Struct(values, fields) => {
-                // encode null as empty field values list
-                let field_values = if let Some(values) = values {
-                    if values.is_empty() {
-                        return Err(Error::InvalidScalarValue(val.clone()));
-                    }
-                    values
-                        .iter()
-                        .map(|v| v.try_into())
-                        .collect::<Result<Vec<protobuf::ScalarValue>, _>>()?
-                } else {
-                    vec![]
+            ScalarValue::Union(val, df_fields, mode) => {
+                let mut fields = Vec::<UnionField>::with_capacity(df_fields.len());
+                for (id, field) in df_fields.iter() {
+                    let field_id = id as i32;
+                    let field = Some(field.as_ref().try_into()?);
+                    let field = UnionField { field_id, field };
+                    fields.push(field);
+                }
+                let mode = match mode {
+                    UnionMode::Sparse => 0,
+                    UnionMode::Dense => 1,
                 };
-
-                let fields = fields
-                    .iter()
-                    .map(|f| f.as_ref().try_into())
-                    .collect::<Result<Vec<protobuf::Field>, _>>()?;
-
-                Ok(protobuf::ScalarValue {
-                    value: Some(Value::StructValue(protobuf::StructValue {
-                        field_values,
-                        fields,
-                    })),
-                })
+                let value = match val {
+                    None => None,
+                    Some((_id, v)) => Some(Box::new(v.as_ref().try_into()?)),
+                };
+                let val = UnionValue {
+                    value_id: val.as_ref().map(|(id, _v)| *id as i32).unwrap_or(0),
+                    value,
+                    fields,
+                    mode,
+                };
+                let val = Value::UnionValue(Box::new(val));
+                let val = protobuf::ScalarValue { value: Some(val) };
+                Ok(val)
             }
 
             ScalarValue::Dictionary(index_type, val) => {

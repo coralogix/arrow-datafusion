@@ -824,27 +824,40 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
             Value::IntervalMonthDayNano(v) => Self::IntervalMonthDayNano(Some(
                 IntervalMonthDayNanoType::make_value(v.months, v.days, v.nanos),
             )),
-            Value::StructValue(v) => {
-                // all structs must have at least 1 field, so we treat
-                // an empty values list as NULL
-                let values = if v.field_values.is_empty() {
-                    None
-                } else {
-                    Some(
-                        v.field_values
-                            .iter()
-                            .map(|v| v.try_into())
-                            .collect::<Result<Vec<ScalarValue>, _>>()?,
-                    )
+            Value::UnionValue(val) => {
+                let mode = match val.mode {
+                    0 => UnionMode::Sparse,
+                    1 => UnionMode::Dense,
+                    id => Err(Error::unknown("UnionMode", id))?,
                 };
-
-                let fields = v
+                let ids = val
                     .fields
                     .iter()
+                    .map(|f| f.field_id as i8)
+                    .collect::<Vec<_>>();
+                let fields = val
+                    .fields
+                    .iter()
+                    .map(|f| f.field.clone())
+                    .collect::<Option<Vec<_>>>();
+                let fields = fields.ok_or_else(|| Error::required("UnionField"))?;
+                let fields = fields
+                    .iter()
                     .map(Field::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                Self::Struct(values, fields)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let fields = UnionFields::new(ids, fields);
+                let v_id = val.value_id as i8;
+                let val = match &val.value {
+                    None => None,
+                    Some(val) => {
+                        let val: ScalarValue = val
+                            .as_ref()
+                            .try_into()
+                            .map_err(|_| Error::General("Invalid Scalar".to_string()))?;
+                        Some((v_id, Box::new(val)))
+                    }
+                };
+                Self::Union(val, fields, mode)
             }
             Value::FixedSizeBinaryValue(v) => {
                 Self::FixedSizeBinary(v.length, Some(v.clone().values))
