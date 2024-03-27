@@ -1187,6 +1187,17 @@ pub struct IntervalMonthDayNanoValue {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StructValue {
+    /// Note that a null struct value must have one or more fields, so we
+    /// encode a null StructValue as one witth an empty field_values
+    /// list.
+    #[prost(message, repeated, tag = "2")]
+    pub field_values: ::prost::alloc::vec::Vec<ScalarValue>,
+    #[prost(message, repeated, tag = "3")]
+    pub fields: ::prost::alloc::vec::Vec<Field>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnionField {
     #[prost(int32, tag = "1")]
     pub field_id: i32,

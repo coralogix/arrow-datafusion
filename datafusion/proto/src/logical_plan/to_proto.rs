@@ -1420,6 +1420,33 @@ impl TryFrom<&ScalarValue> for protobuf::ScalarValue {
                 Ok(protobuf::ScalarValue { value: Some(value) })
             }
 
+            ScalarValue::Struct(values, fields) => {
+                // encode null as empty field values list
+                let field_values = if let Some(values) = values {
+                    if values.is_empty() {
+                        return Err(Error::InvalidScalarValue(val.clone()));
+                    }
+                    values
+                        .iter()
+                        .map(|v| v.try_into())
+                        .collect::<Result<Vec<protobuf::ScalarValue>, _>>()?
+                } else {
+                    vec![]
+                };
+
+                let fields = fields
+                    .iter()
+                    .map(|f| f.as_ref().try_into())
+                    .collect::<Result<Vec<protobuf::Field>, _>>()?;
+
+                Ok(protobuf::ScalarValue {
+                    value: Some(Value::StructValue(protobuf::StructValue {
+                        field_values,
+                        fields,
+                    })),
+                })
+            }
+
             ScalarValue::Union(val, df_fields, mode) => {
                 let mut fields = Vec::<UnionField>::with_capacity(df_fields.len());
                 for (id, field) in df_fields.iter() {
