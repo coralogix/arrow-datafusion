@@ -19,17 +19,20 @@
 
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
-use crate::{AggregateExpr, PhysicalExpr};
+use crate::{AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
-use arrow_array::Array;
+use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray};
 use datafusion_common::cast::as_list_array;
 use datafusion_common::utils::array_into_list_array;
-use datafusion_common::Result;
+use datafusion_common::{DataFusionError, Result};
 use datafusion_common::ScalarValue;
 use datafusion_expr::Accumulator;
 use std::any::Any;
 use std::sync::Arc;
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
+use crate::aggregate::groups_accumulator::accumulate::{accumulate_array, accumulate_array_elements, NullState};
 
 /// ARRAY_AGG aggregate expression
 #[derive(Debug)]
@@ -87,6 +90,29 @@ impl AggregateExpr for ArrayAgg {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn groups_accumulator_supported(&self) -> bool {
+        self.input_data_type.is_primitive()
+    }
+
+    fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
+        match self.input_data_type {
+            DataType::Int8 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int8Type>::new())),
+            DataType::Int16 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new())),
+            DataType::Int32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new())),
+            DataType::Int64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new())),
+            DataType::UInt8 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new())),
+            DataType::UInt16 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new())),
+            DataType::UInt32 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new())),
+            DataType::UInt64 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new())),
+            DataType::Float32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new())),
+            DataType::Float64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new())),
+            _ => Err(DataFusionError::Internal(format!(
+                "ArrayAggGroupsAccumulator not supported for data type {:?}",
+                self.input_data_type
+            )))
+        }
     }
 }
 
@@ -179,12 +205,137 @@ impl Accumulator for ArrayAggAccumulator {
     }
 }
 
+struct ArrayAggGroupsAccumulator<T>
+where
+    T: ArrowPrimitiveType + Send,
+{
+    values: Vec<Option<Vec<Option<<T as ArrowPrimitiveType>::Native>>>>,
+    null_state: NullState,
+}
+
+impl<T> ArrayAggGroupsAccumulator<T>
+where
+    T: ArrowPrimitiveType + Send,
+{
+    pub fn new() -> Self {
+        Self {
+            values: vec![],
+            null_state: NullState::new(),
+        }
+    }
+}
+
+impl<T> GroupsAccumulator for ArrayAggGroupsAccumulator<T>
+where
+    T: ArrowPrimitiveType + Send + Sync,
+{
+
+    // TODO:
+    // 1. Implement support for null state
+    // 2. Implement support for low level ListArray creation api with offsets and nulls
+    // 3. Implement support for variable size types such as Utf8
+    // 4. Implement support for accumulating Lists of any level of nesting
+    // 5. Use this group accumulator in array_agg_distinct.rs
+
+    fn update_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize
+    ) -> Result<()> {
+        assert_eq!(values.len(), 1, "single argument to update_batch");
+        let values = values[0].as_primitive::<T>();
+
+        for _ in self.values.len()..total_num_groups {
+            self.values.push(None);
+        }
+
+        accumulate_array_elements(
+            group_indices,
+            values,
+            opt_filter,
+            |group_index, new_value| {
+                if let Some(array) = &mut self.values[group_index] {
+                    array.push(Some(new_value));
+                } else {
+                    self.values[group_index] = Some(vec![Some(new_value)]);
+                }
+            },
+        );
+
+        Ok(())
+    }
+
+    fn merge_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize
+    ) -> Result<()> {
+        assert_eq!(values.len(), 1, "single argument to merge_batch");
+        let values = values[0].as_list();
+
+        for _ in self.values.len()..total_num_groups {
+            self.values.push(None);
+        }
+
+        accumulate_array(
+            group_indices,
+            values,
+            opt_filter,
+            |group_index, new_value: &arrow_array::PrimitiveArray<T>| {
+                if let Some(value) = &mut self.values[group_index] {
+                    new_value.iter().for_each(|v| {
+                        value.push(v);
+                    });
+                } else {
+                    self.values[group_index] = Some(new_value.iter().collect());
+                }
+            },
+        );
+
+        Ok(())
+    }
+
+    fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
+        let array = emit_to.take_needed(&mut self.values);
+        // let nulls = self.null_state.build(emit_to);
+
+        // assert_eq!(array.len(), nulls.len());
+
+        Ok(Arc::new(ListArray::from_iter_primitive::<T, _, _>(array)))
+    }
+
+    fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
+
+        // TODO: do we need null state?
+        // let nulls = self.null_state.build(emit_to);
+        // let nulls = Some(nulls);
+
+        let values = emit_to.take_needed(&mut self.values);
+        let values = ListArray::from_iter_primitive::<T, _, _>(values);
+
+        Ok(vec![Arc::new(values) as ArrayRef])
+    }
+
+    fn size(&self) -> usize {
+        self.values.capacity() +
+        self.values
+            .iter()
+            .map(|arr| arr.as_ref().unwrap_or(&Vec::new()).capacity())
+            .sum::<usize>() * std::mem::size_of::<T>() +
+            self.null_state.size()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::expressions::col;
-    use crate::expressions::tests::aggregate;
-    use crate::generic_test_op;
+    use crate::expressions::tests::{aggregate, aggregate_new};
+    use crate::{generic_test_op, generic_test_op_new};
     use arrow::array::ArrayRef;
     use arrow::array::Int32Array;
     use arrow::datatypes::*;
@@ -206,9 +357,12 @@ mod tests {
             Some(4),
             Some(5),
         ])]);
-        let list = ScalarValue::List(Arc::new(list));
+        let expected = ScalarValue::List(Arc::new(list.clone()));
 
-        generic_test_op!(a, DataType::Int32, ArrayAgg, list, DataType::Int32)
+        generic_test_op!(a.clone(), DataType::Int32, ArrayAgg, expected, DataType::Int32);
+
+        let expected: ArrayRef = Arc::new(list);
+        generic_test_op_new!(a, DataType::Int32, ArrayAgg, &expected, DataType::Int32)
     }
 
     #[test]

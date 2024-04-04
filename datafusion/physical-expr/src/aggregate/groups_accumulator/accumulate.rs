@@ -20,7 +20,8 @@
 //! [`GroupsAccumulator`]: crate::GroupsAccumulator
 
 use arrow::datatypes::ArrowPrimitiveType;
-use arrow_array::{Array, BooleanArray, PrimitiveArray};
+use arrow_array::{Array, BooleanArray, ListArray, PrimitiveArray};
+use arrow_array::cast::AsArray;
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder, NullBuffer};
 
 use crate::EmitTo;
@@ -431,6 +432,80 @@ pub fn accumulate_indices<F>(
                 .for_each(|((filter_value, &group_index), is_valid)| {
                     if let (Some(true), true) = (filter_value, is_valid) {
                         index_fn(group_index)
+                    }
+                })
+        }
+    }
+}
+
+pub fn accumulate_array_elements<F, T>(
+    group_indices: &[usize],
+    values: &PrimitiveArray<T>,
+    opt_filter: Option<&BooleanArray>,
+    mut value_fn: F,
+) where
+    F: FnMut(usize, <T as ArrowPrimitiveType>::Native) + Send,
+    T: ArrowPrimitiveType + Send
+{
+    assert_eq!(values.len(), group_indices.len());
+
+    match opt_filter {
+        // no filter,
+        None => {
+            let iter = values.iter();
+            group_indices.iter().zip(iter).for_each(
+                |(&group_index, new_value)| {
+                    value_fn(group_index, new_value.unwrap())
+                },
+            )
+        }
+        // a filter
+        Some(filter) => {
+            assert_eq!(filter.len(), group_indices.len());
+            group_indices
+                .iter()
+                .zip(values.iter())
+                .zip(filter.iter())
+                .for_each(|((&group_index, new_value), filter_value)| {
+                    if let Some(true) = filter_value {
+                        value_fn(group_index, new_value.unwrap());
+                    }
+                })
+        }
+    }
+}
+
+pub fn accumulate_array<F, T>(
+    group_indices: &[usize],
+    values: &ListArray,
+    opt_filter: Option<&BooleanArray>,
+    mut value_fn: F,
+) where
+    F: FnMut(usize, &PrimitiveArray<T>) + Send,
+    T: ArrowPrimitiveType + Send
+{
+    assert_eq!(values.len(), group_indices.len());
+
+    match opt_filter {
+        // no filter,
+        None => {
+            let iter = values.iter();
+            group_indices.iter().zip(iter).for_each(
+                |(&group_index, new_value)| {
+                    value_fn(group_index, new_value.unwrap().as_primitive::<T>())
+                },
+            )
+        }
+        // a filter
+        Some(filter) => {
+            assert_eq!(filter.len(), group_indices.len());
+            group_indices
+                .iter()
+                .zip(values.iter())
+                .zip(filter.iter())
+                .for_each(|((&group_index, new_value), filter_value)| {
+                    if let Some(true) = filter_value {
+                        value_fn(group_index, new_value.unwrap().as_primitive::<T>());
                     }
                 })
         }
