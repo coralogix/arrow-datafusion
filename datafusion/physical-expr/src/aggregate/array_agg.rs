@@ -331,6 +331,7 @@ where
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let array = emit_to.take_needed(&mut self.values);
+        // TODO: do we need null state?
         // let nulls = self.null_state.build(emit_to);
 
         // assert_eq!(array.len(), nulls.len());
@@ -356,7 +357,7 @@ where
                 .iter()
                 .map(|arr| arr.as_ref().unwrap_or(&Vec::new()).capacity())
                 .sum::<usize>()
-                * std::mem::size_of::<T>()
+                * std::mem::size_of::<<T as ArrowPrimitiveType>::Native>()
             + self.null_state.size()
     }
 }
@@ -366,7 +367,6 @@ mod tests {
     use super::*;
     use crate::expressions::col;
     use crate::expressions::tests::{aggregate, aggregate_new};
-    use crate::{generic_test_op, generic_test_op_new};
     use arrow::array::ArrayRef;
     use arrow::array::Int32Array;
     use arrow::datatypes::*;
