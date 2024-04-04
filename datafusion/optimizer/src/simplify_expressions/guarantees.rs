@@ -43,6 +43,7 @@ pub(crate) struct GuaranteeRewriter<'a> {
 }
 
 impl<'a> GuaranteeRewriter<'a> {
+    #[allow(clippy::map_identity)]
     pub fn new(
         guarantees: impl IntoIterator<Item = &'a (Expr, NullableInterval)>,
     ) -> Self {
