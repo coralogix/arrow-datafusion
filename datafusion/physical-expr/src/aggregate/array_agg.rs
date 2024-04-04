@@ -17,22 +17,27 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
+use crate::aggregate::groups_accumulator::accumulate::{
+    accumulate_array, accumulate_array_elements, NullState,
+};
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
 use crate::{AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
+use arrow_array::cast::AsArray;
+use arrow_array::types::{
+    Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
+    UInt32Type, UInt64Type, UInt8Type,
+};
 use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray};
 use datafusion_common::cast::as_list_array;
 use datafusion_common::utils::array_into_list_array;
-use datafusion_common::{DataFusionError, Result};
 use datafusion_common::ScalarValue;
+use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::Accumulator;
 use std::any::Any;
 use std::sync::Arc;
-use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
-use crate::aggregate::groups_accumulator::accumulate::{accumulate_array, accumulate_array_elements, NullState};
 
 /// ARRAY_AGG aggregate expression
 #[derive(Debug)]
@@ -107,19 +112,37 @@ impl AggregateExpr for ArrayAgg {
     fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
         match self.input_data_type {
             DataType::Int8 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int8Type>::new())),
-            DataType::Int16 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new())),
-            DataType::Int32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new())),
-            DataType::Int64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new())),
-            DataType::UInt8 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new())),
-            DataType::UInt16 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new())),
-            DataType::UInt32 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new())),
-            DataType::UInt64 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new())),
-            DataType::Float32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new())),
-            DataType::Float64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new())),
+            DataType::Int16 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new()))
+            }
+            DataType::Int32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new()))
+            }
+            DataType::Int64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new()))
+            }
+            DataType::UInt8 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new()))
+            }
+            DataType::UInt16 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new()))
+            }
+            DataType::UInt32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new()))
+            }
+            DataType::UInt64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new()))
+            }
+            DataType::Float32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new()))
+            }
+            DataType::Float64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new()))
+            }
             _ => Err(DataFusionError::Internal(format!(
                 "ArrayAggGroupsAccumulator not supported for data type {:?}",
                 self.input_data_type
-            )))
+            ))),
         }
     }
 }
@@ -237,7 +260,6 @@ impl<T> GroupsAccumulator for ArrayAggGroupsAccumulator<T>
 where
     T: ArrowPrimitiveType + Send + Sync,
 {
-
     // TODO:
     // 1. Implement support for null state
     // 2. Implement support for low level ListArray creation api with offsets and nulls
@@ -250,7 +272,7 @@ where
         values: &[ArrayRef],
         group_indices: &[usize],
         opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize
+        total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
         let values = values[0].as_primitive::<T>();
@@ -280,7 +302,7 @@ where
         values: &[ArrayRef],
         group_indices: &[usize],
         opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize
+        total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to merge_batch");
         let values = values[0].as_list();
@@ -317,7 +339,6 @@ where
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-
         // TODO: do we need null state?
         // let nulls = self.null_state.build(emit_to);
         // let nulls = Some(nulls);
@@ -329,12 +350,14 @@ where
     }
 
     fn size(&self) -> usize {
-        self.values.capacity() +
-        self.values
-            .iter()
-            .map(|arr| arr.as_ref().unwrap_or(&Vec::new()).capacity())
-            .sum::<usize>() * std::mem::size_of::<T>() +
-            self.null_state.size()
+        self.values.capacity()
+            + self
+                .values
+                .iter()
+                .map(|arr| arr.as_ref().unwrap_or(&Vec::new()).capacity())
+                .sum::<usize>()
+                * std::mem::size_of::<T>()
+            + self.null_state.size()
     }
 }
 
@@ -419,7 +442,13 @@ mod tests {
         ])]);
         let expected = ScalarValue::List(Arc::new(list.clone()));
 
-        test_op!(a.clone(), DataType::Int32, ArrayAgg, expected, DataType::Int32);
+        test_op!(
+            a.clone(),
+            DataType::Int32,
+            ArrayAgg,
+            expected,
+            DataType::Int32
+        );
 
         let expected: ArrayRef = Arc::new(list);
         test_op_new!(a, DataType::Int32, ArrayAgg, &expected, DataType::Int32)
