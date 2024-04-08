@@ -17,20 +17,19 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
-use crate::aggregate::groups_accumulator::accumulate::{
-    accumulate_array, accumulate_array_elements, NullState,
-};
+use crate::aggregate::groups_accumulator::accumulate::NullState;
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
 use crate::{AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
+use arrow_array::builder::{ListBuilder, PrimitiveBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
     UInt32Type, UInt64Type, UInt8Type,
 };
-use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray};
+use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray, PrimitiveArray};
 use datafusion_common::cast::as_list_array;
 use datafusion_common::utils::array_into_list_array;
 use datafusion_common::ScalarValue;
@@ -240,7 +239,7 @@ struct ArrayAggGroupsAccumulator<T>
 where
     T: ArrowPrimitiveType + Send,
 {
-    values: Vec<Option<Vec<Option<<T as ArrowPrimitiveType>::Native>>>>,
+    values: Vec<Vec<Option<<T as ArrowPrimitiveType>::Native>>>,
     null_state: NullState,
 }
 
@@ -253,6 +252,33 @@ where
             values: vec![],
             null_state: NullState::new(),
         }
+    }
+}
+
+impl<T> ArrayAggGroupsAccumulator<T>
+where
+    T: ArrowPrimitiveType + Send,
+{
+    fn build_list(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
+        let array = emit_to.take_needed(&mut self.values);
+        let nulls = self.null_state.build(emit_to);
+
+        assert_eq!(array.len(), nulls.len());
+
+        let mut builder =
+            ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), nulls.len());
+        for (is_valid, arr) in nulls.iter().zip(array.iter()) {
+            if is_valid {
+                for value in arr.iter() {
+                    builder.values().append_option(*value);
+                }
+                builder.append(true);
+            } else {
+                builder.append_null();
+            }
+        }
+
+        Ok(Arc::new(builder.finish()))
     }
 }
 
@@ -277,20 +303,15 @@ where
         assert_eq!(values.len(), 1, "single argument to update_batch");
         let values = values[0].as_primitive::<T>();
 
-        for _ in self.values.len()..total_num_groups {
-            self.values.push(None);
-        }
+        self.values.resize(total_num_groups, vec![]);
 
-        accumulate_array_elements(
+        self.null_state.accumulate(
             group_indices,
             values,
             opt_filter,
+            total_num_groups,
             |group_index, new_value| {
-                if let Some(array) = &mut self.values[group_index] {
-                    array.push(Some(new_value));
-                } else {
-                    self.values[group_index] = Some(vec![Some(new_value)]);
-                }
+                self.values[group_index].push(Some(new_value));
             },
         );
 
@@ -307,22 +328,20 @@ where
         assert_eq!(values.len(), 1, "single argument to merge_batch");
         let values = values[0].as_list();
 
-        for _ in self.values.len()..total_num_groups {
-            self.values.push(None);
-        }
+        self.values.resize(total_num_groups, vec![]);
 
-        accumulate_array(
+        self.null_state.accumulate_array(
             group_indices,
             values,
             opt_filter,
-            |group_index, new_value: &arrow_array::PrimitiveArray<T>| {
-                if let Some(value) = &mut self.values[group_index] {
-                    new_value.iter().for_each(|v| {
-                        value.push(v);
-                    });
-                } else {
-                    self.values[group_index] = Some(new_value.iter().collect());
-                }
+            total_num_groups,
+            |group_index, new_value: &PrimitiveArray<T>| {
+                self.values[group_index].append(
+                    new_value
+                        .into_iter()
+                        .collect::<Vec<Option<T::Native>>>()
+                        .as_mut(),
+                );
             },
         );
 
@@ -330,33 +349,16 @@ where
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        let array = emit_to.take_needed(&mut self.values);
-        // TODO: do we need null state?
-        // let nulls = self.null_state.build(emit_to);
-
-        // assert_eq!(array.len(), nulls.len());
-
-        Ok(Arc::new(ListArray::from_iter_primitive::<T, _, _>(array)))
+        Ok(self.build_list(emit_to)?)
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        // TODO: do we need null state?
-        // let nulls = self.null_state.build(emit_to);
-        // let nulls = Some(nulls);
-
-        let values = emit_to.take_needed(&mut self.values);
-        let values = ListArray::from_iter_primitive::<T, _, _>(values);
-
-        Ok(vec![Arc::new(values) as ArrayRef])
+        Ok(vec![self.build_list(emit_to)?])
     }
 
     fn size(&self) -> usize {
         self.values.capacity()
-            + self
-                .values
-                .iter()
-                .map(|arr| arr.as_ref().unwrap_or(&Vec::new()).capacity())
-                .sum::<usize>()
+            + self.values.iter().map(|arr| arr.capacity()).sum::<usize>()
                 * std::mem::size_of::<<T as ArrowPrimitiveType>::Native>()
             + self.null_state.size()
     }

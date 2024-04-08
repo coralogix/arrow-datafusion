@@ -2622,11 +2622,11 @@ impl ScalarValue {
                 | ScalarValue::LargeBinary(b) => {
                     b.as_ref().map(|b| b.capacity()).unwrap_or_default()
                 }
-            ScalarValue::List(arr)
-            | ScalarValue::LargeList(arr)
-            | ScalarValue::FixedSizeList(arr) => arr.get_array_memory_size(),
-            ScalarValue::Struct(vals, fields) => {
-                vals.as_ref()
+                ScalarValue::List(arr)
+                | ScalarValue::LargeList(arr)
+                | ScalarValue::FixedSizeList(arr) => arr.get_array_memory_size(),
+                ScalarValue::Struct(vals, fields) => {
+                    vals.as_ref()
                     .map(|vals| {
                         vals.iter()
                             .map(|sv| sv.size() - std::mem::size_of_val(sv))
@@ -2638,7 +2638,7 @@ impl ScalarValue {
                     + std::mem::size_of_val(fields)
                     + (std::mem::size_of::<Field>() * fields.len())
                     + fields.iter().map(|field| field.size() - std::mem::size_of_val(field)).sum::<usize>()
-            }
+                }
                 ScalarValue::Union(vals, fields, _mode) => {
                     vals.as_ref()
                         .map(|(_id, sv)| sv.size() - std::mem::size_of_val(sv))
