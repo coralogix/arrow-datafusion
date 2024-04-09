@@ -338,8 +338,7 @@ impl NullState {
         T: ArrowPrimitiveType + Send,
         F: FnMut(usize, &PrimitiveArray<T>) + Send,
     {
-        let data: &GenericListArray<i32> = values.values().as_list();
-        assert_eq!(data.len(), group_indices.len());
+        assert_eq!(values.len(), group_indices.len());
 
         // ensure the seen_values is big enough (start everything at
         // "not seen" valid)
@@ -349,7 +348,7 @@ impl NullState {
         match (values.null_count() > 0, opt_filter) {
             // no nulls, no filter,
             (false, None) => {
-                let iter = group_indices.iter().zip(data.iter());
+                let iter = group_indices.iter().zip(values.iter());
                 for (&group_index, new_value) in iter {
                     seen_values.set_bit(group_index, true);
                     value_fn(group_index, new_value.unwrap().as_primitive());
@@ -360,7 +359,7 @@ impl NullState {
                 let nulls = values.nulls().unwrap();
                 group_indices
                     .iter()
-                    .zip(data.iter())
+                    .zip(values.iter())
                     .zip(nulls.iter())
                     .for_each(|((&group_index, new_value), is_valid)| {
                         if is_valid {
@@ -374,7 +373,7 @@ impl NullState {
                 assert_eq!(filter.len(), group_indices.len());
                 group_indices
                     .iter()
-                    .zip(data.iter())
+                    .zip(values.iter())
                     .zip(filter.iter())
                     .for_each(|((&group_index, new_value), filter_value)| {
                         if let Some(true) = filter_value {

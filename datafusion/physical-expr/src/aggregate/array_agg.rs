@@ -295,19 +295,19 @@ where
 
     fn update_batch(
         &mut self,
-        values: &[ArrayRef],
+        new_values: &[ArrayRef],
         group_indices: &[usize],
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        assert_eq!(values.len(), 1, "single argument to update_batch");
-        let values = values[0].as_primitive::<T>();
+        assert_eq!(new_values.len(), 1, "single argument to update_batch");
+        let new_values = new_values[0].as_primitive::<T>();
 
         self.values.resize(total_num_groups, vec![]);
 
         self.null_state.accumulate(
             group_indices,
-            values,
+            new_values,
             opt_filter,
             total_num_groups,
             |group_index, new_value| {
