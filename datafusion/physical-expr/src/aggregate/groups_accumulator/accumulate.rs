@@ -20,7 +20,9 @@
 //! [`GroupsAccumulator`]: crate::GroupsAccumulator
 
 use arrow::datatypes::ArrowPrimitiveType;
-use arrow_array::{Array, ArrayRef, BooleanArray, ListArray, PrimitiveArray, StringArray};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, ListArray, PrimitiveArray, StringArray,
+};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder, NullBuffer};
 
 use crate::EmitTo;
@@ -398,7 +400,6 @@ impl NullState {
             }
         }
     }
-
 
     /// Invokes `value_fn(group_index, value)` for each non-null,
     /// non-filtered value in `values`, while tracking which groups have

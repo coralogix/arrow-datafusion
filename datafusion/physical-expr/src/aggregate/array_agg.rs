@@ -111,15 +111,33 @@ impl AggregateExpr for ArrayAgg {
     fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
         match self.input_data_type {
             DataType::Int8 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int8Type>::new())),
-            DataType::Int16 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new())),
-            DataType::Int32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new())),
-            DataType::Int64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new())),
-            DataType::UInt8 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new())),
-            DataType::UInt16 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new())),
-            DataType::UInt32 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new())),
-            DataType::UInt64 => Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new())),
-            DataType::Float32 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new())),
-            DataType::Float64 => Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new())),
+            DataType::Int16 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new()))
+            }
+            DataType::Int32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new()))
+            }
+            DataType::Int64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new()))
+            }
+            DataType::UInt8 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new()))
+            }
+            DataType::UInt16 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new()))
+            }
+            DataType::UInt32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new()))
+            }
+            DataType::UInt64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new()))
+            }
+            DataType::Float32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new()))
+            }
+            DataType::Float64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new()))
+            }
             DataType::Utf8 => Ok(Box::new(StringArrayAggGroupsAccumulator::new())),
             _ => Err(DataFusionError::Internal(format!(
                 "ArrayAggGroupsAccumulator not supported for data type {:?}",
@@ -369,8 +387,7 @@ impl StringArrayAggGroupsAccumulator {
 
         assert_eq!(array.len(), nulls.len());
 
-        let mut builder =
-            ListBuilder::with_capacity(StringBuilder::new(), nulls.len());
+        let mut builder = ListBuilder::with_capacity(StringBuilder::new(), nulls.len());
         for (is_valid, arr) in nulls.iter().zip(array.iter()) {
             if is_valid {
                 for value in arr.iter() {
@@ -422,7 +439,8 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
         assert_eq!(values.len(), 1, "single argument to merge_batch");
         let values = values[0].as_list();
 
-        self.values.resize(total_num_groups, Vec::<Option<String>>::new());
+        self.values
+            .resize(total_num_groups, Vec::<Option<String>>::new());
 
         self.null_state.accumulate_array(
             group_indices,
@@ -432,11 +450,13 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
             |group_index, new_value: ArrayRef| {
                 let new_value = new_value.as_string::<i32>();
 
-                self.values[group_index].append(new_value
-                    .into_iter()
-                    .map(|s| s.map(|s| s.to_string()))
-                    .collect::<Vec<Option<String>>>()
-                    .as_mut());
+                self.values[group_index].append(
+                    new_value
+                        .into_iter()
+                        .map(|s| s.map(|s| s.to_string()))
+                        .collect::<Vec<Option<String>>>()
+                        .as_mut(),
+                );
             },
         );
 
@@ -452,19 +472,19 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.values.capacity() +
-            self.values.iter().map(
-                |arr|
-                    arr.iter().map(
-                        |e|
-                            e.as_ref().map(|s| s.len()).unwrap_or(0)
-                    ).sum::<usize>()
-            ).sum::<usize>()
-
+        self.values.capacity()
+            + self
+                .values
+                .iter()
+                .map(|arr| {
+                    arr.iter()
+                        .map(|e| e.as_ref().map(|s| s.len()).unwrap_or(0))
+                        .sum::<usize>()
+                })
+                .sum::<usize>()
             + self.null_state.size()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
