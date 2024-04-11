@@ -287,12 +287,6 @@ impl<T> GroupsAccumulator for ArrayAggGroupsAccumulator<T>
 where
     T: ArrowPrimitiveType + Send + Sync,
 {
-    // TODO:
-    // 1. Implement support for null state
-    // 2. Implement support for low level ListArray creation api with offsets and nulls
-    // 3. Implement support for variable size types such as Utf8
-    // 4. Implement support for accumulating Lists of any level of nesting
-    // 5. Use this group accumulator in array_agg_distinct.rs
 
     fn update_batch(
         &mut self,
