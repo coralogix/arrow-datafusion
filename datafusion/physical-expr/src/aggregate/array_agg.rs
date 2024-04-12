@@ -582,7 +582,7 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::datatypes::*;
     use arrow::record_batch::RecordBatch;
-    use arrow_array::Array;
+    use arrow_array::{Array, StringArray};
     use arrow_array::ListArray;
     use arrow_buffer::OffsetBuffer;
     use datafusion_common::Result;
