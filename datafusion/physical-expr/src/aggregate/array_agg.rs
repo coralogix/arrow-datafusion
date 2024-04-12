@@ -25,7 +25,7 @@ use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
 use arrow_array::builder::{ListBuilder, PrimitiveBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{ArrowTimestampType, Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
+use arrow_array::types::{ArrowTimestampType, Date32Type, Date64Type, Decimal128Type, Decimal256Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, Time32MillisecondType, Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
 use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray, StringArray};
 use datafusion_common::cast::as_list_array;
 use datafusion_common::utils::array_into_list_array;
@@ -34,6 +34,7 @@ use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::Accumulator;
 use std::any::Any;
 use std::sync::Arc;
+use arrow::ipc::{Duration, Interval};
 use arrow_schema::TimeUnit;
 
 /// ARRAY_AGG aggregate expression
@@ -103,11 +104,7 @@ impl AggregateExpr for ArrayAgg {
     }
 
     fn groups_accumulator_supported(&self) -> bool {
-        self.input_data_type.is_primitive() ||
-            match self.input_data_type {
-                DataType::Utf8 => true,
-                _ => false,
-            }
+        self.input_data_type.is_primitive() || self.input_data_type == DataType::Utf8
     }
 
     fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
@@ -140,6 +137,12 @@ impl AggregateExpr for ArrayAgg {
             DataType::Float64 => {
                 Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new(&self.input_data_type)))
             }
+            DataType::Decimal128(_, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Decimal128Type>::new(&self.input_data_type)))
+            }
+            DataType::Decimal256(_, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Decimal256Type>::new(&self.input_data_type)))
+            }
             DataType::Date32 => {
                 Ok(Box::new(ArrayAggGroupsAccumulator::<Date32Type>::new(&self.input_data_type)))
             }
@@ -158,8 +161,26 @@ impl AggregateExpr for ArrayAgg {
             DataType::Timestamp(TimeUnit::Nanosecond, _) => {
                 Ok(Box::new(ArrayAggGroupsAccumulator::<TimestampNanosecondType>::new(&self.input_data_type)))
             }
+            DataType::Time32(TimeUnit::Second) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Time32SecondType>::new(&self.input_data_type)))
+            }
+            DataType::Time32(TimeUnit::Millisecond) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Time32MillisecondType>::new(&self.input_data_type)))
+            }
+            DataType::Time64(TimeUnit::Microsecond) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Time64MicrosecondType>::new(&self.input_data_type)))
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Time64NanosecondType>::new(&self.input_data_type)))
+            }
+            DataType::Duration(_) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Duration>::new(&self.input_data_type)))
+            }
+            DataType::Interval(_) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Interval>::new(&self.input_data_type)))
+            }
             DataType::Utf8 => Ok(Box::new(StringArrayAggGroupsAccumulator::new())),
-            _ => Err(DataFusionError::Internal(format!(
+            _  => Err(DataFusionError::Internal(format!(
                 "ArrayAggGroupsAccumulator not supported for data type {:?}",
                 self.input_data_type
             ))),
@@ -293,12 +314,9 @@ impl<T: ArrowPrimitiveType + Send> ArrayAggGroupsAccumulator<T>
                 len
             );
 
-        for (is_valid, arr) in nulls.iter().zip(array.iter()) {
+        for (is_valid, arr) in nulls.iter().zip(array.into_iter()) {
             if is_valid {
-                for value in arr.iter() {
-                    builder.values().append_option(*value);
-                }
-                builder.append(true);
+                builder.append_value(arr);
             } else {
                 builder.append_null();
             }
@@ -406,12 +424,9 @@ impl StringArrayAggGroupsAccumulator {
         assert_eq!(array.len(), nulls.len());
 
         let mut builder = ListBuilder::with_capacity(StringBuilder::new(), nulls.len());
-        for (is_valid, arr) in nulls.iter().zip(array.iter()) {
+        for (is_valid, arr) in nulls.iter().zip(array.into_iter()) {
             if is_valid {
-                for value in arr.iter() {
-                    builder.values().append_option(value.as_deref());
-                }
-                builder.append(true);
+                builder.append_value(arr);
             } else {
                 builder.append_null();
             }
