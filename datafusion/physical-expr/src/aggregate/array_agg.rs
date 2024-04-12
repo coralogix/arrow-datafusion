@@ -26,7 +26,7 @@ use crate::expressions::format_state_name;
 use crate::{AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
-use arrow_array::builder::{GenericListBuilder, ListBuilder, PrimitiveBuilder, StringBuilder};
+use arrow_array::builder::{ListBuilder, PrimitiveBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{ArrowTimestampType, Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
 use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray, StringArray};
@@ -281,46 +281,6 @@ where
     }
 }
 
-
-// trait Builder<T: ArrowPrimitiveType + Send> {
-//     fn new_builder(self, len: usize) -> ListBuilder<T>;
-// }
-//
-// impl<T: ArrowPrimitiveType + Send> Builder<T> for ArrayAggGroupsAccumulator<T> {
-//     fn new_builder(self, len: usize) -> ListBuilder<T> {
-//         ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len)
-//     }
-// }
-//
-// impl<T: ArrowTimestampType + Send> Builder<T> for ArrayAggGroupsAccumulator<T> {
-//     fn new_builder(self, len: usize) -> ListBuilder<T> {
-//         match &self.data_type {
-//             DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
-//                 ListBuilder::with_capacity(
-//                     PrimitiveBuilder::<TimestampNanosecondType>::new()
-//                         .with_timezone_opt(tz.clone()), len,
-//                 ),
-//             DataType::Timestamp(TimeUnit::Microsecond, tz) =>
-//                 ListBuilder::with_capacity(
-//                     PrimitiveBuilder::<TimestampMicrosecondType>::new()
-//                         .with_timezone_opt(tz.clone()), len,
-//                 ),
-//             DataType::Timestamp(TimeUnit::Millisecond, tz) =>
-//                 ListBuilder::with_capacity(
-//                     PrimitiveBuilder::<TimestampMillisecondType>::new()
-//                         .with_timezone_opt(tz.clone()), len,
-//                 ),
-//             DataType::Timestamp(TimeUnit::Second, tz) =>
-//                 ListBuilder::with_capacity(
-//                     PrimitiveBuilder::<TimestampSecondType>::new()
-//                         .with_timezone_opt(tz.clone()), len,
-//                 ),
-//             _ =>
-//                 ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
-//         }
-//     }
-// }
-
 impl<T: ArrowPrimitiveType + Send> ArrayAggGroupsAccumulator<T>
 {
     fn build_list(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
@@ -330,35 +290,11 @@ impl<T: ArrowPrimitiveType + Send> ArrayAggGroupsAccumulator<T>
         let len = nulls.len();
         assert_eq!(array.len(), len);
 
-        let mut builder: GenericListBuilder<i32, PrimitiveBuilder<T>> =
-            match &self.data_type {
-                DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
-                    ListBuilder::with_capacity(
-                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampNanosecondType>)
-                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
-                        len,
-                    ),
-                DataType::Timestamp(TimeUnit::Microsecond, tz) =>
-                    ListBuilder::with_capacity(
-                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampMicrosecondType>)
-                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
-                        len,
-                    ),
-                DataType::Timestamp(TimeUnit::Millisecond, tz) =>
-                    ListBuilder::with_capacity(
-                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampMillisecondType>)
-                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
-                        len,
-                    ),
-                DataType::Timestamp(TimeUnit::Second, tz) =>
-                    ListBuilder::with_capacity(
-                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampSecondType>)
-                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
-                        len,
-                    ),
-                _ =>
-                    ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
-            };
+        let mut builder =
+            ListBuilder::with_capacity(
+                PrimitiveBuilder::<T>::new().with_data_type(self.data_type.clone()),
+                len
+            );
 
         for (is_valid, arr) in nulls.iter().zip(array.iter()) {
             if is_valid {
@@ -375,42 +311,10 @@ impl<T: ArrowPrimitiveType + Send> ArrayAggGroupsAccumulator<T>
     }
 }
 
-
-impl<T: ArrowTimestampType + Send> ArrayAggGroupsAccumulator<T> {
-    fn timestamp_builder(&mut self, len: usize) -> GenericListBuilder<i32, PrimitiveBuilder<T>> {
-        match &self.data_type {
-            DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
-                ListBuilder::with_capacity(
-                    PrimitiveBuilder::<TimestampNanosecondType>::new()
-                        .with_timezone_opt(tz.clone()), len,
-                ),
-            DataType::Timestamp(TimeUnit::Microsecond, tz) =>
-                ListBuilder::with_capacity(
-                    PrimitiveBuilder::<TimestampMicrosecondType>::new()
-                        .with_timezone_opt(tz.clone()), len,
-                ),
-            DataType::Timestamp(TimeUnit::Millisecond, tz) =>
-                ListBuilder::with_capacity(
-                    PrimitiveBuilder::<TimestampMillisecondType>::new()
-                        .with_timezone_opt(tz.clone()), len,
-                ),
-            DataType::Timestamp(TimeUnit::Second, tz) =>
-                ListBuilder::with_capacity(
-                    PrimitiveBuilder::<TimestampSecondType>::new()
-                        .with_timezone_opt(tz.clone()), len,
-                ),
-            _ =>
-                ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
-        }
-    }
-}
-
-
 impl<T> GroupsAccumulator for ArrayAggGroupsAccumulator<T>
 where
     T: ArrowPrimitiveType + Send + Sync,
 {
-
     fn update_batch(
         &mut self,
         new_values: &[ArrayRef],
