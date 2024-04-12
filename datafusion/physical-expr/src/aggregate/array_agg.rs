@@ -17,18 +17,18 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
+#![feature(specialization)]
+
+
 use crate::aggregate::groups_accumulator::accumulate::NullState;
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
 use crate::{AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
-use arrow_array::builder::{ListBuilder, PrimitiveBuilder, StringBuilder};
+use arrow_array::builder::{GenericListBuilder, ListBuilder, PrimitiveBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{
-    Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
-    UInt32Type, UInt64Type, UInt8Type,
-};
+use arrow_array::types::{ArrowTimestampType, Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type};
 use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, ListArray, StringArray};
 use datafusion_common::cast::as_list_array;
 use datafusion_common::utils::array_into_list_array;
@@ -37,6 +37,7 @@ use datafusion_common::{DataFusionError, Result};
 use datafusion_expr::Accumulator;
 use std::any::Any;
 use std::sync::Arc;
+use arrow_schema::TimeUnit;
 
 /// ARRAY_AGG aggregate expression
 #[derive(Debug)]
@@ -105,38 +106,60 @@ impl AggregateExpr for ArrayAgg {
     }
 
     fn groups_accumulator_supported(&self) -> bool {
-        self.input_data_type.is_primitive()
+        self.input_data_type.is_primitive() ||
+            match self.input_data_type {
+                DataType::Utf8 => true,
+                _ => false,
+            }
     }
 
     fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
         match self.input_data_type {
-            DataType::Int8 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int8Type>::new())),
+            DataType::Int8 => Ok(Box::new(ArrayAggGroupsAccumulator::<Int8Type>::new(&self.input_data_type))),
             DataType::Int16 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int16Type>::new(&self.input_data_type)))
             }
             DataType::Int32 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int32Type>::new(&self.input_data_type)))
             }
             DataType::Int64 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Int64Type>::new(&self.input_data_type)))
             }
             DataType::UInt8 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt8Type>::new(&self.input_data_type)))
             }
             DataType::UInt16 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt16Type>::new(&self.input_data_type)))
             }
             DataType::UInt32 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt32Type>::new(&self.input_data_type)))
             }
             DataType::UInt64 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<UInt64Type>::new(&self.input_data_type)))
             }
             DataType::Float32 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float32Type>::new(&self.input_data_type)))
             }
             DataType::Float64 => {
-                Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new()))
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Float64Type>::new(&self.input_data_type)))
+            }
+            DataType::Date32 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Date32Type>::new(&self.input_data_type)))
+            }
+            DataType::Date64 => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<Date64Type>::new(&self.input_data_type)))
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<TimestampSecondType>::new(&self.input_data_type)))
+            }
+            DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<TimestampMillisecondType>::new(&self.input_data_type)))
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<TimestampMicrosecondType>::new(&self.input_data_type)))
+            }
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+                Ok(Box::new(ArrayAggGroupsAccumulator::<TimestampNanosecondType>::new(&self.input_data_type)))
             }
             DataType::Utf8 => Ok(Box::new(StringArrayAggGroupsAccumulator::new())),
             _ => Err(DataFusionError::Internal(format!(
@@ -241,6 +264,7 @@ where
     T: ArrowPrimitiveType + Send,
 {
     values: Vec<Vec<Option<<T as ArrowPrimitiveType>::Native>>>,
+    data_type: DataType,
     null_state: NullState,
 }
 
@@ -248,26 +272,94 @@ impl<T> ArrayAggGroupsAccumulator<T>
 where
     T: ArrowPrimitiveType + Send,
 {
-    pub fn new() -> Self {
+    pub fn new(data_type: &DataType) -> Self {
         Self {
             values: vec![],
+            data_type: data_type.clone(),
             null_state: NullState::new(),
         }
     }
 }
 
-impl<T> ArrayAggGroupsAccumulator<T>
-where
-    T: ArrowPrimitiveType + Send,
+
+// trait Builder<T: ArrowPrimitiveType + Send> {
+//     fn new_builder(self, len: usize) -> ListBuilder<T>;
+// }
+//
+// impl<T: ArrowPrimitiveType + Send> Builder<T> for ArrayAggGroupsAccumulator<T> {
+//     fn new_builder(self, len: usize) -> ListBuilder<T> {
+//         ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len)
+//     }
+// }
+//
+// impl<T: ArrowTimestampType + Send> Builder<T> for ArrayAggGroupsAccumulator<T> {
+//     fn new_builder(self, len: usize) -> ListBuilder<T> {
+//         match &self.data_type {
+//             DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
+//                 ListBuilder::with_capacity(
+//                     PrimitiveBuilder::<TimestampNanosecondType>::new()
+//                         .with_timezone_opt(tz.clone()), len,
+//                 ),
+//             DataType::Timestamp(TimeUnit::Microsecond, tz) =>
+//                 ListBuilder::with_capacity(
+//                     PrimitiveBuilder::<TimestampMicrosecondType>::new()
+//                         .with_timezone_opt(tz.clone()), len,
+//                 ),
+//             DataType::Timestamp(TimeUnit::Millisecond, tz) =>
+//                 ListBuilder::with_capacity(
+//                     PrimitiveBuilder::<TimestampMillisecondType>::new()
+//                         .with_timezone_opt(tz.clone()), len,
+//                 ),
+//             DataType::Timestamp(TimeUnit::Second, tz) =>
+//                 ListBuilder::with_capacity(
+//                     PrimitiveBuilder::<TimestampSecondType>::new()
+//                         .with_timezone_opt(tz.clone()), len,
+//                 ),
+//             _ =>
+//                 ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
+//         }
+//     }
+// }
+
+impl<T: ArrowPrimitiveType + Send> ArrayAggGroupsAccumulator<T>
 {
     fn build_list(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let array = emit_to.take_needed(&mut self.values);
         let nulls = self.null_state.build(emit_to);
 
-        assert_eq!(array.len(), nulls.len());
+        let len = nulls.len();
+        assert_eq!(array.len(), len);
 
-        let mut builder =
-            ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), nulls.len());
+        let mut builder: GenericListBuilder<i32, PrimitiveBuilder<T>> =
+            match &self.data_type {
+                DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
+                    ListBuilder::with_capacity(
+                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampNanosecondType>)
+                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
+                        len,
+                    ),
+                DataType::Timestamp(TimeUnit::Microsecond, tz) =>
+                    ListBuilder::with_capacity(
+                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampMicrosecondType>)
+                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
+                        len,
+                    ),
+                DataType::Timestamp(TimeUnit::Millisecond, tz) =>
+                    ListBuilder::with_capacity(
+                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampMillisecondType>)
+                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
+                        len,
+                    ),
+                DataType::Timestamp(TimeUnit::Second, tz) =>
+                    ListBuilder::with_capacity(
+                        (PrimitiveBuilder::<T>::new() as PrimitiveBuilder<TimestampSecondType>)
+                            .with_timezone_opt(tz.clone()) as PrimitiveBuilder<T>,
+                        len,
+                    ),
+                _ =>
+                    ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
+            };
+
         for (is_valid, arr) in nulls.iter().zip(array.iter()) {
             if is_valid {
                 for value in arr.iter() {
@@ -282,6 +374,37 @@ where
         Ok(Arc::new(builder.finish()))
     }
 }
+
+
+impl<T: ArrowTimestampType + Send> ArrayAggGroupsAccumulator<T> {
+    fn timestamp_builder(&mut self, len: usize) -> GenericListBuilder<i32, PrimitiveBuilder<T>> {
+        match &self.data_type {
+            DataType::Timestamp(TimeUnit::Nanosecond, tz) =>
+                ListBuilder::with_capacity(
+                    PrimitiveBuilder::<TimestampNanosecondType>::new()
+                        .with_timezone_opt(tz.clone()), len,
+                ),
+            DataType::Timestamp(TimeUnit::Microsecond, tz) =>
+                ListBuilder::with_capacity(
+                    PrimitiveBuilder::<TimestampMicrosecondType>::new()
+                        .with_timezone_opt(tz.clone()), len,
+                ),
+            DataType::Timestamp(TimeUnit::Millisecond, tz) =>
+                ListBuilder::with_capacity(
+                    PrimitiveBuilder::<TimestampMillisecondType>::new()
+                        .with_timezone_opt(tz.clone()), len,
+                ),
+            DataType::Timestamp(TimeUnit::Second, tz) =>
+                ListBuilder::with_capacity(
+                    PrimitiveBuilder::<TimestampSecondType>::new()
+                        .with_timezone_opt(tz.clone()), len,
+                ),
+            _ =>
+                ListBuilder::with_capacity(PrimitiveBuilder::<T>::new(), len),
+        }
+    }
+}
+
 
 impl<T> GroupsAccumulator for ArrayAggGroupsAccumulator<T>
 where
