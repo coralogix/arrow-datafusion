@@ -17,9 +17,6 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
-#![feature(specialization)]
-
-
 use crate::aggregate::groups_accumulator::accumulate::NullState;
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
