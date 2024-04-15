@@ -441,7 +441,7 @@ where
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        Ok(self.build_list(emit_to)?)
+        self.build_list(emit_to)
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
@@ -551,7 +551,7 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        Ok(self.build_list(emit_to)?)
+        self.build_list(emit_to)
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
