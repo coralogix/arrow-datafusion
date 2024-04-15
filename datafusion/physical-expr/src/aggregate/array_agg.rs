@@ -675,8 +675,6 @@ mod tests {
         list_builder.append(true);
 
         let list = list_builder.finish();
-        let expected = ScalarValue::List(Arc::new(list.clone()));
-
         let expected: ArrayRef = Arc::new(list);
         test_op_new!(a, DataType::Utf8, ArrayAgg, &expected, DataType::Utf8);
 
