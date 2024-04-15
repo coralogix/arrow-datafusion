@@ -39,7 +39,7 @@ use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
     create_udf, BuiltinScalarFunction, JoinType, Operator, Volatility,
 };
-use datafusion::physical_expr::expressions::{Count, NthValueAgg};
+use datafusion::physical_expr::expressions::{Count, Max, NthValueAgg};
 use datafusion::physical_expr::window::SlidingAggregateWindowExpr;
 use datafusion::physical_expr::{PhysicalSortRequirement, ScalarFunctionExpr};
 use datafusion::physical_plan::aggregates::{
@@ -665,7 +665,7 @@ fn roundtrip_scalar_udf() -> Result<()> {
 }
 
 #[test]
-fn roundtrip_scalar_udf_extension_codec() {
+fn roundtrip_scalar_udf_extension_codec() -> Result<()> {
     #[derive(Debug)]
     struct MyRegexUdf {
         signature: Signature,
@@ -687,18 +687,22 @@ fn roundtrip_scalar_udf_extension_codec() {
         fn as_any(&self) -> &dyn Any {
             self
         }
+
         fn name(&self) -> &str {
             "regex_udf"
         }
+
         fn signature(&self) -> &Signature {
             &self.signature
         }
+
         fn return_type(&self, args: &[DataType]) -> Result<DataType> {
             if !matches!(args.first(), Some(&DataType::Utf8)) {
                 return plan_err!("regex_udf only accepts Utf8 arguments");
             }
-            Ok(DataType::Boolean)
+            Ok(DataType::Int64)
         }
+
         fn invoke(&self, _args: &[ColumnarValue]) -> Result<ColumnarValue> {
             unimplemented!()
         }
@@ -773,39 +777,45 @@ fn roundtrip_scalar_udf_extension_codec() {
     let udf_expr = Arc::new(ScalarFunctionExpr::new(
         udf.name(),
         ScalarFunctionDefinition::UDF(Arc::new(udf.clone())),
-        vec![col("text", &schema).expect("text")],
-        DataType::Boolean,
+        vec![col("text", &schema)?],
+        DataType::Int64,
         None,
         false,
     ));
 
-    let filter = Arc::new(
-        FilterExec::try_new(
-            Arc::new(BinaryExpr::new(
-                col("published", &schema).expect("published"),
-                Operator::And,
-                udf_expr.clone(),
-            )),
-            input,
-        )
-        .expect("filter"),
-    );
+    let filter = Arc::new(FilterExec::try_new(
+        Arc::new(BinaryExpr::new(
+            col("published", &schema)?,
+            Operator::And,
+            Arc::new(BinaryExpr::new(udf_expr.clone(), Operator::Gt, lit(0))),
+        )),
+        input,
+    )?);
 
-    let aggregate = Arc::new(
-        AggregateExec::try_new(
-            AggregateMode::Final,
-            PhysicalGroupBy::new(vec![], vec![], vec![]),
-            vec![Arc::new(Count::new(udf_expr, "count", DataType::Boolean))],
-            vec![None],
-            filter,
-            schema.clone(),
-        )
-        .expect("aggregate"),
-    );
+    let window = Arc::new(WindowAggExec::try_new(
+        vec![Arc::new(PlainAggregateWindowExpr::new(
+            Arc::new(Max::new(udf_expr.clone(), "max", DataType::Int64)),
+            &[col("author", &schema)?],
+            &[],
+            Arc::new(WindowFrame::new(None)),
+        ))],
+        filter,
+        vec![col("author", &schema)?],
+    )?);
+
+    let aggregate = Arc::new(AggregateExec::try_new(
+        AggregateMode::Final,
+        PhysicalGroupBy::new(vec![], vec![], vec![]),
+        vec![Arc::new(Count::new(udf_expr, "count", DataType::Int64))],
+        vec![None],
+        window,
+        schema.clone(),
+    )?);
 
     let ctx = SessionContext::new();
     let codec = ScalarUDFExtensionCodec {};
-    roundtrip_test_and_return(aggregate, &ctx, &codec).unwrap();
+    roundtrip_test_and_return(aggregate, &ctx, &codec)?;
+    Ok(())
 }
 
 #[test]
