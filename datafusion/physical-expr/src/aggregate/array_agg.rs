@@ -26,11 +26,11 @@ use arrow::datatypes::{DataType, Field};
 use arrow_array::builder::{ListBuilder, PrimitiveBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    Date32Type, Date64Type, Decimal128Type, Decimal256Type,
-    DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
-    DurationSecondType, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
-    Int8Type, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalYearMonthType,
-    Time32MillisecondType, Time32SecondType, Time64MicrosecondType, Time64NanosecondType,
+    Date32Type, Date64Type, Decimal128Type, Decimal256Type, DurationMicrosecondType,
+    DurationMillisecondType, DurationNanosecondType, DurationSecondType, Float32Type,
+    Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, IntervalDayTimeType,
+    IntervalMonthDayNanoType, IntervalYearMonthType, Time32MillisecondType,
+    Time32SecondType, Time64MicrosecondType, Time64NanosecondType,
     TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
     TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
 };
@@ -582,8 +582,8 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::datatypes::*;
     use arrow::record_batch::RecordBatch;
-    use arrow_array::{Array, StringArray};
     use arrow_array::ListArray;
+    use arrow_array::{Array, StringArray};
     use arrow_buffer::OffsetBuffer;
     use datafusion_common::Result;
 
