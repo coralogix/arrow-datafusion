@@ -19,22 +19,8 @@ use std::convert::TryInto;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use self::from_proto::parse_physical_window_expr;
-use self::to_proto::serialize_physical_expr;
-
-use crate::common::{byte_to_string, proto_error, str_to_byte};
-use crate::convert_required;
-use crate::physical_plan::from_proto::{
-    parse_physical_expr, parse_physical_sort_expr, parse_physical_sort_exprs,
-    parse_protobuf_file_scan_config,
-};
-use crate::protobuf::physical_aggregate_expr_node::AggregateFunction;
-use crate::protobuf::physical_expr_node::ExprType;
-use crate::protobuf::physical_plan_node::PhysicalPlanType;
-use crate::protobuf::repartition_exec_node::PartitionMethod;
-use crate::protobuf::{
-    self, window_agg_exec_node, PhysicalPlanNode, PhysicalSortExprNodeCollection,
-};
+use prost::bytes::BufMut;
+use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -79,13 +65,28 @@ use datafusion::physical_plan::{
 use datafusion_common::{internal_err, not_impl_err, DataFusionError, Result};
 use datafusion_expr::ScalarUDF;
 
-use prost::bytes::BufMut;
-use prost::Message;
+use crate::common::{byte_to_string, proto_error, str_to_byte};
+use crate::convert_required;
+use crate::physical_plan::from_proto::{
+    parse_physical_expr, parse_physical_sort_expr, parse_physical_sort_exprs,
+    parse_physical_window_expr_ext, parse_protobuf_file_scan_config_ext,
+};
+use crate::physical_plan::to_proto::{
+    serialize_file_scan_config, serialize_maybe_filter, serialize_physical_aggr_expr,
+    serialize_physical_window_expr,
+};
+use crate::protobuf::physical_aggregate_expr_node::AggregateFunction;
+use crate::protobuf::physical_expr_node::ExprType;
+use crate::protobuf::physical_plan_node::PhysicalPlanType;
+use crate::protobuf::repartition_exec_node::PartitionMethod;
+use crate::protobuf::{self, window_agg_exec_node};
+
+use self::to_proto::serialize_physical_expr;
 
 pub mod from_proto;
 pub mod to_proto;
 
-impl AsExecutionPlan for PhysicalPlanNode {
+impl AsExecutionPlan for protobuf::PhysicalPlanNode {
     fn try_decode(buf: &[u8]) -> Result<Self>
     where
         Self: Sized,
@@ -188,9 +189,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 }
             }
             PhysicalPlanType::CsvScan(scan) => Ok(Arc::new(CsvExec::new(
-                parse_protobuf_file_scan_config(
+                parse_protobuf_file_scan_config_ext(
                     scan.base_conf.as_ref().unwrap(),
                     registry,
+                    extension_codec,
                 )?,
                 scan.has_header,
                 str_to_byte(&scan.delimiter, "delimiter")?,
@@ -207,9 +209,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             ))),
             #[cfg(feature = "parquet")]
             PhysicalPlanType::ParquetScan(scan) => {
-                let base_config = parse_protobuf_file_scan_config(
+                let base_config = parse_protobuf_file_scan_config_ext(
                     scan.base_conf.as_ref().unwrap(),
                     registry,
+                    extension_codec,
                 )?;
                 let predicate = scan
                     .predicate
@@ -230,12 +233,13 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     Default::default(),
                 )))
             }
-            PhysicalPlanType::AvroScan(scan) => {
-                Ok(Arc::new(AvroExec::new(parse_protobuf_file_scan_config(
+            PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(
+                parse_protobuf_file_scan_config_ext(
                     scan.base_conf.as_ref().unwrap(),
                     registry,
-                )?)))
-            }
+                    extension_codec,
+                )?,
+            ))),
             PhysicalPlanType::CoalesceBatches(coalesce_batches) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan(
                     &coalesce_batches.input,
@@ -334,10 +338,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .window_expr
                     .iter()
                     .map(|window_expr| {
-                        parse_physical_window_expr(
+                        parse_physical_window_expr_ext(
                             window_expr,
                             registry,
                             input_schema.as_ref(),
+                            extension_codec,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1445,14 +1450,17 @@ impl AsExecutionPlan for PhysicalPlanNode {
             let filter = exec
                 .filter_expr()
                 .iter()
-                .map(|expr| expr.to_owned().try_into())
+                .map(|expr| serialize_maybe_filter(expr.to_owned(), extension_codec))
                 .collect::<Result<Vec<_>>>()?;
 
             let agg = exec
                 .aggr_expr()
                 .iter()
-                .map(|expr| expr.to_owned().try_into())
+                .map(|expr| {
+                    serialize_physical_aggr_expr(expr.to_owned(), extension_codec)
+                })
                 .collect::<Result<Vec<_>>>()?;
+
             let agg_names = exec
                 .aggr_expr()
                 .iter()
@@ -1552,7 +1560,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::CsvScan(
                     protobuf::CsvScanExecNode {
-                        base_conf: Some(exec.base_config().try_into()?),
+                        base_conf: Some(serialize_file_scan_config(
+                            exec.base_config(),
+                            extension_codec,
+                        )?),
                         has_header: exec.has_header(),
                         delimiter: byte_to_string(exec.delimiter(), "delimiter")?,
                         quote: byte_to_string(exec.quote(), "quote")?,
@@ -1577,7 +1588,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ParquetScan(
                     protobuf::ParquetScanExecNode {
-                        base_conf: Some(exec.base_config().try_into()?),
+                        base_conf: Some(serialize_file_scan_config(
+                            exec.base_config(),
+                            extension_codec,
+                        )?),
                         predicate,
                     },
                 )),
@@ -1588,7 +1602,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             return Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::AvroScan(
                     protobuf::AvroScanExecNode {
-                        base_conf: Some(exec.base_config().try_into()?),
+                        base_conf: Some(serialize_file_scan_config(
+                            exec.base_config(),
+                            extension_codec,
+                        )?),
                     },
                 )),
             });
@@ -1684,7 +1701,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
         }
 
         if let Some(union) = plan.downcast_ref::<UnionExec>() {
-            let mut inputs: Vec<PhysicalPlanNode> = vec![];
+            let mut inputs: Vec<protobuf::PhysicalPlanNode> = vec![];
             for input in union.inputs() {
                 inputs.push(protobuf::PhysicalPlanNode::try_from_physical_plan(
                     input.to_owned(),
@@ -1699,7 +1716,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
         }
 
         if let Some(interleave) = plan.downcast_ref::<InterleaveExec>() {
-            let mut inputs: Vec<PhysicalPlanNode> = vec![];
+            let mut inputs: Vec<protobuf::PhysicalPlanNode> = vec![];
             for input in interleave.inputs() {
                 inputs.push(protobuf::PhysicalPlanNode::try_from_physical_plan(
                     input.to_owned(),
@@ -1805,11 +1822,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 extension_codec,
             )?;
 
-            let window_expr =
-                exec.window_expr()
-                    .iter()
-                    .map(|e| e.clone().try_into())
-                    .collect::<Result<Vec<protobuf::PhysicalWindowExprNode>>>()?;
+            let window_expr = exec
+                .window_expr()
+                .iter()
+                .map(|e| serialize_physical_window_expr(e.clone(), extension_codec))
+                .collect::<Result<Vec<protobuf::PhysicalWindowExprNode>>>()?;
 
             let partition_keys = exec
                 .partition_keys
@@ -1835,11 +1852,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 extension_codec,
             )?;
 
-            let window_expr =
-                exec.window_expr()
-                    .iter()
-                    .map(|e| e.clone().try_into())
-                    .collect::<Result<Vec<protobuf::PhysicalWindowExprNode>>>()?;
+            let window_expr = exec
+                .window_expr()
+                .iter()
+                .map(|e| serialize_physical_window_expr(e.clone(), extension_codec))
+                .collect::<Result<Vec<protobuf::PhysicalWindowExprNode>>>()?;
 
             let partition_keys = exec
                 .partition_keys
@@ -1897,7 +1914,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                             Ok(sort_expr)
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    Some(PhysicalSortExprNodeCollection {
+                    Some(protobuf::PhysicalSortExprNodeCollection {
                         physical_sort_expr_nodes: expr,
                     })
                 }
@@ -2040,7 +2057,7 @@ impl PhysicalExtensionCodec for DefaultPhysicalExtensionCodec {
 }
 
 fn into_physical_plan(
-    node: &Option<Box<PhysicalPlanNode>>,
+    node: &Option<Box<protobuf::PhysicalPlanNode>>,
     registry: &dyn FunctionRegistry,
     runtime: &RuntimeEnv,
     extension_codec: &dyn PhysicalExtensionCodec,
