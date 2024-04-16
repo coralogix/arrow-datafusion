@@ -428,7 +428,7 @@ where
             total_num_groups,
             |group_index, new_value: ArrayRef| {
                 let new_value = new_value.as_primitive::<T>();
-                self.values[group_index].extend(new_value.into_iter());
+                self.values[group_index].extend(new_value);
             },
         );
 
@@ -531,8 +531,7 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
             total_num_groups,
             |group_index, new_value: ArrayRef| {
                 let new_value = new_value.as_string::<i32>();
-                self
-                    .values[group_index]
+                self.values[group_index]
                     .extend(new_value.into_iter().map(|s| s.map(|s| s.to_string())));
             },
         );
