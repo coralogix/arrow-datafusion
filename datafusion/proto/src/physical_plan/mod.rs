@@ -1020,7 +1020,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                     .as_ref()
                     .ok_or_else(|| proto_error("Missing required field in protobuf"))?
                     .try_into()?;
-                let sink_schema = convert_required!(sink.sink_schema)?;
+                let sink_schema = input.schema();
                 let sort_order = sink
                     .sort_order
                     .as_ref()
@@ -1037,7 +1037,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                 Ok(Arc::new(FileSinkExec::new(
                     input,
                     Arc::new(data_sink),
-                    Arc::new(sink_schema),
+                    sink_schema,
                     sort_order,
                 )))
             }
@@ -1050,7 +1050,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                     .as_ref()
                     .ok_or_else(|| proto_error("Missing required field in protobuf"))?
                     .try_into()?;
-                let sink_schema = convert_required!(sink.sink_schema)?;
+                let sink_schema = input.schema();
                 let sort_order = sink
                     .sort_order
                     .as_ref()
@@ -1067,7 +1067,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                 Ok(Arc::new(FileSinkExec::new(
                     input,
                     Arc::new(data_sink),
-                    Arc::new(sink_schema),
+                    sink_schema,
                     sort_order,
                 )))
             }
@@ -1080,7 +1080,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                     .as_ref()
                     .ok_or_else(|| proto_error("Missing required field in protobuf"))?
                     .try_into()?;
-                let sink_schema = convert_required!(sink.sink_schema)?;
+                let sink_schema = input.schema();
                 let sort_order = sink
                     .sort_order
                     .as_ref()
@@ -1097,7 +1097,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                 Ok(Arc::new(FileSinkExec::new(
                     input,
                     Arc::new(data_sink),
-                    Arc::new(sink_schema),
+                    sink_schema,
                     sort_order,
                 )))
             }
