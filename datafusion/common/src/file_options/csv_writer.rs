@@ -51,8 +51,13 @@ impl TryFrom<&CsvOptions> for CsvWriterOptions {
     fn try_from(value: &CsvOptions) -> Result<Self> {
         let mut builder = WriterBuilder::default()
             .with_header(value.has_header)
-            .with_delimiter(value.delimiter);
+            .with_quote(value.quote)
+            .with_delimiter(value.delimiter)
+            .with_double_quote(value.double_quote);
 
+        if let Some(v) = &value.escape {
+            builder = builder.with_escape(*v)
+        }
         if let Some(v) = &value.date_format {
             builder = builder.with_date_format(v.into())
         }

@@ -1699,6 +1699,15 @@ pub struct CsvWriterOptions {
     /// Optional value to represent null
     #[prost(string, tag = "8")]
     pub null_value: ::prost::alloc::string::String,
+    /// Optional quote. Defaults to `b'"'`
+    #[prost(string, tag = "9")]
+    pub quote: ::prost::alloc::string::String,
+    /// Optional escape. Defaults to `'\\'`
+    #[prost(string, tag = "10")]
+    pub escape: ::prost::alloc::string::String,
+    /// Optional flag whether to double quote instead of escaping. Defaults to `true`
+    #[prost(bool, tag = "11")]
+    pub double_quote: bool,
 }
 /// Options controlling CSV format
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1740,6 +1749,9 @@ pub struct CsvOptions {
     /// Optional representation of null value
     #[prost(string, tag = "12")]
     pub null_value: ::prost::alloc::string::String,
+    /// Indicates whether to use double quotes instead of escaping
+    #[prost(bool, tag = "13")]
+    pub double_quote: bool,
 }
 /// Options controlling CSV format
 #[allow(clippy::derive_partial_eq_without_eq)]
