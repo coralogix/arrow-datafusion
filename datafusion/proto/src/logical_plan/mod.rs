@@ -1626,6 +1626,9 @@ pub(crate) fn csv_writer_options_to_proto(
         timestamp_format: csv_options.timestamp_format().unwrap_or("").to_owned(),
         time_format: csv_options.time_format().unwrap_or("").to_owned(),
         null_value: csv_options.null().to_owned(),
+        quote: (csv_options.quote() as char).to_string(),
+        escape: (csv_options.escape() as char).to_string(),
+        double_quote: csv_options.double_quote(),
     }
 }
 
@@ -1644,11 +1647,34 @@ pub(crate) fn csv_writer_options_from_proto(
             return Err(proto_error("Error parsing CSV Delimiter"));
         }
     }
+    if !writer_options.quote.is_empty() {
+        if let Some(quote) = writer_options.quote.chars().next() {
+            if quote.is_ascii() {
+                builder = builder.with_quote(quote as u8);
+            } else {
+                return Err(proto_error("CSV quote is not ASCII"));
+            }
+        } else {
+            return Err(proto_error("Error parsing CSV quote"));
+        }
+    }
+    if !writer_options.escape.is_empty() {
+        if let Some(escape) = writer_options.escape.chars().next() {
+            if escape.is_ascii() {
+                builder = builder.with_escape(escape as u8);
+            } else {
+                return Err(proto_error("CSV escape is not ASCII"));
+            }
+        } else {
+            return Err(proto_error("Error parsing CSV escape"));
+        }
+    }
     Ok(builder
         .with_header(writer_options.has_header)
         .with_date_format(writer_options.date_format.clone())
         .with_datetime_format(writer_options.datetime_format.clone())
         .with_timestamp_format(writer_options.timestamp_format.clone())
         .with_time_format(writer_options.time_format.clone())
-        .with_null(writer_options.null_value.clone()))
+        .with_null(writer_options.null_value.clone())
+        .with_double_quote(writer_options.double_quote))
 }

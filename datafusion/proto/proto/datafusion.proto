@@ -1255,6 +1255,12 @@ message CsvWriterOptions {
   string time_format = 7;
   // Optional value to represent null
   string null_value = 8;
+  // Optional quote. Defaults to `b'"'`
+  string quote = 9;
+  // Optional escape. Defaults to `'\\'`
+  string escape = 10;
+  // Optional flag whether to double quote instead of escaping. Defaults to `true`
+  bool double_quote = 11;
 }
 
 // Options controlling CSV format
@@ -1271,6 +1277,7 @@ message CsvOptions {
   string timestamp_tz_format = 10; // Optional timestamp with timezone format
   string time_format = 11; // Optional time format
   string null_value = 12; // Optional representation of null value
+  bool double_quote = 13; // Indicates whether to use double quotes instead of escaping
 }
 
 // Options controlling CSV format
