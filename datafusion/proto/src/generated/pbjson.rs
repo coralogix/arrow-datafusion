@@ -5495,6 +5495,9 @@ impl serde::Serialize for CsvOptions {
         if !self.null_value.is_empty() {
             len += 1;
         }
+        if self.double_quote {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.CsvOptions", len)?;
         if self.has_header {
             struct_ser.serialize_field("hasHeader", &self.has_header)?;
@@ -5538,6 +5541,9 @@ impl serde::Serialize for CsvOptions {
         if !self.null_value.is_empty() {
             struct_ser.serialize_field("nullValue", &self.null_value)?;
         }
+        if self.double_quote {
+            struct_ser.serialize_field("doubleQuote", &self.double_quote)?;
+        }
         struct_ser.end()
     }
 }
@@ -5568,6 +5574,8 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
             "timeFormat",
             "null_value",
             "nullValue",
+            "double_quote",
+            "doubleQuote",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -5584,6 +5592,7 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
             TimestampTzFormat,
             TimeFormat,
             NullValue,
+            DoubleQuote,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -5617,6 +5626,7 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
                             "timestampTzFormat" | "timestamp_tz_format" => Ok(GeneratedField::TimestampTzFormat),
                             "timeFormat" | "time_format" => Ok(GeneratedField::TimeFormat),
                             "nullValue" | "null_value" => Ok(GeneratedField::NullValue),
+                            "doubleQuote" | "double_quote" => Ok(GeneratedField::DoubleQuote),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -5648,6 +5658,7 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
                 let mut timestamp_tz_format__ = None;
                 let mut time_format__ = None;
                 let mut null_value__ = None;
+                let mut double_quote__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::HasHeader => {
@@ -5730,6 +5741,12 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
                             }
                             null_value__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::DoubleQuote => {
+                            if double_quote__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("doubleQuote"));
+                            }
+                            double_quote__ = Some(map_.next_value()?);
+                        }
                     }
                 }
                 Ok(CsvOptions {
@@ -5745,6 +5762,7 @@ impl<'de> serde::Deserialize<'de> for CsvOptions {
                     timestamp_tz_format: timestamp_tz_format__.unwrap_or_default(),
                     time_format: time_format__.unwrap_or_default(),
                     null_value: null_value__.unwrap_or_default(),
+                    double_quote: double_quote__.unwrap_or_default(),
                 })
             }
         }
@@ -6201,6 +6219,15 @@ impl serde::Serialize for CsvWriterOptions {
         if !self.null_value.is_empty() {
             len += 1;
         }
+        if !self.quote.is_empty() {
+            len += 1;
+        }
+        if !self.escape.is_empty() {
+            len += 1;
+        }
+        if self.double_quote {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.CsvWriterOptions", len)?;
         if self.compression != 0 {
             let v = CompressionTypeVariant::try_from(self.compression)
@@ -6228,6 +6255,15 @@ impl serde::Serialize for CsvWriterOptions {
         if !self.null_value.is_empty() {
             struct_ser.serialize_field("nullValue", &self.null_value)?;
         }
+        if !self.quote.is_empty() {
+            struct_ser.serialize_field("quote", &self.quote)?;
+        }
+        if !self.escape.is_empty() {
+            struct_ser.serialize_field("escape", &self.escape)?;
+        }
+        if self.double_quote {
+            struct_ser.serialize_field("doubleQuote", &self.double_quote)?;
+        }
         struct_ser.end()
     }
 }
@@ -6252,6 +6288,10 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
             "timeFormat",
             "null_value",
             "nullValue",
+            "quote",
+            "escape",
+            "double_quote",
+            "doubleQuote",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -6264,6 +6304,9 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
             TimestampFormat,
             TimeFormat,
             NullValue,
+            Quote,
+            Escape,
+            DoubleQuote,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -6293,6 +6336,9 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                             "timestampFormat" | "timestamp_format" => Ok(GeneratedField::TimestampFormat),
                             "timeFormat" | "time_format" => Ok(GeneratedField::TimeFormat),
                             "nullValue" | "null_value" => Ok(GeneratedField::NullValue),
+                            "quote" => Ok(GeneratedField::Quote),
+                            "escape" => Ok(GeneratedField::Escape),
+                            "doubleQuote" | "double_quote" => Ok(GeneratedField::DoubleQuote),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -6320,6 +6366,9 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                 let mut timestamp_format__ = None;
                 let mut time_format__ = None;
                 let mut null_value__ = None;
+                let mut quote__ = None;
+                let mut escape__ = None;
+                let mut double_quote__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::Compression => {
@@ -6370,6 +6419,24 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                             }
                             null_value__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::Quote => {
+                            if quote__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("quote"));
+                            }
+                            quote__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::Escape => {
+                            if escape__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("escape"));
+                            }
+                            escape__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::DoubleQuote => {
+                            if double_quote__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("doubleQuote"));
+                            }
+                            double_quote__ = Some(map_.next_value()?);
+                        }
                     }
                 }
                 Ok(CsvWriterOptions {
@@ -6381,6 +6448,9 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                     timestamp_format: timestamp_format__.unwrap_or_default(),
                     time_format: time_format__.unwrap_or_default(),
                     null_value: null_value__.unwrap_or_default(),
+                    quote: quote__.unwrap_or_default(),
+                    escape: escape__.unwrap_or_default(),
+                    double_quote: double_quote__.unwrap_or_default(),
                 })
             }
         }
