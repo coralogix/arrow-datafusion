@@ -1559,6 +1559,7 @@ config_namespace! {
         pub delimiter: u8, default = b','
         pub quote: u8, default = b'"'
         pub escape: Option<u8>, default = None
+        pub double_quote: Option<bool>, default = None
         pub compression: CompressionTypeVariant, default = CompressionTypeVariant::UNCOMPRESSED
         pub schema_infer_max_rec: usize, default = 100
         pub date_format: Option<String>, default = None
