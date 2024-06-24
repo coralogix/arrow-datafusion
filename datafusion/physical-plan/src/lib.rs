@@ -21,23 +21,39 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::coalesce_partitions::CoalescePartitionsExec;
-use crate::display::DisplayableExecutionPlan;
-use crate::metrics::MetricsSet;
-use crate::repartition::RepartitionExec;
-use crate::sorts::sort_preserving_merge::SortPreservingMergeExec;
-
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+use futures::stream::TryStreamExt;
+use tokio::task::JoinSet;
+
 use datafusion_common::config::ConfigOptions;
+pub use datafusion_common::hash_utils;
+pub use datafusion_common::utils::project_schema;
 use datafusion_common::Result;
+pub use datafusion_common::{internal_err, ColumnStatistics, Statistics};
 use datafusion_execution::TaskContext;
+pub use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
+pub use datafusion_expr::{Accumulator, ColumnarValue};
+pub use datafusion_physical_expr::window::WindowExpr;
+pub use datafusion_physical_expr::{
+    expressions, functions, udf, AggregateExpr, Distribution, Partitioning, PhysicalExpr,
+};
 use datafusion_physical_expr::{
     EquivalenceProperties, LexOrdering, PhysicalSortExpr, PhysicalSortRequirement,
 };
 
-use futures::stream::TryStreamExt;
-use tokio::task::JoinSet;
+use crate::coalesce_partitions::CoalescePartitionsExec;
+use crate::display::DisplayableExecutionPlan;
+pub use crate::display::{DefaultDisplay, DisplayAs, DisplayFormatType, VerboseDisplay};
+pub use crate::metrics::Metric;
+use crate::metrics::MetricsSet;
+pub use crate::ordering::InputOrderMode;
+use crate::repartition::RepartitionExec;
+use crate::sorts::sort_preserving_merge::SortPreservingMergeExec;
+// Backwards compatibility
+pub use crate::stream::EmptyRecordBatchStream;
+pub use crate::topk::TopK;
+pub use crate::visitor::{accept, visit_execution_plan, ExecutionPlanVisitor};
 
 mod ordering;
 mod topk;
@@ -71,28 +87,19 @@ pub mod values;
 pub mod windows;
 pub mod work_table;
 
-pub use crate::display::{DefaultDisplay, DisplayAs, DisplayFormatType, VerboseDisplay};
-pub use crate::metrics::Metric;
-pub use crate::ordering::InputOrderMode;
-pub use crate::topk::TopK;
-pub use crate::visitor::{accept, visit_execution_plan, ExecutionPlanVisitor};
-
-pub use datafusion_common::hash_utils;
-pub use datafusion_common::utils::project_schema;
-pub use datafusion_common::{internal_err, ColumnStatistics, Statistics};
-pub use datafusion_expr::{Accumulator, ColumnarValue};
-pub use datafusion_physical_expr::window::WindowExpr;
-pub use datafusion_physical_expr::{
-    expressions, functions, udf, AggregateExpr, Distribution, Partitioning, PhysicalExpr,
-};
-
-// Backwards compatibility
-pub use crate::stream::EmptyRecordBatchStream;
-pub use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
 pub mod udaf {
     pub use datafusion_physical_expr_common::aggregate::{
         create_aggregate_expr, AggregateFunctionExpr,
     };
+}
+
+fn short_name<T: ?Sized>() -> &'static str {
+    let full_name = std::any::type_name::<T>();
+    let maybe_start_idx = full_name.rfind(':');
+    match maybe_start_idx {
+        Some(start_idx) => &full_name[start_idx + 1..],
+        None => "UNKNOWN",
+    }
 }
 
 /// Represent nodes in the DataFusion Physical Plan.
@@ -116,11 +123,8 @@ pub mod udaf {
 /// [`required_input_ordering`]: ExecutionPlan::required_input_ordering
 pub trait ExecutionPlan: Debug + DisplayAs + Send + Sync {
     /// Short name for the ExecutionPlan, such as 'ParquetExec'.
-    fn name(&self) -> &'static str
-    where
-        Self: Sized,
-    {
-        Self::static_name()
+    fn name(&self) -> &'static str {
+        short_name::<Self>()
     }
 
     /// Short name for the ExecutionPlan, such as 'ParquetExec'.
@@ -129,12 +133,7 @@ pub trait ExecutionPlan: Debug + DisplayAs + Send + Sync {
     where
         Self: Sized,
     {
-        let full_name = std::any::type_name::<Self>();
-        let maybe_start_idx = full_name.rfind(':');
-        match maybe_start_idx {
-            Some(start_idx) => &full_name[start_idx + 1..],
-            None => "UNKNOWN",
-        }
+        short_name::<Self>()
     }
 
     /// Returns the execution plan as [`Any`] so that it can be
@@ -804,6 +803,7 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_schema::{Schema, SchemaRef};
+
     use datafusion_common::{Result, Statistics};
     use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 
@@ -881,6 +881,10 @@ mod tests {
     }
 
     impl ExecutionPlan for RenamedEmptyExec {
+        fn name(&self) -> &'static str {
+            "MyRenamedEmptyExec"
+        }
+
         fn static_name() -> &'static str
         where
             Self: Sized,
