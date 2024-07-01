@@ -649,7 +649,8 @@ impl DataSink for ParquetSink {
 
         let object_store = context
             .runtime_env()
-            .object_store(&self.config.object_store_url)?;
+            .object_store_registry
+            .get_store(&self.config.object_store_url)?;
 
         let parquet_opts = &self.parquet_options;
         let allow_single_file_parallelism =
@@ -1855,6 +1856,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![field_a, field_b]));
         let object_store_url = ObjectStoreUrl::local_filesystem();
 
+        let object_store_url: &url::Url = object_store_url.as_ref();
         let file_sink_config = FileSinkConfig {
             object_store_url: object_store_url.clone(),
             file_groups: vec![PartitionedFile::new("/tmp".to_string(), 1)],
@@ -1880,7 +1882,7 @@ mod tests {
                     schema,
                     futures::stream::iter(vec![Ok(batch)]),
                 )),
-                &build_ctx(object_store_url.as_ref()),
+                &build_ctx(object_store_url),
             )
             .await
             .unwrap();
@@ -1926,6 +1928,7 @@ mod tests {
         let object_store_url = ObjectStoreUrl::local_filesystem();
 
         // set file config to include partitioning on field_a
+        let object_store_url: &url::Url = object_store_url.as_ref();
         let file_sink_config = FileSinkConfig {
             object_store_url: object_store_url.clone(),
             file_groups: vec![PartitionedFile::new("/tmp".to_string(), 1)],
@@ -1951,7 +1954,7 @@ mod tests {
                     schema,
                     futures::stream::iter(vec![Ok(batch)]),
                 )),
-                &build_ctx(object_store_url.as_ref()),
+                &build_ctx(object_store_url),
             )
             .await
             .unwrap();
