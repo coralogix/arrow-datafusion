@@ -83,6 +83,7 @@ use datafusion_proto::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
 };
 use datafusion_proto::protobuf;
+use url::Url;
 
 /// Perform a serde roundtrip and assert that the string representation of the before and after plans
 /// are identical. Note that this often isn't sufficient to guarantee that no information is
@@ -885,9 +886,10 @@ fn roundtrip_json_sink() -> Result<()> {
     let field_b = Field::new("plan", DataType::Utf8, false);
     let schema = Arc::new(Schema::new(vec![field_a, field_b]));
     let input = Arc::new(PlaceholderRowExec::new(schema.clone()));
+    let object_store_url = ObjectStoreUrl::local_filesystem();
 
     let file_sink_config = FileSinkConfig {
-        object_store_url: ObjectStoreUrl::local_filesystem(),
+        object_store_url: AsRef::<Url>::as_ref(&object_store_url).clone(),
         file_groups: vec![PartitionedFile::new("/tmp".to_string(), 1)],
         table_paths: vec![ListingTableUrl::parse("file:///")?],
         output_schema: schema.clone(),
@@ -920,9 +922,10 @@ fn roundtrip_csv_sink() -> Result<()> {
     let field_b = Field::new("plan", DataType::Utf8, false);
     let schema = Arc::new(Schema::new(vec![field_a, field_b]));
     let input = Arc::new(PlaceholderRowExec::new(schema.clone()));
+    let object_store_url = ObjectStoreUrl::local_filesystem();
 
     let file_sink_config = FileSinkConfig {
-        object_store_url: ObjectStoreUrl::local_filesystem(),
+        object_store_url: AsRef::<Url>::as_ref(&object_store_url).clone(),
         file_groups: vec![PartitionedFile::new("/tmp".to_string(), 1)],
         table_paths: vec![ListingTableUrl::parse("file:///")?],
         output_schema: schema.clone(),
@@ -978,9 +981,10 @@ fn roundtrip_parquet_sink() -> Result<()> {
     let field_b = Field::new("plan", DataType::Utf8, false);
     let schema = Arc::new(Schema::new(vec![field_a, field_b]));
     let input = Arc::new(PlaceholderRowExec::new(schema.clone()));
+    let object_store_url = ObjectStoreUrl::local_filesystem();
 
     let file_sink_config = FileSinkConfig {
-        object_store_url: ObjectStoreUrl::local_filesystem(),
+        object_store_url: AsRef::<Url>::as_ref(&object_store_url).clone(),
         file_groups: vec![PartitionedFile::new("/tmp".to_string(), 1)],
         table_paths: vec![ListingTableUrl::parse("file:///")?],
         output_schema: schema.clone(),
