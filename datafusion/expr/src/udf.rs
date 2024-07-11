@@ -17,18 +17,20 @@
 
 //! [`ScalarUDF`]: Scalar User Defined Functions
 
+use std::any::Any;
+use std::fmt::{self, Debug, Formatter};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
+
+use arrow::datatypes::DataType;
+
+use datafusion_common::{ExprSchema, Result};
+
 use crate::simplify::{ExprSimplifyResult, SimplifyInfo};
 use crate::{
     ColumnarValue, Expr, FuncMonotonicity, ReturnTypeFunction,
     ScalarFunctionImplementation, Signature,
 };
-use arrow::datatypes::DataType;
-use datafusion_common::{ExprSchema, Result};
-use std::any::Any;
-use std::fmt;
-use std::fmt::Debug;
-use std::fmt::Formatter;
-use std::sync::Arc;
 
 /// Logical representation of a Scalar User Defined Function.
 ///
@@ -57,16 +59,15 @@ pub struct ScalarUDF {
 
 impl PartialEq for ScalarUDF {
     fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name() && self.signature() == other.signature()
+        self.inner.equals(other.inner.as_ref())
     }
 }
 
 impl Eq for ScalarUDF {}
 
-impl std::hash::Hash for ScalarUDF {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-        self.signature().hash(state);
+impl Hash for ScalarUDF {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash_value().hash(state)
     }
 }
 
@@ -224,7 +225,7 @@ where
 /// #[derive(Debug)]
 /// struct AddOne {
 ///   signature: Signature
-/// };
+/// }
 ///
 /// impl AddOne {
 ///   fn new() -> Self {
@@ -376,6 +377,21 @@ pub trait ScalarUDFImpl: Debug + Send + Sync {
     ) -> Result<ExprSimplifyResult> {
         Ok(ExprSimplifyResult::Original(args))
     }
+
+    /// Dynamic equality. Allows customizing the equality of scalar UDFs.
+    /// By default, compares the UDF name and signature.
+    fn equals(&self, other: &dyn ScalarUDFImpl) -> bool {
+        self.name() == other.name() && self.signature() == other.signature()
+    }
+
+    /// Dynamic hashing. Allows customizing the hash code of scalar UDFs.
+    /// By default, hashes the UDF name and signature.
+    fn hash_value(&self) -> u64 {
+        let hasher = &mut DefaultHasher::new();
+        self.name().hash(hasher);
+        self.signature().hash(hasher);
+        hasher.finish()
+    }
 }
 
 /// ScalarUDF that adds an alias to the underlying function. It is better to
@@ -393,7 +409,6 @@ impl AliasedScalarUDFImpl {
     ) -> Self {
         let mut aliases = inner.aliases().to_vec();
         aliases.extend(new_aliases.into_iter().map(|s| s.to_string()));
-
         Self { inner, aliases }
     }
 }
@@ -420,6 +435,21 @@ impl ScalarUDFImpl for AliasedScalarUDFImpl {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+
+    fn equals(&self, other: &dyn ScalarUDFImpl) -> bool {
+        if let Some(other) = other.as_any().downcast_ref::<AliasedScalarUDFImpl>() {
+            self.inner.equals(other.inner.as_ref()) && self.aliases == other.aliases
+        } else {
+            false
+        }
+    }
+
+    fn hash_value(&self) -> u64 {
+        let hasher = &mut DefaultHasher::new();
+        self.inner.hash_value().hash(hasher);
+        self.aliases.hash(hasher);
+        hasher.finish()
     }
 }
 

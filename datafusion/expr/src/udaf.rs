@@ -17,16 +17,20 @@
 
 //! [`AggregateUDF`]: User Defined Aggregate Functions
 
+use std::any::Any;
+use std::fmt::{self, Debug, Formatter};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
+
+use arrow::datatypes::DataType;
+
+use datafusion_common::{not_impl_err, Result};
+
 use crate::groups_accumulator::GroupsAccumulator;
 use crate::{Accumulator, Expr};
 use crate::{
     AccumulatorFactoryFunction, ReturnTypeFunction, Signature, StateTypeFunction,
 };
-use arrow::datatypes::DataType;
-use datafusion_common::{not_impl_err, Result};
-use std::any::Any;
-use std::fmt::{self, Debug, Formatter};
-use std::sync::Arc;
 
 /// Logical representation of a user-defined [aggregate function] (UDAF).
 ///
@@ -66,16 +70,15 @@ pub struct AggregateUDF {
 
 impl PartialEq for AggregateUDF {
     fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name() && self.signature() == other.signature()
+        self.inner.equals(other.inner.as_ref())
     }
 }
 
 impl Eq for AggregateUDF {}
 
-impl std::hash::Hash for AggregateUDF {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-        self.signature().hash(state);
+impl Hash for AggregateUDF {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash_value().hash(state)
     }
 }
 
@@ -218,7 +221,7 @@ where
 /// #[derive(Debug, Clone)]
 /// struct GeoMeanUdf {
 ///   signature: Signature
-/// };
+/// }
 ///
 /// impl GeoMeanUdf {
 ///   fn new() -> Self {
@@ -298,6 +301,21 @@ pub trait AggregateUDFImpl: Debug + Send + Sync {
     fn aliases(&self) -> &[String] {
         &[]
     }
+
+    /// Dynamic equality. Allows customizing the equality of aggregate UDFs.
+    /// By default, compares the UDF name and signature.
+    fn equals(&self, other: &dyn AggregateUDFImpl) -> bool {
+        self.name() == other.name() && self.signature() == other.signature()
+    }
+
+    /// Dynamic hashing. Allows customizing the hash code of aggregate UDFs.
+    /// By default, hashes the UDF name and signature.
+    fn hash_value(&self) -> u64 {
+        let hasher = &mut DefaultHasher::new();
+        self.name().hash(hasher);
+        self.signature().hash(hasher);
+        hasher.finish()
+    }
 }
 
 /// AggregateUDF that adds an alias to the underlying function. It is better to
@@ -347,6 +365,21 @@ impl AggregateUDFImpl for AliasedAggregateUDFImpl {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+
+    fn equals(&self, other: &dyn AggregateUDFImpl) -> bool {
+        if let Some(other) = other.as_any().downcast_ref::<AliasedAggregateUDFImpl>() {
+            self.inner.equals(other.inner.as_ref()) && self.aliases == other.aliases
+        } else {
+            false
+        }
+    }
+
+    fn hash_value(&self) -> u64 {
+        let hasher = &mut DefaultHasher::new();
+        self.inner.hash_value().hash(hasher);
+        self.aliases.hash(hasher);
+        hasher.finish()
     }
 }
 
