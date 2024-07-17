@@ -910,6 +910,9 @@ impl serde::Serialize for AggregateUdfExprNode {
         if !self.order_by.is_empty() {
             len += 1;
         }
+        if self.fun_definition.is_some() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.AggregateUDFExprNode", len)?;
         if !self.fun_name.is_empty() {
             struct_ser.serialize_field("funName", &self.fun_name)?;
@@ -922,6 +925,10 @@ impl serde::Serialize for AggregateUdfExprNode {
         }
         if !self.order_by.is_empty() {
             struct_ser.serialize_field("orderBy", &self.order_by)?;
+        }
+        if let Some(v) = self.fun_definition.as_ref() {
+            #[allow(clippy::needless_borrow)]
+            struct_ser.serialize_field("funDefinition", pbjson::private::base64::encode(&v).as_str())?;
         }
         struct_ser.end()
     }
@@ -939,6 +946,8 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             "filter",
             "order_by",
             "orderBy",
+            "fun_definition",
+            "funDefinition",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -947,6 +956,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             Args,
             Filter,
             OrderBy,
+            FunDefinition,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -972,6 +982,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                             "args" => Ok(GeneratedField::Args),
                             "filter" => Ok(GeneratedField::Filter),
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
+                            "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -995,6 +1006,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                 let mut args__ = None;
                 let mut filter__ = None;
                 let mut order_by__ = None;
+                let mut fun_definition__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::FunName => {
@@ -1021,6 +1033,14 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                             }
                             order_by__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::FunDefinition => {
+                            if fun_definition__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("funDefinition"));
+                            }
+                            fun_definition__ = 
+                                map_.next_value::<::std::option::Option<::pbjson::private::BytesDeserialize<_>>>()?.map(|x| x.0)
+                            ;
+                        }
                     }
                 }
                 Ok(AggregateUdfExprNode {
@@ -1028,6 +1048,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                     args: args__.unwrap_or_default(),
                     filter: filter__,
                     order_by: order_by__.unwrap_or_default(),
+                    fun_definition: fun_definition__,
                 })
             }
         }
@@ -12712,6 +12733,12 @@ impl serde::Serialize for PhysicalAggregateExprNode {
         if self.distinct {
             len += 1;
         }
+        if self.ignore_nulls {
+            len += 1;
+        }
+        if self.fun_definition.is_some() {
+            len += 1;
+        }
         if self.aggregate_function.is_some() {
             len += 1;
         }
@@ -12724,6 +12751,13 @@ impl serde::Serialize for PhysicalAggregateExprNode {
         }
         if self.distinct {
             struct_ser.serialize_field("distinct", &self.distinct)?;
+        }
+        if self.ignore_nulls {
+            struct_ser.serialize_field("ignoreNulls", &self.ignore_nulls)?;
+        }
+        if let Some(v) = self.fun_definition.as_ref() {
+            #[allow(clippy::needless_borrow)]
+            struct_ser.serialize_field("funDefinition", pbjson::private::base64::encode(&v).as_str())?;
         }
         if let Some(v) = self.aggregate_function.as_ref() {
             match v {
@@ -12751,6 +12785,10 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
             "ordering_req",
             "orderingReq",
             "distinct",
+            "ignore_nulls",
+            "ignoreNulls",
+            "fun_definition",
+            "funDefinition",
             "aggr_function",
             "aggrFunction",
             "user_defined_aggr_function",
@@ -12762,6 +12800,8 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
             Expr,
             OrderingReq,
             Distinct,
+            IgnoreNulls,
+            FunDefinition,
             AggrFunction,
             UserDefinedAggrFunction,
         }
@@ -12788,6 +12828,8 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
                             "expr" => Ok(GeneratedField::Expr),
                             "orderingReq" | "ordering_req" => Ok(GeneratedField::OrderingReq),
                             "distinct" => Ok(GeneratedField::Distinct),
+                            "ignoreNulls" | "ignore_nulls" => Ok(GeneratedField::IgnoreNulls),
+                            "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
                             "aggrFunction" | "aggr_function" => Ok(GeneratedField::AggrFunction),
                             "userDefinedAggrFunction" | "user_defined_aggr_function" => Ok(GeneratedField::UserDefinedAggrFunction),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
@@ -12812,6 +12854,8 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
                 let mut expr__ = None;
                 let mut ordering_req__ = None;
                 let mut distinct__ = None;
+                let mut ignore_nulls__ = None;
+                let mut fun_definition__ = None;
                 let mut aggregate_function__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -12833,6 +12877,20 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
                             }
                             distinct__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::IgnoreNulls => {
+                            if ignore_nulls__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("ignoreNulls"));
+                            }
+                            ignore_nulls__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::FunDefinition => {
+                            if fun_definition__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("funDefinition"));
+                            }
+                            fun_definition__ = 
+                                map_.next_value::<::std::option::Option<::pbjson::private::BytesDeserialize<_>>>()?.map(|x| x.0)
+                            ;
+                        }
                         GeneratedField::AggrFunction => {
                             if aggregate_function__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("aggrFunction"));
@@ -12851,6 +12909,8 @@ impl<'de> serde::Deserialize<'de> for PhysicalAggregateExprNode {
                     expr: expr__.unwrap_or_default(),
                     ordering_req: ordering_req__.unwrap_or_default(),
                     distinct: distinct__.unwrap_or_default(),
+                    ignore_nulls: ignore_nulls__.unwrap_or_default(),
+                    fun_definition: fun_definition__,
                     aggregate_function: aggregate_function__,
                 })
             }
@@ -15789,6 +15849,9 @@ impl serde::Serialize for PhysicalWindowExprNode {
         if !self.name.is_empty() {
             len += 1;
         }
+        if self.fun_definition.is_some() {
+            len += 1;
+        }
         if self.window_function.is_some() {
             len += 1;
         }
@@ -15807,6 +15870,10 @@ impl serde::Serialize for PhysicalWindowExprNode {
         }
         if !self.name.is_empty() {
             struct_ser.serialize_field("name", &self.name)?;
+        }
+        if let Some(v) = self.fun_definition.as_ref() {
+            #[allow(clippy::needless_borrow)]
+            struct_ser.serialize_field("funDefinition", pbjson::private::base64::encode(&v).as_str())?;
         }
         if let Some(v) = self.window_function.as_ref() {
             match v {
@@ -15843,6 +15910,8 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
             "window_frame",
             "windowFrame",
             "name",
+            "fun_definition",
+            "funDefinition",
             "aggr_function",
             "aggrFunction",
             "built_in_function",
@@ -15858,6 +15927,7 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
             OrderBy,
             WindowFrame,
             Name,
+            FunDefinition,
             AggrFunction,
             BuiltInFunction,
             UserDefinedAggrFunction,
@@ -15887,6 +15957,7 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
                             "windowFrame" | "window_frame" => Ok(GeneratedField::WindowFrame),
                             "name" => Ok(GeneratedField::Name),
+                            "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
                             "aggrFunction" | "aggr_function" => Ok(GeneratedField::AggrFunction),
                             "builtInFunction" | "built_in_function" => Ok(GeneratedField::BuiltInFunction),
                             "userDefinedAggrFunction" | "user_defined_aggr_function" => Ok(GeneratedField::UserDefinedAggrFunction),
@@ -15914,6 +15985,7 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
                 let mut order_by__ = None;
                 let mut window_frame__ = None;
                 let mut name__ = None;
+                let mut fun_definition__ = None;
                 let mut window_function__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -15947,6 +16019,14 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
                             }
                             name__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::FunDefinition => {
+                            if fun_definition__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("funDefinition"));
+                            }
+                            fun_definition__ = 
+                                map_.next_value::<::std::option::Option<::pbjson::private::BytesDeserialize<_>>>()?.map(|x| x.0)
+                            ;
+                        }
                         GeneratedField::AggrFunction => {
                             if window_function__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("aggrFunction"));
@@ -15973,6 +16053,7 @@ impl<'de> serde::Deserialize<'de> for PhysicalWindowExprNode {
                     order_by: order_by__.unwrap_or_default(),
                     window_frame: window_frame__,
                     name: name__.unwrap_or_default(),
+                    fun_definition: fun_definition__,
                     window_function: window_function__,
                 })
             }
@@ -20280,6 +20361,9 @@ impl serde::Serialize for WindowExprNode {
         if self.window_frame.is_some() {
             len += 1;
         }
+        if self.fun_definition.is_some() {
+            len += 1;
+        }
         if self.window_function.is_some() {
             len += 1;
         }
@@ -20295,6 +20379,10 @@ impl serde::Serialize for WindowExprNode {
         }
         if let Some(v) = self.window_frame.as_ref() {
             struct_ser.serialize_field("windowFrame", v)?;
+        }
+        if let Some(v) = self.fun_definition.as_ref() {
+            #[allow(clippy::needless_borrow)]
+            struct_ser.serialize_field("funDefinition", pbjson::private::base64::encode(&v).as_str())?;
         }
         if let Some(v) = self.window_function.as_ref() {
             match v {
@@ -20333,6 +20421,8 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
             "orderBy",
             "window_frame",
             "windowFrame",
+            "fun_definition",
+            "funDefinition",
             "aggr_function",
             "aggrFunction",
             "built_in_function",
@@ -20347,6 +20437,7 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
             PartitionBy,
             OrderBy,
             WindowFrame,
+            FunDefinition,
             AggrFunction,
             BuiltInFunction,
             Udaf,
@@ -20376,6 +20467,7 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
                             "partitionBy" | "partition_by" => Ok(GeneratedField::PartitionBy),
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
                             "windowFrame" | "window_frame" => Ok(GeneratedField::WindowFrame),
+                            "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
                             "aggrFunction" | "aggr_function" => Ok(GeneratedField::AggrFunction),
                             "builtInFunction" | "built_in_function" => Ok(GeneratedField::BuiltInFunction),
                             "udaf" => Ok(GeneratedField::Udaf),
@@ -20403,6 +20495,7 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
                 let mut partition_by__ = None;
                 let mut order_by__ = None;
                 let mut window_frame__ = None;
+                let mut fun_definition__ = None;
                 let mut window_function__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -20429,6 +20522,14 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
                                 return Err(serde::de::Error::duplicate_field("windowFrame"));
                             }
                             window_frame__ = map_.next_value()?;
+                        }
+                        GeneratedField::FunDefinition => {
+                            if fun_definition__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("funDefinition"));
+                            }
+                            fun_definition__ = 
+                                map_.next_value::<::std::option::Option<::pbjson::private::BytesDeserialize<_>>>()?.map(|x| x.0)
+                            ;
                         }
                         GeneratedField::AggrFunction => {
                             if window_function__.is_some() {
@@ -20461,6 +20562,7 @@ impl<'de> serde::Deserialize<'de> for WindowExprNode {
                     partition_by: partition_by__.unwrap_or_default(),
                     order_by: order_by__.unwrap_or_default(),
                     window_frame: window_frame__,
+                    fun_definition: fun_definition__,
                     window_function: window_function__,
                 })
             }
