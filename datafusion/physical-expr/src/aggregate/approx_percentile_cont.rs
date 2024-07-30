@@ -388,7 +388,7 @@ impl Accumulator for ApproxPercentileAccumulator {
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let mut values = Arc::clone(&values[0]);
-        if let Some(_nulls) = values.nulls() {
+        if values.nulls().is_some() {
             values = filter(&values, &is_not_null(&values)?)?;
         }
         let sorted_values = &arrow::compute::sort(&values, None)?;
