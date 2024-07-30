@@ -20,6 +20,12 @@ use crate::aggregate::tdigest::{TDigest, DEFAULT_MAX_SIZE};
 use crate::aggregate::utils::down_cast_any_ref;
 use crate::expressions::format_state_name;
 use crate::{AggregateExpr, PhysicalExpr};
+use std::any::Any;
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use arrow::array::{Array, RecordBatch};
+use arrow::compute::{filter, is_not_null};
 use arrow::{
     array::{
         ArrayRef, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
@@ -27,14 +33,12 @@ use arrow::{
     },
     datatypes::{DataType, Field},
 };
-use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use datafusion_common::{
     downcast_value, internal_err, not_impl_err, plan_err, DataFusionError, Result,
     ScalarValue,
 };
 use datafusion_expr::{Accumulator, ColumnarValue};
-use std::{any::Any, sync::Arc};
 
 /// APPROX_PERCENTILE_CONT aggregate expression
 #[derive(Debug)]
@@ -383,8 +387,11 @@ impl Accumulator for ApproxPercentileAccumulator {
     }
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let values = &values[0];
-        let sorted_values = &arrow::compute::sort(values, None)?;
+        let mut values = Arc::clone(&values[0]);
+        if let Some(_nulls) = values.nulls() {
+            values = filter(&values, &is_not_null(&values)?)?;
+        }
+        let sorted_values = &arrow::compute::sort(&values, None)?;
         let sorted_values = ApproxPercentileAccumulator::convert_to_float(sorted_values)?;
         self.digest = self.digest.merge_sorted_f64(&sorted_values);
         Ok(())
