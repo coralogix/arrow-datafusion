@@ -106,7 +106,7 @@ SELECT approx_percentile_cont(c12, 0.95, c5) FROM aggregate_test_100
 
 # Not supported over sliding windows
 query error This feature is not implemented: Aggregate can not be used as a sliding accumulator because `retract_batch` is not implemented
-SELECT approx_percentile_cont(c3, 0.5) OVER (ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) 
+SELECT approx_percentile_cont(c3, 0.5) OVER (ROWS BETWEEN 4 PRECEDING AND CURRENT ROW)
 FROM aggregate_test_100
 
 # array agg can use order by
@@ -5531,7 +5531,7 @@ CREATE TABLE float_table (
 
 # Test string_agg with largeutf8
 statement ok
-create table string_agg_large_utf8 (c string) as values 
+create table string_agg_large_utf8 (c string) as values
   (arrow_cast('a', 'LargeUtf8')),
   (arrow_cast('b', 'LargeUtf8')),
   (arrow_cast('c', 'LargeUtf8'))
@@ -6125,7 +6125,7 @@ ORDER BY k;
 statement ok
 CREATE TABLE t1(v1 int);
 
-# issue: https://github.com/apache/datafusion/issues/12814 
+# issue: https://github.com/apache/datafusion/issues/12814
 statement error DataFusion error: Error during planning: Aggregate functions are not allowed in the WHERE clause. Consider using HAVING instead
 SELECT v1 FROM t1 WHERE ((count(v1) % 1) << 1) > 0;
 

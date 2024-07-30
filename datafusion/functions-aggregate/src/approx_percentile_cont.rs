@@ -21,6 +21,7 @@ use std::sync::{Arc, OnceLock};
 
 use arrow::array::{Array, RecordBatch};
 use arrow::compute::{filter, is_not_null};
+
 use arrow::{
     array::{
         ArrayRef, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
@@ -29,7 +30,6 @@ use arrow::{
     datatypes::DataType,
 };
 use arrow_schema::{Field, Schema};
-
 use datafusion_common::{
     downcast_value, internal_err, not_impl_datafusion_err, not_impl_err, plan_err,
     DataFusionError, Result, ScalarValue,
