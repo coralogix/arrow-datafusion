@@ -195,7 +195,8 @@ impl AggregateExpr for ApproxPercentileCont {
     }
 
     fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, self.input_data_type.clone(), false))
+        // Answer might be NULL if inputs are all NULL or having empty input
+        Ok(Field::new(&self.name, self.input_data_type.clone(), true))
     }
 
     #[allow(rustdoc::private_intra_doc_links)]

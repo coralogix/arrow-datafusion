@@ -499,7 +499,7 @@ mod tests {
             assert!(result_agg_phy_exprs.as_any().is::<ApproxPercentileCont>());
             assert_eq!("c1", result_agg_phy_exprs.name());
             assert_eq!(
-                Field::new("c1", data_type.clone(), false),
+                Field::new("c1", data_type.clone(), true),
                 result_agg_phy_exprs.field().unwrap()
             );
         }
