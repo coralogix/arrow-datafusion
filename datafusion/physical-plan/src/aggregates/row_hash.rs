@@ -433,6 +433,7 @@ impl Stream for GroupedHashAggregateStream {
                         // new batch to aggregate
                         Some(Ok(batch)) => {
                             let timer = elapsed_compute.timer();
+
                             // Make sure we have enough capacity for `batch`, otherwise spill
                             extract_ok!(self.spill_previous_if_necessary(&batch));
 
@@ -685,6 +686,13 @@ impl GroupedHashAggregateStream {
     /// Emit all rows, sort them, and store them on disk.
     fn spill(&mut self) -> Result<()> {
         let emit = self.emit(EmitTo::All, true)?;
+        log::info!(
+            "spilling record batch: {} rows, {} bytes, {}, batch size, {}b allocated",
+            emit.num_rows(),
+            emit.get_array_memory_size(),
+            self.batch_size,
+            self.reservation.size()
+        );
         let sorted = sort_batch(&emit, &self.spill_state.spill_expr, None)?;
         let spillfile = self.runtime.disk_manager.create_tmp_file("HashAggSpill")?;
         let mut writer = IPCWriter::new(spillfile.path(), &emit.schema())?;

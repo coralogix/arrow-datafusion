@@ -598,7 +598,11 @@ impl DisplayAs for AggregateExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "AggregateExec: mode={:?}", self.mode)?;
+                write!(
+                    f,
+                    "AggregateExec: mode={:?} limit={:?}",
+                    self.mode, self.limit
+                )?;
                 let g: Vec<String> = if self.group_by.is_single() {
                     self.group_by
                         .expr
