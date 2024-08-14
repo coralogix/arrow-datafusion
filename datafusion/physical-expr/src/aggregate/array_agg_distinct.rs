@@ -167,10 +167,9 @@ impl Accumulator for DistinctArrayAggAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) + ScalarValue::size_of_hashset(&self.values)
-            - std::mem::size_of_val(&self.values)
-            + self.datatype.size()
-            - std::mem::size_of_val(&self.datatype)
+        size_of_val(self) + self.datatype.size() - size_of_val(&self.datatype)
+            + ScalarValue::size_of_hashset(&self.values)
+            - size_of_val(&self.values)
     }
 }
 

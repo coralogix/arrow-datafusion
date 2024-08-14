@@ -321,15 +321,15 @@ impl Accumulator for ArrayAggAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
-            + (std::mem::size_of::<ArrayRef>() * self.values.capacity())
+        size_of_val(self)
+            + self.values.capacity() * size_of::<ArrayRef>()
+            + self.datatype.size()
+            - size_of_val(&self.datatype)
             + self
                 .values
                 .iter()
-                .map(|arr| arr.get_array_memory_size())
+                .map(Array::get_array_memory_size)
                 .sum::<usize>()
-            + self.datatype.size()
-            - std::mem::size_of_val(&self.datatype)
     }
 }
 
@@ -452,11 +452,21 @@ where
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
-            + std::mem::size_of::<PrimitiveBuilder<T>>() * self.values.capacity()
-            + self.values.iter().map(|arr| arr.capacity()).sum::<usize>()
-                * std::mem::size_of::<<T as ArrowPrimitiveType>::Native>()
+        let data_type_size = self.data_type.size();
+        size_of_val(self)
+            + data_type_size
             + self.null_state.size()
+            + self.values.capacity() * size_of::<PrimitiveBuilder<T>>()
+            + self
+                .values
+                .iter()
+                .map(|b| {
+                    // Each primitive builder also stores the data type.
+                    data_type_size
+                        + size_of_val(b.values_slice())
+                        + size_of_val(&b.validity_slice())
+                })
+                .sum::<usize>()
     }
 }
 
@@ -560,18 +570,18 @@ impl GroupsAccumulator for StringArrayAggGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
-            + std::mem::size_of::<StringBuilder>() * self.values.capacity()
+        size_of_val(self)
+            + self.null_state.size()
+            + self.values.capacity() * size_of::<StringBuilder>()
             + self
                 .values
                 .iter()
-                .map(|arr| {
-                    std::mem::size_of_val(arr.values_slice())
-                        + std::mem::size_of_val(arr.offsets_slice())
-                        + arr.validity_slice().map(std::mem::size_of_val).unwrap_or(0)
+                .map(|b| {
+                    size_of_val(b.values_slice())
+                        + size_of_val(b.offsets_slice())
+                        + size_of_val(&b.validity_slice())
                 })
                 .sum::<usize>()
-            + self.null_state.size()
     }
 }
 
