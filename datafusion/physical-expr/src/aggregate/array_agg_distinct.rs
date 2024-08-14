@@ -44,6 +44,8 @@ pub struct DistinctArrayAgg {
     expr: Arc<dyn PhysicalExpr>,
     /// If the input expression can have NULLs
     nullable: bool,
+    /// If NULLs should be ignored when aggregating
+    ignore_nulls: bool,
 }
 
 impl DistinctArrayAgg {
@@ -53,13 +55,15 @@ impl DistinctArrayAgg {
         name: impl Into<String>,
         input_data_type: DataType,
         nullable: bool,
+        ignore_nulls: bool,
     ) -> Self {
         let name = name.into();
         Self {
             name,
             input_data_type,
             expr,
-            nullable,
+            nullable: nullable && !ignore_nulls,
+            ignore_nulls: nullable && ignore_nulls,
         }
     }
 }
@@ -74,7 +78,7 @@ impl AggregateExpr for DistinctArrayAgg {
         Ok(Field::new_list(
             &self.name,
             // This should be the same as return type of AggregateFunction::ArrayAgg
-            Field::new("item", self.input_data_type.clone(), true),
+            Field::new_list_field(self.input_data_type.clone(), true),
             self.nullable,
         ))
     }
@@ -82,13 +86,14 @@ impl AggregateExpr for DistinctArrayAgg {
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(DistinctArrayAggAccumulator::try_new(
             &self.input_data_type,
+            self.ignore_nulls,
         )?))
     }
 
     fn state_fields(&self) -> Result<Vec<Field>> {
         Ok(vec![Field::new_list(
             format_state_name(&self.name, "distinct_array_agg"),
-            Field::new("item", self.input_data_type.clone(), true),
+            Field::new_list_field(self.input_data_type.clone(), true),
             self.nullable,
         )])
     }
@@ -119,13 +124,15 @@ impl PartialEq<dyn Any> for DistinctArrayAgg {
 struct DistinctArrayAggAccumulator {
     values: HashSet<ScalarValue>,
     datatype: DataType,
+    ignore_nulls: bool,
 }
 
 impl DistinctArrayAggAccumulator {
-    pub fn try_new(datatype: &DataType) -> Result<Self> {
+    pub fn try_new(datatype: &DataType, ignore_nulls: bool) -> Result<Self> {
         Ok(Self {
             values: HashSet::new(),
             datatype: datatype.clone(),
+            ignore_nulls,
         })
     }
 }
@@ -137,12 +144,12 @@ impl Accumulator for DistinctArrayAggAccumulator {
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         assert_eq!(values.len(), 1, "batch input should only include 1 column!");
-
         let array = &values[0];
-
         for i in 0..array.len() {
             let scalar = ScalarValue::try_from_array(&array, i)?;
-            self.values.insert(scalar);
+            if !(self.ignore_nulls && scalar.is_null()) {
+                self.values.insert(scalar);
+            }
         }
 
         Ok(())
@@ -239,13 +246,14 @@ mod tests {
     ) -> Result<()> {
         let schema = Schema::new(vec![Field::new("a", datatype.clone(), false)]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![input])?;
-
         let agg = Arc::new(DistinctArrayAgg::new(
             col("a", &schema)?,
             "bla".to_string(),
             datatype,
             true,
+            false,
         ));
+
         let actual = aggregate(&batch, agg)?;
         compare_list_contents(expected, actual)
     }
@@ -262,6 +270,7 @@ mod tests {
             "bla".to_string(),
             datatype,
             true,
+            false,
         ));
 
         let mut accum1 = agg.create_accumulator()?;
