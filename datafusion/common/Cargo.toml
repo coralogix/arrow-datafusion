@@ -39,6 +39,8 @@ path = "src/lib.rs"
 avro = ["apache-avro"]
 backtrace = []
 pyarrow = ["pyo3", "arrow/pyarrow", "parquet"]
+# Used for testing ONLY: causes all values to hash to the same value (test for collisions)
+force_hash_collisions = []
 
 [dependencies]
 ahash = { workspace = true }
