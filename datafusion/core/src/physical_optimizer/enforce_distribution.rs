@@ -936,7 +936,12 @@ fn add_spm_on_top(input: DistributionContext) -> DistributionContext {
                 input.plan.clone(),
             )) as _
         } else {
-            Arc::new(CoalescePartitionsExec::new(input.plan.clone())) as _
+            Arc::new(
+                datafusion_physical_plan::coalesce_batches::CoalesceBatchesExec::new(
+                    Arc::new(CoalescePartitionsExec::new(input.plan.clone())),
+                    2048,
+                ),
+            ) as _
         };
 
         DistributionContext::new(new_plan, true, vec![input])

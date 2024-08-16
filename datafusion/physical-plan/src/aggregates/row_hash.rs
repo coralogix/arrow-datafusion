@@ -352,6 +352,10 @@ impl GroupedHashAggregateStream {
 
         let group_values = new_group_values(group_schema)?;
         timer.done();
+        log::info!(
+            "tyx/GroupedHashAggregateStream::new elapsed_compute = {}",
+            baseline_metrics.elapsed_compute()
+        );
 
         let exec_state = ExecutionState::ReadingInput;
 
@@ -802,6 +806,10 @@ impl GroupedHashAggregateStream {
             ExecutionState::ReadingInput
         };
         timer.done();
+        log::info!(
+            "tyx/set_input_done_and_produce_output: {elapsed_compute:?}, state: {:?}",
+            self.exec_state
+        );
         Ok(())
     }
 }
