@@ -522,6 +522,7 @@ message AggregateUDFExprNode {
   repeated LogicalExprNode args = 2;
   LogicalExprNode filter = 3;
   repeated LogicalExprNode order_by = 4;
+  bool distinct = 5;
   optional bytes fun_definition = 6;
 }
 

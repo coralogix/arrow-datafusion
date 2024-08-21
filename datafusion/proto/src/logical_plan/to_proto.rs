@@ -502,6 +502,7 @@ pub fn serialize_expr(
                                 Some(e) => serialize_exprs(e, codec)?,
                                 None => vec![],
                             },
+                            distinct: *distinct,
                             fun_definition: (!buf.is_empty()).then_some(buf),
                         },
                     ))),

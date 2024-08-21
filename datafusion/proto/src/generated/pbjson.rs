@@ -910,6 +910,9 @@ impl serde::Serialize for AggregateUdfExprNode {
         if !self.order_by.is_empty() {
             len += 1;
         }
+        if self.distinct {
+            len += 1;
+        }
         if self.fun_definition.is_some() {
             len += 1;
         }
@@ -925,6 +928,9 @@ impl serde::Serialize for AggregateUdfExprNode {
         }
         if !self.order_by.is_empty() {
             struct_ser.serialize_field("orderBy", &self.order_by)?;
+        }
+        if self.distinct {
+            struct_ser.serialize_field("distinct", &self.distinct)?;
         }
         if let Some(v) = self.fun_definition.as_ref() {
             #[allow(clippy::needless_borrow)]
@@ -946,6 +952,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             "filter",
             "order_by",
             "orderBy",
+            "distinct",
             "fun_definition",
             "funDefinition",
         ];
@@ -956,6 +963,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             Args,
             Filter,
             OrderBy,
+            Distinct,
             FunDefinition,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -982,6 +990,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                             "args" => Ok(GeneratedField::Args),
                             "filter" => Ok(GeneratedField::Filter),
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
+                            "distinct" => Ok(GeneratedField::Distinct),
                             "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
@@ -1006,6 +1015,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                 let mut args__ = None;
                 let mut filter__ = None;
                 let mut order_by__ = None;
+                let mut distinct__ = None;
                 let mut fun_definition__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -1033,6 +1043,12 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                             }
                             order_by__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::Distinct => {
+                            if distinct__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("distinct"));
+                            }
+                            distinct__ = Some(map_.next_value()?);
+                        }
                         GeneratedField::FunDefinition => {
                             if fun_definition__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("funDefinition"));
@@ -1048,6 +1064,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                     args: args__.unwrap_or_default(),
                     filter: filter__,
                     order_by: order_by__.unwrap_or_default(),
+                    distinct: distinct__.unwrap_or_default(),
                     fun_definition: fun_definition__,
                 })
             }
