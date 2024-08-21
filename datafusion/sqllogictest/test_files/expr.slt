@@ -1915,7 +1915,7 @@ SELECT substring('alphabet' for 1);
 ----
 a
 
-# The 'from' and 'for' parameters don't support string types, because they should be treated as
+# The 'from' and 'for' parameters do not support string types, because they should be treated as
 # regular expressions, which we have not implemented yet.
 query error
 SELECT substring('alphabet' FROM '3')
@@ -2362,8 +2362,7 @@ host1 101
 host2 202
 host3 303
 
-# TODO: Issue tracked in https://github.com/apache/datafusion/issues/10364
-query error
+query TR
 select 
     t2.server['c3'] as host, 
     sum((
@@ -2378,6 +2377,10 @@ select
     ) t2 
     where t2.server['c3'] IS NOT NULL 
     group by t2.server['c3'] order by host;
+----
+host1 101
+host2 202
+host3 303
 
 # can have 2 projections with aggr(short_circuited), with different short-circuited expr
 query TRR
@@ -2403,8 +2406,7 @@ host1 1.1 101
 host2 2.2 202
 host3 3.3 303
 
-# TODO: Issue tracked in https://github.com/apache/datafusion/issues/10364
-query error
+query TRR
 select 
     t2.server['c3'] as host, 
     sum(coalesce(server['c1'])),
@@ -2415,11 +2417,15 @@ select
     )) 
     from (
         select 
-            struct(time,load1,load2,host) as server,
+            struct(time,load1,load2,host) as server
         from t1
     ) t2 
-    where server_host IS NOT NULL 
-    group by server_host order by host;
+    where server['c3'] IS NOT NULL
+    group by host order by host;
+----
+host1 1.1 101
+host2 2.2 202
+host3 3.3 303
 
 query TRR
 select 
@@ -2448,8 +2454,7 @@ host1 1.1 101
 host2 2.2 202
 host3 3.3 303
 
-# TODO: Issue tracked in https://github.com/apache/datafusion/issues/10364
-query error
+query TRR
 select 
     t2.server['c3'] as host, 
     sum((
@@ -2469,6 +2474,10 @@ select
     ) t2 
     where t2.server['c3'] IS NOT NULL 
     group by t2.server['c3'] order by host;
+----
+host1 1.1 101
+host2 2.2 202
+host3 3.3 303
 
 # can have 2 projections with aggr(short_circuited), with the same short-circuited expr (e.g. coalesce)
 query TRR

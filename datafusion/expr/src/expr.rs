@@ -183,7 +183,7 @@ use sqlparser::ast::NullTreatment;
 ///    }
 ///    // The return value controls whether to continue visiting the tree
 ///    Ok(TreeNodeRecursion::Continue)
-/// }).unwrap();;
+/// }).unwrap();
 /// // All subtrees have been visited and literals found
 /// assert_eq!(scalars.len(), 2);
 /// assert!(scalars.contains(&ScalarValue::Int32(Some(5))));
@@ -729,17 +729,13 @@ impl WindowFunctionDefinition {
     }
 }
 
-impl fmt::Display for WindowFunctionDefinition {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Display for WindowFunctionDefinition {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            WindowFunctionDefinition::AggregateFunction(fun) => {
-                std::fmt::Display::fmt(fun, f)
-            }
-            WindowFunctionDefinition::BuiltInWindowFunction(fun) => {
-                std::fmt::Display::fmt(fun, f)
-            }
-            WindowFunctionDefinition::AggregateUDF(fun) => std::fmt::Display::fmt(fun, f),
-            WindowFunctionDefinition::WindowUDF(fun) => std::fmt::Display::fmt(fun, f),
+            WindowFunctionDefinition::AggregateFunction(fun) => Display::fmt(fun, f),
+            WindowFunctionDefinition::BuiltInWindowFunction(fun) => Display::fmt(fun, f),
+            WindowFunctionDefinition::AggregateUDF(fun) => Display::fmt(fun, f),
+            WindowFunctionDefinition::WindowUDF(fun) => Display::fmt(fun, f),
         }
     }
 }
@@ -1441,8 +1437,8 @@ macro_rules! expr_vec_fmt {
 
 /// Format expressions for display as part of a logical plan. In many cases, this will produce
 /// similar output to `Expr.name()` except that column names will be prefixed with '#'.
-impl fmt::Display for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Display for Expr {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Expr::Alias(Alias { expr, name, .. }) => write!(f, "{expr} AS {name}"),
             Expr::Column(c) => write!(f, "{c}"),
@@ -1528,7 +1524,7 @@ impl fmt::Display for Expr {
                 fmt_function(f, &fun.to_string(), false, args, true)?;
 
                 if let Some(nt) = null_treatment {
-                    write!(f, "{}", nt)?;
+                    write!(f, " {nt}")?;
                 }
 
                 if !partition_by.is_empty() {
@@ -1658,7 +1654,7 @@ impl fmt::Display for Expr {
 }
 
 fn fmt_function(
-    f: &mut fmt::Formatter,
+    f: &mut Formatter,
     fun: &str,
     distinct: bool,
     args: &[Expr],
@@ -1683,21 +1679,17 @@ fn write_function_name<W: Write>(
     distinct: bool,
     args: &[Expr],
 ) -> Result<()> {
-    write!(w, "{}(", fun)?;
-    if distinct {
-        w.write_str("DISTINCT ")?;
-    }
-    write_names_join(w, args, ",")?;
-    w.write_str(")")?;
-    Ok(())
+    w.write_str(fun)?;
+    let prefix = if distinct { "(DISTINCT " } else { "(" };
+    write_names_join(w, args, prefix, ", ", ")")
 }
 
 /// Returns a readable name of an expression based on the input schema.
 /// This function recursively transverses the expression for names such as "CAST(a > 2)".
-pub(crate) fn create_name(e: &Expr) -> Result<String> {
-    let mut s = String::new();
-    write_name(&mut s, e)?;
-    Ok(s)
+fn create_name(expr: &Expr) -> Result<String> {
+    let mut name = String::new();
+    write_name(&mut name, expr)?;
+    Ok(name)
 }
 
 fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
@@ -1849,19 +1841,15 @@ fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
         }) => {
             write_function_name(w, &fun.to_string(), false, args)?;
             if let Some(nt) = null_treatment {
-                w.write_str(" ")?;
-                write!(w, "{}", nt)?;
+                write!(w, " {nt}")?;
             }
             if !partition_by.is_empty() {
-                w.write_str(" ")?;
-                write!(w, "PARTITION BY [{}]", expr_vec_fmt!(partition_by))?;
+                write_names_join(w, partition_by, " PARTITION BY [", ", ", "]")?;
             }
             if !order_by.is_empty() {
-                w.write_str(" ")?;
-                write!(w, "ORDER BY [{}]", expr_vec_fmt!(order_by))?;
+                write_names_join(w, order_by, " ORDER BY [", ", ", "]")?;
             }
-            w.write_str(" ")?;
-            write!(w, "{window_frame}")?;
+            write!(w, " {window_frame}")?;
         }
         Expr::AggregateFunction(AggregateFunction {
             func_def,
@@ -1877,7 +1865,7 @@ fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
                 write!(w, " FILTER (WHERE {fe})")?;
             };
             if let Some(order_by) = order_by {
-                write!(w, " ORDER BY [{}]", expr_vec_fmt!(order_by))?;
+                write_names_join(w, order_by, " ORDER BY [", ", ", "]")?;
             };
             if let Some(nt) = null_treatment {
                 write!(w, " {}", nt)?;
@@ -1913,12 +1901,8 @@ fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
             negated,
         }) => {
             write_name(w, expr)?;
-            let list = list.iter().map(create_name);
-            if *negated {
-                write!(w, " NOT IN ({list:?})")?;
-            } else {
-                write!(w, " IN ({list:?})")?;
-            }
+            let prefix = if *negated { " NOT IN (" } else { " IN (" };
+            write_names_join(w, list, prefix, ", ", ")")?
         }
         Expr::Between(Between {
             expr,
@@ -1927,17 +1911,23 @@ fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
             high,
         }) => {
             write_name(w, expr)?;
-            if *negated {
-                write!(w, " NOT BETWEEN ")?;
-            } else {
-                write!(w, " BETWEEN ")?;
-            }
+            write!(w, "{} BETWEEN ", if *negated { " NOT" } else { "" })?;
             write_name(w, low)?;
             write!(w, " AND ")?;
             write_name(w, high)?;
         }
-        Expr::Sort { .. } => {
-            return internal_err!("Create name does not support sort expression")
+        Expr::Sort(Sort {
+            expr,
+            asc,
+            nulls_first,
+        }) => {
+            write_name(w, expr)?;
+            w.write_str(if *asc { " ASC" } else { " DESC" })?;
+            w.write_str(if *nulls_first {
+                " NULLS FIRST"
+            } else {
+                " NULLS LAST"
+            })?;
         }
         Expr::Wildcard { qualifier } => match qualifier {
             Some(qualifier) => {
@@ -1956,15 +1946,23 @@ fn write_names<W: Write>(w: &mut W, exprs: &[Expr]) -> Result<()> {
     exprs.iter().try_for_each(|e| write_name(w, e))
 }
 
-fn write_names_join<W: Write>(w: &mut W, exprs: &[Expr], sep: &str) -> Result<()> {
-    let mut iter = exprs.iter();
-    if let Some(first_arg) = iter.next() {
-        write_name(w, first_arg)?;
+fn write_names_join<W: Write>(
+    w: &mut W,
+    exprs: &[Expr],
+    prefix: &str,
+    sep: &str,
+    suffix: &str,
+) -> Result<()> {
+    w.write_str(prefix)?;
+    let mut exprs = exprs.iter();
+    if let Some(first) = exprs.next() {
+        write_name(w, first)?;
     }
-    for a in iter {
+    for expr in exprs {
         w.write_str(sep)?;
-        write_name(w, a)?;
+        write_name(w, expr)?;
     }
+    w.write_str(suffix)?;
     Ok(())
 }
 

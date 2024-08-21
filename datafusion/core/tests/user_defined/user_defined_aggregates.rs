@@ -157,7 +157,7 @@ async fn test_udaf_returning_struct() {
     let sql = "SELECT first(value, time) from t";
     let expected = [
         "+------------------------------------------------+",
-        "| first(t.value,t.time)                          |",
+        "| first(t.value, t.time)                         |",
         "+------------------------------------------------+",
         "| {value: 2.0, time: 1970-01-01T00:00:00.000002} |",
         "+------------------------------------------------+",
