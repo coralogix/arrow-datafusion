@@ -62,8 +62,8 @@ impl DistinctArrayAgg {
             name,
             input_data_type,
             expr,
-            nullable: nullable && !ignore_nulls,
-            ignore_nulls: nullable && ignore_nulls,
+            nullable,
+            ignore_nulls,
         }
     }
 }
@@ -79,14 +79,14 @@ impl AggregateExpr for DistinctArrayAgg {
             &self.name,
             // This should be the same as return type of AggregateFunction::ArrayAgg
             Field::new_list_field(self.input_data_type.clone(), true),
-            self.nullable,
+            self.nullable && !self.ignore_nulls,
         ))
     }
 
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(DistinctArrayAggAccumulator::try_new(
             &self.input_data_type,
-            self.ignore_nulls,
+            self.nullable && self.ignore_nulls,
         )?))
     }
 
@@ -94,7 +94,7 @@ impl AggregateExpr for DistinctArrayAgg {
         Ok(vec![Field::new_list(
             format_state_name(&self.name, "distinct_array_agg"),
             Field::new_list_field(self.input_data_type.clone(), true),
-            self.nullable,
+            self.nullable && !self.ignore_nulls,
         )])
     }
 

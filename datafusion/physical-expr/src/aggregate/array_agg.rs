@@ -55,6 +55,8 @@ pub struct ArrayAgg {
     expr: Arc<dyn PhysicalExpr>,
     /// If the input expression can have NULLs
     nullable: bool,
+    /// If NULLs should be ignored when aggregating
+    ignore_nulls: bool,
 }
 
 impl ArrayAgg {
@@ -64,12 +66,14 @@ impl ArrayAgg {
         name: impl Into<String>,
         data_type: DataType,
         nullable: bool,
+        ignore_nulls: bool,
     ) -> Self {
         Self {
             name: name.into(),
             input_data_type: data_type,
             expr,
             nullable,
+            ignore_nulls,
         }
     }
 }
@@ -84,13 +88,14 @@ impl AggregateExpr for ArrayAgg {
             &self.name,
             // This should be the same as return type of AggregateFunction::ArrayAgg
             Field::new("item", self.input_data_type.clone(), true),
-            self.nullable,
+            self.nullable && !self.ignore_nulls,
         ))
     }
 
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(ArrayAggAccumulator::try_new(
             &self.input_data_type,
+            self.nullable && self.ignore_nulls,
         )?))
     }
 
@@ -261,14 +266,16 @@ impl PartialEq<dyn Any> for ArrayAgg {
 pub(crate) struct ArrayAggAccumulator {
     values: Vec<ArrayRef>,
     datatype: DataType,
+    ignore_nulls: bool,
 }
 
 impl ArrayAggAccumulator {
     /// new array_agg accumulator based on given item data type
-    pub fn try_new(datatype: &DataType) -> Result<Self> {
+    pub fn try_new(datatype: &DataType, ignore_nulls: bool) -> Result<Self> {
         Ok(Self {
             values: vec![],
             datatype: datatype.clone(),
+            ignore_nulls,
         })
     }
 }
@@ -277,25 +284,24 @@ impl Accumulator for ArrayAggAccumulator {
     // Append value like Int64Array(1,2,3)
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         if values.is_empty() {
-            return Ok(());
+            assert!(values.len() == 1, "array_agg can only take 1 param!");
+            let val = values[0].clone();
+            self.values.push(val);
         }
-        assert!(values.len() == 1, "array_agg can only take 1 param!");
-        let val = values[0].clone();
-        self.values.push(val);
+
         Ok(())
     }
 
     // Append value like ListArray(Int64Array(1,2,3), Int64Array(4,5,6))
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        if states.is_empty() {
-            return Ok(());
+        if !states.is_empty() {
+            assert!(states.len() == 1, "array_agg states must be singleton!");
+            let list_arr = as_list_array(&states[0])?;
+            for arr in list_arr.iter().flatten() {
+                self.values.push(arr);
+            }
         }
-        assert!(states.len() == 1, "array_agg states must be singleton!");
 
-        let list_arr = as_list_array(&states[0])?;
-        for arr in list_arr.iter().flatten() {
-            self.values.push(arr);
-        }
         Ok(())
     }
 
@@ -303,9 +309,8 @@ impl Accumulator for ArrayAggAccumulator {
         Ok(vec![self.evaluate()?])
     }
 
+    // Transform Vec<ListArr> to ListArr
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        // Transform Vec<ListArr> to ListArr
-
         let element_arrays: Vec<&dyn Array> =
             self.values.iter().map(|a| a.as_ref()).collect();
 
@@ -314,10 +319,14 @@ impl Accumulator for ArrayAggAccumulator {
             return Ok(ScalarValue::List(arr));
         }
 
-        let concated_array = arrow::compute::concat(&element_arrays)?;
-        let list_array = array_into_list_array(concated_array);
+        let mut result = arrow::compute::concat(&element_arrays)?;
+        if self.ignore_nulls {
+            let not_null = arrow::compute::is_not_null(&result)?;
+            result = arrow::compute::filter(&result, &not_null)?
+        }
 
-        Ok(ScalarValue::List(Arc::new(list_array)))
+        let result = array_into_list_array(result);
+        Ok(ScalarValue::List(Arc::new(result)))
     }
 
     fn size(&self) -> usize {

@@ -115,7 +115,13 @@ pub fn create_aggregate_expr(
             let nullable = expr.nullable(input_schema)?;
 
             if ordering_req.is_empty() {
-                Arc::new(expressions::ArrayAgg::new(expr, name, data_type, nullable))
+                Arc::new(expressions::ArrayAgg::new(
+                    expr,
+                    name,
+                    data_type,
+                    nullable,
+                    ignore_nulls,
+                ))
             } else {
                 Arc::new(expressions::OrderSensitiveArrayAgg::new(
                     expr,
