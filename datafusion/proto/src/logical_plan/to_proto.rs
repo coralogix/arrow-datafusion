@@ -19,6 +19,7 @@
 //! DataFusion logical plans to be serialized and transmitted between
 //! processes.
 
+use datafusion::sql::sqlparser::ast::NullTreatment;
 use datafusion_common::{TableReference, UnnestOptions};
 use datafusion_expr::expr::{
     self, AggregateFunctionDefinition, Alias, Between, BinaryExpr, Cast, GroupingSet,
@@ -401,12 +402,12 @@ pub fn serialize_expr(
             }
         }
         Expr::AggregateFunction(expr::AggregateFunction {
-            ref func_def,
-            ref args,
-            ref distinct,
-            ref filter,
-            ref order_by,
-            null_treatment: _,
+            func_def,
+            args,
+            distinct,
+            filter,
+            order_by,
+            null_treatment,
         }) => match func_def {
             AggregateFunctionDefinition::BuiltIn(fun) => {
                 let aggr_function = match fun {
@@ -479,6 +480,7 @@ pub fn serialize_expr(
                         Some(e) => serialize_exprs(e, codec)?,
                         None => vec![],
                     },
+                    ignore_nulls: null_treatment == &Some(NullTreatment::IgnoreNulls),
                 };
                 protobuf::LogicalExprNode {
                     expr_type: Some(ExprType::AggregateExpr(Box::new(aggregate_expr))),
@@ -504,6 +506,8 @@ pub fn serialize_expr(
                             },
                             distinct: *distinct,
                             fun_definition: (!buf.is_empty()).then_some(buf),
+                            ignore_nulls: null_treatment
+                                == &Some(NullTreatment::IgnoreNulls),
                         },
                     ))),
                 }

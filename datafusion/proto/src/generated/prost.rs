@@ -759,6 +759,8 @@ pub struct AggregateExprNode {
     pub filter: ::core::option::Option<::prost::alloc::boxed::Box<LogicalExprNode>>,
     #[prost(message, repeated, tag = "5")]
     pub order_by: ::prost::alloc::vec::Vec<LogicalExprNode>,
+    #[prost(bool, tag = "6")]
+    pub ignore_nulls: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -775,6 +777,8 @@ pub struct AggregateUdfExprNode {
     pub distinct: bool,
     #[prost(bytes = "vec", optional, tag = "6")]
     pub fun_definition: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bool, tag = "7")]
+    pub ignore_nulls: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

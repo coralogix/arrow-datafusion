@@ -385,6 +385,9 @@ impl serde::Serialize for AggregateExprNode {
         if !self.order_by.is_empty() {
             len += 1;
         }
+        if self.ignore_nulls {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.AggregateExprNode", len)?;
         if self.aggr_function != 0 {
             let v = AggregateFunction::try_from(self.aggr_function)
@@ -403,6 +406,9 @@ impl serde::Serialize for AggregateExprNode {
         if !self.order_by.is_empty() {
             struct_ser.serialize_field("orderBy", &self.order_by)?;
         }
+        if self.ignore_nulls {
+            struct_ser.serialize_field("ignoreNulls", &self.ignore_nulls)?;
+        }
         struct_ser.end()
     }
 }
@@ -420,6 +426,8 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
             "filter",
             "order_by",
             "orderBy",
+            "ignore_nulls",
+            "ignoreNulls",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -429,6 +437,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
             Distinct,
             Filter,
             OrderBy,
+            IgnoreNulls,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -455,6 +464,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
                             "distinct" => Ok(GeneratedField::Distinct),
                             "filter" => Ok(GeneratedField::Filter),
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
+                            "ignoreNulls" | "ignore_nulls" => Ok(GeneratedField::IgnoreNulls),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -479,6 +489,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
                 let mut distinct__ = None;
                 let mut filter__ = None;
                 let mut order_by__ = None;
+                let mut ignore_nulls__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::AggrFunction => {
@@ -511,6 +522,12 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
                             }
                             order_by__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::IgnoreNulls => {
+                            if ignore_nulls__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("ignoreNulls"));
+                            }
+                            ignore_nulls__ = Some(map_.next_value()?);
+                        }
                     }
                 }
                 Ok(AggregateExprNode {
@@ -519,6 +536,7 @@ impl<'de> serde::Deserialize<'de> for AggregateExprNode {
                     distinct: distinct__.unwrap_or_default(),
                     filter: filter__,
                     order_by: order_by__.unwrap_or_default(),
+                    ignore_nulls: ignore_nulls__.unwrap_or_default(),
                 })
             }
         }
@@ -916,6 +934,9 @@ impl serde::Serialize for AggregateUdfExprNode {
         if self.fun_definition.is_some() {
             len += 1;
         }
+        if self.ignore_nulls {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion.AggregateUDFExprNode", len)?;
         if !self.fun_name.is_empty() {
             struct_ser.serialize_field("funName", &self.fun_name)?;
@@ -936,6 +957,9 @@ impl serde::Serialize for AggregateUdfExprNode {
             #[allow(clippy::needless_borrow)]
             struct_ser.serialize_field("funDefinition", pbjson::private::base64::encode(&v).as_str())?;
         }
+        if self.ignore_nulls {
+            struct_ser.serialize_field("ignoreNulls", &self.ignore_nulls)?;
+        }
         struct_ser.end()
     }
 }
@@ -955,6 +979,8 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             "distinct",
             "fun_definition",
             "funDefinition",
+            "ignore_nulls",
+            "ignoreNulls",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -965,6 +991,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
             OrderBy,
             Distinct,
             FunDefinition,
+            IgnoreNulls,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -992,6 +1019,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                             "orderBy" | "order_by" => Ok(GeneratedField::OrderBy),
                             "distinct" => Ok(GeneratedField::Distinct),
                             "funDefinition" | "fun_definition" => Ok(GeneratedField::FunDefinition),
+                            "ignoreNulls" | "ignore_nulls" => Ok(GeneratedField::IgnoreNulls),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -1017,6 +1045,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                 let mut order_by__ = None;
                 let mut distinct__ = None;
                 let mut fun_definition__ = None;
+                let mut ignore_nulls__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::FunName => {
@@ -1057,6 +1086,12 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                                 map_.next_value::<::std::option::Option<::pbjson::private::BytesDeserialize<_>>>()?.map(|x| x.0)
                             ;
                         }
+                        GeneratedField::IgnoreNulls => {
+                            if ignore_nulls__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("ignoreNulls"));
+                            }
+                            ignore_nulls__ = Some(map_.next_value()?);
+                        }
                     }
                 }
                 Ok(AggregateUdfExprNode {
@@ -1066,6 +1101,7 @@ impl<'de> serde::Deserialize<'de> for AggregateUdfExprNode {
                     order_by: order_by__.unwrap_or_default(),
                     distinct: distinct__.unwrap_or_default(),
                     fun_definition: fun_definition__,
+                    ignore_nulls: ignore_nulls__.unwrap_or_default(),
                 })
             }
         }
