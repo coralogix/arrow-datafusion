@@ -79,6 +79,10 @@ impl ArrayAgg {
             ignore_nulls,
         }
     }
+
+    pub fn ignore_nulls(&self) -> bool {
+        self.ignore_nulls
+    }
 }
 
 impl AggregateExpr for ArrayAgg {
