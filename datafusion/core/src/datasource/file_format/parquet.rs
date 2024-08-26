@@ -1211,9 +1211,9 @@ mod tests {
             .map(|i| i.to_string())
             .collect();
         let coll: Vec<_> = schema
-            .all_fields()
+            .flattened_fields()
             .into_iter()
-            .map(|i| i.name().to_string())
+            .map(|f| f.name().to_string())
             .collect();
         assert_eq!(coll, order);
 

@@ -86,9 +86,10 @@ where
             values,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, new_value| {
                 let current_value = self.values.get_bit(group_index);
-                let value = (self.bool_fn)(current_value, new_value);
+                let value = (self.bool_fn)(current_value, new_value.unwrap());
                 self.values.set_bit(group_index, value);
             },
         );

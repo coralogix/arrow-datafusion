@@ -288,10 +288,10 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             values,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, new_value| {
                 let prod = &mut self.prods[group_index];
-                *prod = prod.mul_wrapping(new_value);
-
+                *prod = prod.mul_wrapping(new_value.unwrap());
                 self.counts[group_index] += 1;
             },
         );
@@ -318,8 +318,9 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             partial_counts,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, partial_count| {
-                self.counts[group_index] += partial_count;
+                self.counts[group_index] += partial_count.unwrap();
             },
         );
 
@@ -330,9 +331,10 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             partial_prods,
             opt_filter,
             total_num_groups,
-            |group_index, new_value: <Float64Type as ArrowPrimitiveType>::Native| {
+            true,
+            |group_index, new_value| {
                 let prod = &mut self.prods[group_index];
-                *prod = prod.mul_wrapping(new_value);
+                *prod = prod.mul_wrapping(new_value.unwrap());
             },
         );
 
@@ -394,8 +396,8 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.counts.capacity() * std::mem::size_of::<u32>()
-            + self.prods.capacity() * std::mem::size_of::<Float64Type>()
+        self.counts.capacity() * size_of::<u32>()
+            + self.prods.capacity() * size_of::<Float64Type>()
     }
 }
 
