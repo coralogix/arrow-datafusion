@@ -22,6 +22,7 @@ use log::debug;
 
 use std::any::Any;
 use std::fmt::Debug;
+use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 use crate::aggregate::groups_accumulator::accumulate::NullState;
@@ -284,7 +285,7 @@ impl Accumulator for AvgAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
@@ -377,7 +378,7 @@ impl<T: DecimalType + ArrowNumericType> Accumulator for DecimalAvgAccumulator<T>
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
