@@ -36,7 +36,7 @@ use datafusion_expr::EmitTo;
 /// specialized implementations, invoked depending on the specific
 /// combinations of the input.
 ///
-/// Typically there are 4 potential combinations of inputs must be
+/// Typically, there are 4 potential combinations of inputs must be
 /// special cased for performance:
 ///
 /// * With / Without filter
@@ -84,16 +84,18 @@ impl NullState {
         self.seen_values.capacity() / 8
     }
 
-    /// Invokes `value_fn(group_index, value)` for each non null, non
-    /// filtered value of `value`, while tracking which groups have
-    /// seen null inputs and which groups have seen any inputs if necessary
+    /// Invokes `value_fn(group_index, value)` for each non-null, non-filtered value of `values`
+    /// and `value_fn(group_index, None)` for each null value of `values` unless `ignore_nulls`,
+    /// while tracking which groups have seen null inputs and which groups have seen any inputs.
     //
     /// # Arguments:
     ///
+    /// * `group_indices`: to which groups do the rows in `values` belong, (aka `group_index`)
     /// * `values`: the input arguments to the accumulator
-    /// * `group_indices`:  To which groups do the rows in `values` belong, (aka group_index)
-    /// * `opt_filter`: if present, only rows for which is Some(true) are included
-    /// * `value_fn`: function invoked for  (group_index, value) where value is non null
+    /// * `opt_filter`: if present, only rows for which is `Some(true)` are included
+    /// * `total_num_groups`: the total number of groups in the accumulator
+    /// * `ignore_nulls`: when true, null `values` are filtered out
+    /// * `value_fn`: function invoked for `(group_index, value)`
     ///
     /// # Example
     ///
@@ -115,8 +117,8 @@ impl NullState {
     /// group_indices   values        opt_filter
     /// ```
     ///
-    /// In the example above, `value_fn` is invoked for each (group_index,
-    /// value) pair where `opt_filter[i]` is true and values is non null
+    /// In the example above, `value_fn` is invoked for each `(group_index, value)` pair
+    /// where `opt_filter[i]` is true and values is non-null.
     ///
     /// ```text
     /// value_fn(2, 200)
@@ -126,17 +128,18 @@ impl NullState {
     ///
     /// It also sets
     ///
-    /// 1. `self.seen_values[group_index]` to true for all rows that had a non null vale
+    /// 1. `self.seen_values[group_index]` to true for all rows that had a non-null vale
     pub fn accumulate<T, F>(
         &mut self,
         group_indices: &[usize],
         values: &PrimitiveArray<T>,
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
+        ignore_nulls: bool,
         mut value_fn: F,
     ) where
         T: ArrowPrimitiveType + Send,
-        F: FnMut(usize, T::Native) + Send,
+        F: FnMut(usize, Option<T::Native>) + Send,
     {
         let data: &[T::Native] = values.values();
         assert_eq!(data.len(), group_indices.len());
@@ -152,7 +155,7 @@ impl NullState {
                 let iter = group_indices.iter().zip(data.iter());
                 for (&group_index, &new_value) in iter {
                     seen_values.set_bit(group_index, true);
-                    value_fn(group_index, new_value);
+                    value_fn(group_index, Some(new_value));
                 }
             }
             // nulls, no filter
@@ -179,7 +182,10 @@ impl NullState {
                                 let is_valid = (mask & index_mask) != 0;
                                 if is_valid {
                                     seen_values.set_bit(group_index, true);
-                                    value_fn(group_index, new_value);
+                                    value_fn(group_index, Some(new_value));
+                                } else if !ignore_nulls {
+                                    seen_values.set_bit(group_index, true);
+                                    value_fn(group_index, None);
                                 }
                                 index_mask <<= 1;
                             },
@@ -196,7 +202,10 @@ impl NullState {
                         let is_valid = remainder_bits & (1 << i) != 0;
                         if is_valid {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value);
+                            value_fn(group_index, Some(new_value));
+                        } else if !ignore_nulls {
+                            seen_values.set_bit(group_index, true);
+                            value_fn(group_index, None);
                         }
                     });
             }
@@ -213,7 +222,7 @@ impl NullState {
                     .for_each(|((&group_index, &new_value), filter_value)| {
                         if let Some(true) = filter_value {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value);
+                            value_fn(group_index, Some(new_value));
                         }
                     })
             }
@@ -229,9 +238,12 @@ impl NullState {
                     .zip(values.iter())
                     .for_each(|((filter_value, &group_index), new_value)| {
                         if let Some(true) = filter_value {
-                            if let Some(new_value) = new_value {
+                            if new_value.is_some() {
                                 seen_values.set_bit(group_index, true);
                                 value_fn(group_index, new_value)
+                            } else if !ignore_nulls {
+                                seen_values.set_bit(group_index, true);
+                                value_fn(group_index, None)
                             }
                         }
                     })
@@ -239,25 +251,22 @@ impl NullState {
         }
     }
 
-    /// Invokes `value_fn(group_index, value)` for each non null, non
-    /// filtered value in `values`, while tracking which groups have
-    /// seen null inputs and which groups have seen any inputs, for
-    /// [`BooleanArray`]s.
+    /// Invokes `value_fn(group_index, value)` for each non-null, non-filtered value in `values`,
+    /// and `value_fn(group_index, None)` for each null value of `values` unless `ignore_nulls`,
+    /// while tracking which groups have seen null inputs and which groups have seen any inputs,
+    /// for [`BooleanArray`]s.
     ///
-    /// Since `BooleanArray` is not a [`PrimitiveArray`] it must be
-    /// handled specially.
-    ///
-    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for
-    /// more details on other arguments.
+    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for more details.
     pub fn accumulate_boolean<F>(
         &mut self,
         group_indices: &[usize],
         values: &BooleanArray,
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
+        ignore_nulls: bool,
         mut value_fn: F,
     ) where
-        F: FnMut(usize, bool) + Send,
+        F: FnMut(usize, Option<bool>) + Send,
     {
         let data = values.values();
         assert_eq!(data.len(), group_indices.len());
@@ -276,7 +285,7 @@ impl NullState {
                 group_indices.iter().zip(data.iter()).for_each(
                     |(&group_index, new_value)| {
                         seen_values.set_bit(group_index, true);
-                        value_fn(group_index, new_value)
+                        value_fn(group_index, Some(new_value))
                     },
                 )
             }
@@ -290,7 +299,10 @@ impl NullState {
                     .for_each(|((&group_index, new_value), is_valid)| {
                         if is_valid {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value);
+                            value_fn(group_index, Some(new_value));
+                        } else if !ignore_nulls {
+                            seen_values.set_bit(group_index, true);
+                            value_fn(group_index, None);
                         }
                     })
             }
@@ -305,7 +317,7 @@ impl NullState {
                     .for_each(|((&group_index, new_value), filter_value)| {
                         if let Some(true) = filter_value {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value);
+                            value_fn(group_index, Some(new_value));
                         }
                     })
             }
@@ -318,9 +330,12 @@ impl NullState {
                     .zip(values.iter())
                     .for_each(|((filter_value, &group_index), new_value)| {
                         if let Some(true) = filter_value {
-                            if let Some(new_value) = new_value {
+                            if new_value.is_some() {
                                 seen_values.set_bit(group_index, true);
                                 value_fn(group_index, new_value)
+                            } else if !ignore_nulls {
+                                seen_values.set_bit(group_index, true);
+                                value_fn(group_index, None)
                             }
                         }
                     })
@@ -328,22 +343,22 @@ impl NullState {
         }
     }
 
-    /// Invokes `value_fn(group_index, value)` for each non null, non
-    /// filtered value in `values`, while tracking which groups have
-    /// seen null inputs and which groups have seen any inputs, for
-    /// [`ListArray`]s.
+    /// Invokes `value_fn(group_index, value)` for each non-null, non-filtered value in `values`,
+    /// and `value_fn(group_index, None)` for each null value of `values` unless `ignore_nulls`,
+    /// while tracking which groups have seen null inputs and which groups have seen any inputs,
+    /// for [`ListArray`]s.
     ///
-    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for
-    /// more details on other arguments.
+    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for more details.
     pub fn accumulate_array<F>(
         &mut self,
         group_indices: &[usize],
         values: &ListArray,
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
+        ignore_nulls: bool,
         mut value_fn: F,
     ) where
-        F: FnMut(usize, ArrayRef) + Send,
+        F: FnMut(usize, Option<ArrayRef>) + Send,
     {
         assert_eq!(values.len(), group_indices.len());
 
@@ -358,23 +373,21 @@ impl NullState {
                 let iter = group_indices.iter().zip(values.iter());
                 for (&group_index, new_value) in iter {
                     seen_values.set_bit(group_index, true);
-                    value_fn(group_index, new_value.unwrap());
+                    value_fn(group_index, new_value);
                 }
             }
             // nulls, no filter
-            (true, None) => {
-                let nulls = values.nulls().unwrap();
-                group_indices
-                    .iter()
-                    .zip(values.iter())
-                    .zip(nulls.iter())
-                    .for_each(|((&group_index, new_value), is_valid)| {
-                        if is_valid {
-                            seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value.unwrap());
-                        }
-                    })
-            }
+            (true, None) => group_indices.iter().zip(values.iter()).for_each(
+                |(&group_index, new_value)| {
+                    if new_value.is_some() {
+                        seen_values.set_bit(group_index, true);
+                        value_fn(group_index, new_value)
+                    } else if !ignore_nulls {
+                        seen_values.set_bit(group_index, true);
+                        value_fn(group_index, None);
+                    }
+                },
+            ),
             // no nulls, but a filter
             (false, Some(filter)) => {
                 assert_eq!(filter.len(), group_indices.len());
@@ -385,7 +398,7 @@ impl NullState {
                     .for_each(|((&group_index, new_value), filter_value)| {
                         if let Some(true) = filter_value {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value.unwrap());
+                            value_fn(group_index, new_value);
                         }
                     });
             }
@@ -398,9 +411,12 @@ impl NullState {
                     .zip(values.iter())
                     .for_each(|((filter_value, &group_index), new_value)| {
                         if let Some(true) = filter_value {
-                            if let Some(new_value) = new_value {
+                            if new_value.is_some() {
                                 seen_values.set_bit(group_index, true);
                                 value_fn(group_index, new_value);
+                            } else if !ignore_nulls {
+                                seen_values.set_bit(group_index, true);
+                                value_fn(group_index, None);
                             }
                         }
                     });
@@ -408,22 +424,22 @@ impl NullState {
         }
     }
 
-    /// Invokes `value_fn(group_index, value)` for each non-null,
-    /// non-filtered value in `values`, while tracking which groups have
-    /// seen null inputs and which groups have seen any inputs, for
-    /// [`ListArray`]s.
+    /// Invokes `value_fn(group_index, value)` for each non-null, non-filtered value in `values`,
+    /// and `value_fn(group_index, None)` for each null value of `values` unless `ignore_nulls`,
+    /// while tracking which groups have seen null inputs and which groups have seen any inputs,
+    /// for [`StringArray`]s.
     ///
-    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for
-    /// more details on other arguments.
+    /// See [`Self::accumulate`], which handles `PrimitiveArray`s, for more details.
     pub fn accumulate_string<F>(
         &mut self,
         group_indices: &[usize],
         values: &StringArray,
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
+        ignore_nulls: bool,
         mut value_fn: F,
     ) where
-        F: FnMut(usize, &str) + Send,
+        F: FnMut(usize, Option<&str>) + Send,
     {
         assert_eq!(values.len(), group_indices.len());
 
@@ -438,23 +454,21 @@ impl NullState {
                 let iter = group_indices.iter().zip(values.iter());
                 for (&group_index, new_value) in iter {
                     seen_values.set_bit(group_index, true);
-                    value_fn(group_index, new_value.unwrap());
+                    value_fn(group_index, new_value);
                 }
             }
             // nulls, no filter
-            (true, None) => {
-                let nulls = values.nulls().unwrap();
-                group_indices
-                    .iter()
-                    .zip(values.iter())
-                    .zip(nulls.iter())
-                    .for_each(|((&group_index, new_value), is_valid)| {
-                        if is_valid {
-                            seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value.unwrap());
-                        }
-                    })
-            }
+            (true, None) => group_indices.iter().zip(values.iter()).for_each(
+                |(&group_index, new_value)| {
+                    if new_value.is_some() {
+                        seen_values.set_bit(group_index, true);
+                        value_fn(group_index, new_value);
+                    } else if !ignore_nulls {
+                        seen_values.set_bit(group_index, true);
+                        value_fn(group_index, None);
+                    }
+                },
+            ),
             // no nulls, but a filter
             (false, Some(filter)) => {
                 assert_eq!(filter.len(), group_indices.len());
@@ -465,7 +479,7 @@ impl NullState {
                     .for_each(|((&group_index, new_value), filter_value)| {
                         if let Some(true) = filter_value {
                             seen_values.set_bit(group_index, true);
-                            value_fn(group_index, new_value.unwrap());
+                            value_fn(group_index, new_value);
                         }
                     });
             }
@@ -478,9 +492,12 @@ impl NullState {
                     .zip(values.iter())
                     .for_each(|((filter_value, &group_index), new_value)| {
                         if let Some(true) = filter_value {
-                            if let Some(new_value) = new_value {
+                            if new_value.is_some() {
                                 seen_values.set_bit(group_index, true);
                                 value_fn(group_index, new_value);
+                            } else if !ignore_nulls {
+                                seen_values.set_bit(group_index, true);
+                                value_fn(group_index, None);
                             }
                         }
                     });
@@ -528,14 +545,12 @@ impl NullState {
 }
 
 /// This function is called to update the accumulator state per row
-/// when the value is not needed (e.g. COUNT)
+/// when the value is not needed (e.g. `COUNT`).
 ///
-/// `F`: Invoked like `value_fn(group_index) for all non null values
-/// passing the filter. Note that no tracking is done for null inputs
-/// or which groups have seen any values
+/// `F`: Invoked like `value_fn(group_index)` for all non-null values passing the filter.
+/// Note that no tracking is done for null inputs or which groups have seen any values.
 ///
-/// See [`NullState::accumulate`], for more details on other
-/// arguments.
+/// See [`NullState::accumulate`], for more details on other arguments.
 pub fn accumulate_indices<F>(
     group_indices: &[usize],
     nulls: Option<&NullBuffer>,
@@ -586,7 +601,7 @@ pub fn accumulate_indices<F>(
                 },
             );
 
-            // handle any remaining bits (after the intial 64)
+            // handle any remaining bits (after the initial 64)
             let remainder_bits = bit_chunks.remainder_bits();
             group_indices_remainder
                 .iter()
@@ -846,8 +861,9 @@ mod test {
                 values,
                 opt_filter,
                 total_num_groups,
+                true,
                 |group_index, value| {
-                    accumulated_values.push((group_index, value));
+                    accumulated_values.push((group_index, value.unwrap()));
                 },
             );
 
@@ -962,8 +978,9 @@ mod test {
                 values,
                 opt_filter,
                 total_num_groups,
+                true,
                 |group_index, value| {
-                    accumulated_values.push((group_index, value));
+                    accumulated_values.push((group_index, value.unwrap()));
                 },
             );
 
@@ -1015,7 +1032,7 @@ mod test {
         }
     }
 
-    /// Parallel implementaiton of NullState to check expected values
+    /// Parallel implementation of NullState to check expected values
     #[derive(Debug, Default)]
     struct MockNullState {
         /// group indices that had values that passed the filter

@@ -46,7 +46,7 @@ pub fn create_aggregate_expr(
     ordering_req: &[PhysicalSortExpr],
     input_schema: &Schema,
     name: impl Into<String>,
-    _ignore_nulls: bool,
+    ignore_nulls: bool,
 ) -> Result<Arc<dyn AggregateExpr>> {
     let name = name.into();
     // get the result data type for this aggregate function
@@ -115,7 +115,13 @@ pub fn create_aggregate_expr(
             let nullable = expr.nullable(input_schema)?;
 
             if ordering_req.is_empty() {
-                Arc::new(expressions::ArrayAgg::new(expr, name, data_type, nullable))
+                Arc::new(expressions::ArrayAgg::new(
+                    expr,
+                    name,
+                    data_type,
+                    nullable,
+                    ignore_nulls,
+                ))
             } else {
                 Arc::new(expressions::OrderSensitiveArrayAgg::new(
                     expr,
@@ -140,6 +146,7 @@ pub fn create_aggregate_expr(
                 name,
                 data_type,
                 is_expr_nullable,
+                ignore_nulls,
             ))
         }
         (AggregateFunction::Min, _) => Arc::new(expressions::Min::new(
