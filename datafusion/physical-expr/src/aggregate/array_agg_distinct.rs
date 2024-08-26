@@ -79,7 +79,7 @@ impl AggregateExpr for DistinctArrayAgg {
             &self.name,
             // This should be the same as return type of AggregateFunction::ArrayAgg
             Field::new_list_field(self.input_data_type.clone(), true),
-            self.nullable && !self.ignore_nulls,
+            self.nullable,
         ))
     }
 
@@ -94,7 +94,7 @@ impl AggregateExpr for DistinctArrayAgg {
         Ok(vec![Field::new_list(
             format_state_name(&self.name, "distinct_array_agg"),
             Field::new_list_field(self.input_data_type.clone(), true),
-            self.nullable && !self.ignore_nulls,
+            self.nullable,
         )])
     }
 
