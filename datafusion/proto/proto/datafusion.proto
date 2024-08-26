@@ -515,6 +515,7 @@ message AggregateExprNode {
   bool distinct = 3;
   LogicalExprNode filter = 4;
   repeated LogicalExprNode order_by = 5;
+  bool ignore_nulls = 6;
 }
 
 message AggregateUDFExprNode {
@@ -524,6 +525,7 @@ message AggregateUDFExprNode {
   repeated LogicalExprNode order_by = 4;
   bool distinct = 5;
   optional bytes fun_definition = 6;
+  bool ignore_nulls = 7;
 }
 
 message ScalarUDFExprNode {

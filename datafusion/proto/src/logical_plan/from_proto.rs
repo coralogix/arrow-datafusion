@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use datafusion::execution::registry::FunctionRegistry;
+use datafusion::sql::sqlparser::ast::NullTreatment;
 use datafusion_common::{
     internal_err, plan_datafusion_err, DataFusionError, Result, ScalarValue,
     TableReference, UnnestOptions,
@@ -410,16 +411,14 @@ pub fn parse_expr(
             }
         }
         ExprType::AggregateExpr(expr) => {
-            let fun = parse_i32_to_aggregate_function(&expr.aggr_function)?;
-
             Ok(Expr::AggregateFunction(expr::AggregateFunction::new(
-                fun,
+                parse_i32_to_aggregate_function(&expr.aggr_function)?,
                 parse_exprs(&expr.expr, registry, codec)?,
                 expr.distinct,
                 parse_optional_expr(expr.filter.as_deref(), registry, codec)?
                     .map(Box::new),
                 parse_vec_expr(&expr.order_by, registry, codec)?,
-                None,
+                expr.ignore_nulls.then_some(NullTreatment::IgnoreNulls),
             )))
         }
         ExprType::Alias(alias) => Ok(Expr::Alias(Alias::new(
@@ -661,7 +660,7 @@ pub fn parse_expr(
                 pb.distinct,
                 parse_optional_expr(pb.filter.as_deref(), registry, codec)?.map(Box::new),
                 parse_vec_expr(&pb.order_by, registry, codec)?,
-                None,
+                pb.ignore_nulls.then_some(NullTreatment::IgnoreNulls),
             )))
         }
 
