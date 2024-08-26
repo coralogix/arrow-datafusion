@@ -339,10 +339,25 @@ impl ArrayAggAccumulator {
 impl Accumulator for ArrayAggAccumulator {
     // Append value like Int64Array(1,2,3)
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        fn has_nulls(arr: &ArrayRef) -> bool {
+            arr.logical_nulls()
+                .is_some_and(|nulls| nulls.null_count() > 0)
+        }
+
         if !values.is_empty() {
             assert!(values.len() == 1, "array_agg can only take 1 param!");
-            let val = values[0].clone();
-            self.values.push(val);
+            let val = &values[0];
+            if !val.is_empty() {
+                if self.ignore_nulls && has_nulls(val) {
+                    let not_null = arrow::compute::is_not_null(val)?;
+                    let result = arrow::compute::filter(val, &not_null)?;
+                    if !result.is_empty() {
+                        self.values.push(result)
+                    }
+                } else {
+                    self.values.push(val.clone())
+                }
+            }
         }
 
         Ok(())
@@ -353,9 +368,7 @@ impl Accumulator for ArrayAggAccumulator {
         if !states.is_empty() {
             assert!(states.len() == 1, "array_agg states must be singleton!");
             let list_arr = as_list_array(&states[0])?;
-            for arr in list_arr.iter().flatten() {
-                self.values.push(arr);
-            }
+            self.values.extend(list_arr.iter().flatten())
         }
 
         Ok(())
@@ -375,12 +388,7 @@ impl Accumulator for ArrayAggAccumulator {
             return Ok(ScalarValue::List(arr));
         }
 
-        let mut result = arrow::compute::concat(&element_arrays)?;
-        if self.ignore_nulls {
-            let not_null = arrow::compute::is_not_null(&result)?;
-            result = arrow::compute::filter(&result, &not_null)?
-        }
-
+        let result = arrow::compute::concat(&element_arrays)?;
         let result = array_into_list_array(result);
         Ok(ScalarValue::List(Arc::new(result)))
     }
