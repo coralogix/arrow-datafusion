@@ -20,6 +20,7 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::mem::size_of_val;
 use std::sync::Arc;
 
 use arrow::array::ArrayRef;

@@ -44,6 +44,7 @@ use datafusion_common::Result;
 use datafusion_common::{internal_err, ScalarValue};
 use datafusion_expr::{Accumulator, EmitTo, GroupsAccumulator};
 use std::any::Any;
+use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 /// ARRAY_AGG aggregate expression

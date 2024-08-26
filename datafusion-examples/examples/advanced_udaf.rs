@@ -18,6 +18,7 @@
 use arrow_schema::{Field, Schema};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use datafusion_physical_expr::NullState;
+use std::mem::{size_of, size_of_val};
 use std::{any::Any, sync::Arc};
 
 use arrow::{
@@ -92,7 +93,7 @@ impl AggregateUDFImpl for GeoMeanUdaf {
     }
 
     /// This is the description of the state. accumulator's state() must match the types here.
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<arrow_schema::Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new("prod", args.return_type.clone(), true),
             Field::new("n", DataType::UInt32, true),
@@ -193,7 +194,7 @@ impl Accumulator for GeometricMean {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
