@@ -80,8 +80,9 @@ pub fn serialize_physical_aggr_expr(
     }
 
     let AggrFn {
-        inner: aggr_function,
+        inner,
         distinct,
+        ignore_nulls,
     } = aggr_expr_to_aggr_fn(aggr_expr.as_ref())?;
 
     Ok(protobuf::PhysicalExprNode {
@@ -89,13 +90,13 @@ pub fn serialize_physical_aggr_expr(
             protobuf::PhysicalAggregateExprNode {
                 aggregate_function: Some(
                     physical_aggregate_expr_node::AggregateFunction::AggrFunction(
-                        aggr_function as i32,
+                        inner.into(),
                     ),
                 ),
                 expr: expressions,
                 ordering_req,
                 distinct,
-                ignore_nulls: false,
+                ignore_nulls,
                 fun_definition: None,
             },
         )),
@@ -124,7 +125,9 @@ fn serialize_physical_window_aggr_expr(
             (!buf.is_empty()).then_some(buf),
         ))
     } else {
-        let AggrFn { inner, distinct } = aggr_expr_to_aggr_fn(aggr_expr)?;
+        let AggrFn {
+            inner, distinct, ..
+        } = aggr_expr_to_aggr_fn(aggr_expr)?;
         if distinct {
             return not_impl_err!(
                 "Distinct aggregate functions not supported in window expressions"
@@ -138,7 +141,7 @@ fn serialize_physical_window_aggr_expr(
         }
 
         Ok((
-            physical_window_expr_node::WindowFunction::AggrFunction(inner as i32),
+            physical_window_expr_node::WindowFunction::AggrFunction(inner.into()),
             None,
         ))
     }
@@ -260,11 +263,13 @@ pub fn serialize_physical_window_expr(
 struct AggrFn {
     inner: protobuf::AggregateFunction,
     distinct: bool,
+    ignore_nulls: bool,
 }
 
 fn aggr_expr_to_aggr_fn(expr: &dyn AggregateExpr) -> Result<AggrFn> {
     let aggr_expr = expr.as_any();
     let mut distinct = false;
+    let mut ignore_nulls = false;
 
     let inner = if aggr_expr.downcast_ref::<Count>().is_some() {
         protobuf::AggregateFunction::Count
@@ -293,10 +298,12 @@ fn aggr_expr_to_aggr_fn(expr: &dyn AggregateExpr) -> Result<AggrFn> {
         protobuf::AggregateFunction::Sum
     } else if aggr_expr.downcast_ref::<ApproxDistinct>().is_some() {
         protobuf::AggregateFunction::ApproxDistinct
-    } else if aggr_expr.downcast_ref::<ArrayAgg>().is_some() {
+    } else if let Some(array_agg) = aggr_expr.downcast_ref::<ArrayAgg>() {
+        ignore_nulls = array_agg.ignore_nulls();
         protobuf::AggregateFunction::ArrayAgg
-    } else if aggr_expr.downcast_ref::<DistinctArrayAgg>().is_some() {
+    } else if let Some(array_agg) = aggr_expr.downcast_ref::<DistinctArrayAgg>() {
         distinct = true;
+        ignore_nulls = array_agg.ignore_nulls();
         protobuf::AggregateFunction::ArrayAgg
     } else if aggr_expr.downcast_ref::<OrderSensitiveArrayAgg>().is_some() {
         protobuf::AggregateFunction::ArrayAgg
@@ -343,7 +350,11 @@ fn aggr_expr_to_aggr_fn(expr: &dyn AggregateExpr) -> Result<AggrFn> {
         return not_impl_err!("Aggregate function not supported: {expr:?}");
     };
 
-    Ok(AggrFn { inner, distinct })
+    Ok(AggrFn {
+        inner,
+        distinct,
+        ignore_nulls,
+    })
 }
 
 pub fn serialize_physical_sort_exprs<I>(
