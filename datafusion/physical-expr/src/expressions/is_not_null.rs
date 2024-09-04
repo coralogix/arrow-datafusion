@@ -22,7 +22,6 @@ use std::{any::Any, sync::Arc};
 
 use crate::physical_expr::down_cast_any_ref;
 use crate::PhysicalExpr;
-use arrow::compute;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
@@ -30,6 +29,8 @@ use arrow::{
 use datafusion_common::Result;
 use datafusion_common::ScalarValue;
 use datafusion_expr::ColumnarValue;
+
+use super::is_null::compute_is_null;
 
 /// IS NOT NULL expression
 #[derive(Debug, Hash)]
@@ -73,11 +74,11 @@ impl PhysicalExpr for IsNotNullExpr {
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let arg = self.arg.evaluate(batch)?;
         match arg {
-            ColumnarValue::Array(array) => Ok(ColumnarValue::Array(Arc::new(
-                compute::is_not_null(array.as_ref())?,
-            ))),
+            ColumnarValue::Array(array) => {
+                Ok(ColumnarValue::Array(Arc::new(compute_is_null(array)?)))
+            }
             ColumnarValue::Scalar(scalar) => Ok(ColumnarValue::Scalar(
-                ScalarValue::Boolean(Some(!scalar.is_null())),
+                ScalarValue::Boolean(Some(scalar.is_null())),
             )),
         }
     }
