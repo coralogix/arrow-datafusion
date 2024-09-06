@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::vec;
 
 use arrow::csv::WriterBuilder;
+use arrow::datatypes::{Fields, TimeUnit};
 use prost::Message;
 
 use crate::cases::{MyAggregateUDF, MyAggregateUdfNode, MyRegexUdf, MyRegexUdfNode};
@@ -63,6 +64,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::udaf::create_aggregate_expr;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
+use datafusion::physical_plan::unnest::UnnestExec;
 use datafusion::physical_plan::windows::{
     BuiltInWindowExpr, PlainAggregateWindowExpr, WindowAggExec,
 };
@@ -76,7 +78,7 @@ use datafusion_common::file_options::csv_writer::CsvWriterOptions;
 use datafusion_common::file_options::json_writer::JsonWriterOptions;
 use datafusion_common::parsers::CompressionTypeVariant;
 use datafusion_common::stats::Precision;
-use datafusion_common::{not_impl_err, DataFusionError, Result};
+use datafusion_common::{not_impl_err, DataFusionError, Result, UnnestOptions};
 use datafusion_expr::{
     Accumulator, AccumulatorFactoryFunction, AggregateUDF, ColumnarValue, ScalarUDF,
     Signature, SimpleAggregateUDF, WindowFrame, WindowFrameBound,
@@ -1149,4 +1151,31 @@ fn roundtrip_interleave() -> Result<()> {
     let inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(left), Arc::new(right)];
     let interleave = InterleaveExec::try_new(inputs)?;
     roundtrip_test(Arc::new(interleave))
+}
+
+#[test]
+fn roundtrip_unnest() -> Result<()> {
+    let fa = Field::new("a", DataType::Int64, true);
+    let fb0 = Field::new_list_field(DataType::Utf8, true);
+    let fb = Field::new_list("b", fb0.clone(), false);
+    let fc1 = Field::new("c1", DataType::Boolean, false);
+    let fc2 = Field::new("c2", DataType::Date64, true);
+    let fc = Field::new_struct("c", Fields::from(vec![fc1.clone(), fc2.clone()]), true);
+    let fd0 = Field::new_list_field(DataType::Float32, false);
+    let fd = Field::new_list("d", fd0.clone(), true);
+    let fe1 = Field::new("e1", DataType::UInt16, false);
+    let fe2 = Field::new("e2", DataType::Duration(TimeUnit::Millisecond), true);
+    let fe3 = Field::new("e3", DataType::Timestamp(TimeUnit::Millisecond, None), true);
+    let fe_fields = Fields::from(vec![fe1.clone(), fe2.clone(), fe3.clone()]);
+    let fe = Field::new_struct("e", fe_fields, false);
+
+    let fb0 = fb0.with_name("b");
+    let fd0 = fd0.with_name("d");
+    let input_schema = Arc::new(Schema::new(vec![fa.clone(), fb, fc, fd, fe]));
+    let output_schema =
+        Arc::new(Schema::new(vec![fa, fb0, fc1, fc2, fd0, fe1, fe2, fe3]));
+    let input = Arc::new(EmptyExec::new(input_schema));
+    let options = UnnestOptions::default();
+    let unnest = UnnestExec::new(input, vec![1, 3], vec![2, 4], output_schema, options);
+    roundtrip_test(Arc::new(unnest))
 }
