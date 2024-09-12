@@ -76,7 +76,7 @@ use futures::{ready, Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 
 pub struct DistributedJoinState {
-    remaining_probe_tasks: usize,
+    pub remaining_probe_tasks: usize,
 }
 
 type SharedBitmapBuilder = Mutex<BooleanBufferBuilder>;
