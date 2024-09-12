@@ -75,6 +75,10 @@ use ahash::RandomState;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 
+pub struct DistributedJoinState {
+    remaining_probe_tasks: usize,
+}
+
 type SharedBitmapBuilder = Mutex<BooleanBufferBuilder>;
 
 /// HashTable and input data for the left (build side) of a join
@@ -726,6 +730,15 @@ impl ExecutionPlan for HashJoinExec {
             PartitionMode::CollectLeft => self.left_fut.once(|| {
                 let reservation =
                     MemoryConsumer::new("HashJoinInput").register(context.memory_pool());
+
+                let probe_threads_count = context
+                    .session_config()
+                    .get_extension::<DistributedJoinState>()
+                    .map(|state| state.remaining_probe_tasks)
+                    .unwrap_or_else(|| {
+                        self.right().output_partitioning().partition_count()
+                    });
+
                 collect_left_input(
                     None,
                     self.random_state.clone(),
@@ -735,7 +748,7 @@ impl ExecutionPlan for HashJoinExec {
                     join_metrics.clone(),
                     reservation,
                     need_produce_result_in_final(self.join_type),
-                    self.right().output_partitioning().partition_count(),
+                    probe_threads_count,
                 )
             }),
             PartitionMode::Partitioned => {
