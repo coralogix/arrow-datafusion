@@ -18,7 +18,9 @@
 //! DataFusion Join implementations
 
 pub use cross_join::CrossJoinExec;
-pub use hash_join::{DistributedJoinState, DistributedJoinStateImpl, HashJoinExec};
+pub use hash_join::{
+    DistributedJoinState, DistributedJoinStateImpl, DistributedProbeState, HashJoinExec,
+};
 pub use nested_loop_join::NestedLoopJoinExec;
 // Note: SortMergeJoin is not used in plans yet
 pub use sort_merge_join::SortMergeJoinExec;
