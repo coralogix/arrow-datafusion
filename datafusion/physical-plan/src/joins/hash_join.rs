@@ -103,8 +103,6 @@ pub enum DistributedProbeState {
 }
 
 pub trait DistributedJoinStateImpl: Send + Sync + 'static {
-    fn remaining_tasks(&self) -> usize;
-
     fn poll_probe_completed(
         &self,
         mask: &BooleanBufferBuilder,
