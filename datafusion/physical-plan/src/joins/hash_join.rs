@@ -173,7 +173,8 @@ impl JoinLeftData {
     /// Decrements the counter of running threads, and returns `true`
     /// if caller is the last running thread
     fn report_probe_completed(&self) -> bool {
-        self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
+        self.probe_threads_counter.load(Ordering::Relaxed) == 0
+            || self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
     }
 }
 
