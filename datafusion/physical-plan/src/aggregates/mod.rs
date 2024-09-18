@@ -48,7 +48,7 @@ use datafusion_physical_expr::{
 
 use itertools::Itertools;
 
-mod group_values;
+pub mod group_values;
 mod no_grouping;
 mod order;
 mod row_hash;
@@ -822,7 +822,7 @@ fn create_schema(
     Ok(Schema::new(fields))
 }
 
-fn group_schema(schema: &Schema, group_count: usize) -> SchemaRef {
+pub fn group_schema(schema: &Schema, group_count: usize) -> SchemaRef {
     let group_fields = schema.fields()[0..group_count].to_vec();
     Arc::new(Schema::new(group_fields))
 }
