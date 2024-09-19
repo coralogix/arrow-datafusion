@@ -97,8 +97,8 @@ impl SharedJoinState {
         self.state_impl.poll_probe_completed(mask, cx)
     }
 
-    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet) {
-        self.state_impl.register_metrics(metrics)
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize) {
+        self.state_impl.register_metrics(metrics, partition)
     }
 }
 
@@ -119,7 +119,7 @@ pub trait SharedJoinStateImpl: Send + Sync + 'static {
         cx: &mut Context<'_>,
     ) -> Poll<Result<SharedProbeState>>;
 
-    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet);
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize);
 }
 
 type SharedBitmapBuilder = Mutex<BooleanBufferBuilder>;
@@ -803,7 +803,7 @@ impl ExecutionPlan for HashJoinExec {
                 let probe_threads = distributed_state
                     .as_ref()
                     .map(|s| {
-                        s.register_metrics(&self.metrics);
+                        s.register_metrics(&self.metrics, partition);
                         s.num_task_partitions()
                     })
                     .unwrap_or_else(|| {
