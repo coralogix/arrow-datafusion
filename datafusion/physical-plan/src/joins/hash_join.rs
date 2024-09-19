@@ -73,6 +73,7 @@ use datafusion_physical_expr::{PhysicalExpr, PhysicalExprRef};
 
 use ahash::RandomState;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use log::info;
 use parking_lot::Mutex;
 
 type SharedBitmapBuilder = Mutex<BooleanBufferBuilder>;
@@ -927,6 +928,8 @@ async fn collect_left_input(
         reservation,
     );
 
+    info!("finished building left side");
+
     Ok(data)
 }
 
@@ -1292,18 +1295,25 @@ impl HashJoinStream {
         loop {
             return match self.state {
                 HashJoinStreamState::WaitBuildSide => {
+                    info!("state: WaitBuildSide");
                     handle_state!(ready!(self.collect_build_side(cx)))
                 }
                 HashJoinStreamState::FetchProbeBatch => {
+                    info!("state: FetchProbeBatch");
                     handle_state!(ready!(self.fetch_probe_batch(cx)))
                 }
                 HashJoinStreamState::ProcessProbeBatch(_) => {
+                    info!("state: ProcessProbeBatch");
                     handle_state!(self.process_probe_batch())
                 }
                 HashJoinStreamState::ExhaustedProbeSide => {
+                    info!("state: ExhaustedProbeSide");
                     handle_state!(self.process_unmatched_build_batch())
                 }
-                HashJoinStreamState::Completed => Poll::Ready(None),
+                HashJoinStreamState::Completed => {
+                    info!("state: Completed");
+                    Poll::Ready(None)
+                }
             };
         }
     }
@@ -1327,6 +1337,8 @@ impl HashJoinStream {
         self.state = HashJoinStreamState::FetchProbeBatch;
         self.build_side = BuildSide::Ready(BuildSideReadyState { left_data });
 
+        info!("done building build side");
+
         Poll::Ready(Ok(StatefulStreamResult::Continue))
     }
 
@@ -1338,6 +1350,7 @@ impl HashJoinStream {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
+        info!("polling right side");
         match ready!(self.right.poll_next_unpin(cx)) {
             None => {
                 self.state = HashJoinStreamState::ExhaustedProbeSide;
