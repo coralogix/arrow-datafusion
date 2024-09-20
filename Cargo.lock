@@ -2209,6 +2209,7 @@ version = "46.0.1"
 dependencies = [
  "ahash 0.8.11",
  "arrow",
+ "arrow-buffer",
  "arrow-ord",
  "arrow-schema",
  "async-trait",
