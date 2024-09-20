@@ -21,7 +21,6 @@ use std::fmt;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::task::Poll;
 use std::{any::Any, vec};
 
 use super::utils::{
@@ -30,7 +29,7 @@ use super::utils::{
 };
 use super::{
     utils::{OnceAsync, OnceFut},
-    PartitionMode, SharedBitmapBuilder,
+    PartitionMode,
 };
 use super::{JoinOn, JoinOnRef};
 use crate::execution_plan::{boundedness_from_children, EmissionType};
@@ -56,6 +55,8 @@ use crate::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, Partitioning,
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
+use std::ops::{Deref, DerefMut};
+use std::task::{Context, Poll};
 
 use arrow::array::{
     cast::downcast_array, Array, ArrayRef, BooleanArray, BooleanBufferBuilder,
@@ -74,11 +75,13 @@ use datafusion_common::{
 };
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion_execution::TaskContext;
-use datafusion_expr::Operator;
 use datafusion_physical_expr::equivalence::{
     join_equivalence_properties, ProjectionMapping,
 };
 use datafusion_physical_expr::PhysicalExprRef;
+
+use arrow_buffer::BooleanBuffer;
+use datafusion_expr::Operator;
 use datafusion_physical_expr_common::datum::compare_op_for_nested;
 
 use ahash::RandomState;
@@ -89,6 +92,54 @@ use parking_lot::Mutex;
 /// Hard-coded seed to ensure hash values from the hash join differ from `RepartitionExec`, avoiding collisions.
 const HASH_JOIN_SEED: RandomState =
     RandomState::with_seeds('J' as u64, 'O' as u64, 'I' as u64, 'N' as u64);
+
+pub struct SharedJoinState {
+    state_impl: Arc<dyn SharedJoinStateImpl>,
+}
+
+impl SharedJoinState {
+    pub fn new(state_impl: Arc<dyn SharedJoinStateImpl>) -> Self {
+        Self { state_impl }
+    }
+
+    fn num_task_partitions(&self) -> usize {
+        self.state_impl.num_task_partitions()
+    }
+
+    fn poll_probe_completed(
+        &self,
+        mask: &BooleanBufferBuilder,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SharedProbeState>> {
+        self.state_impl.poll_probe_completed(mask, cx)
+    }
+
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize) {
+        self.state_impl.register_metrics(metrics, partition)
+    }
+}
+
+pub enum SharedProbeState {
+    // Probes are still running in other distributed tasks
+    Continue,
+    // Current task is last probe running so emit unmatched rows
+    // if required by join type
+    Ready(BooleanBuffer),
+}
+
+pub trait SharedJoinStateImpl: Send + Sync + 'static {
+    fn num_task_partitions(&self) -> usize;
+
+    fn poll_probe_completed(
+        &self,
+        visited_indices_bitmap: &BooleanBufferBuilder,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SharedProbeState>>;
+
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize);
+}
+
+type SharedBitmapBuilder = Mutex<BooleanBufferBuilder>;
 
 /// HashTable and input data for the left (build side) of a join
 struct JoinLeftData {
@@ -103,6 +154,7 @@ struct JoinLeftData {
     /// Counter of running probe-threads, potentially
     /// able to update `visited_indices_bitmap`
     probe_threads_counter: AtomicUsize,
+    shared_state: Option<Arc<SharedJoinState>>,
     /// We need to keep this field to maintain accurate memory accounting, even though we don't directly use it.
     /// Without holding onto this reservation, the recorded memory usage would become inconsistent with actual usage.
     /// This could hide potential out-of-memory issues, especially when upstream operators increase their memory consumption.
@@ -119,6 +171,7 @@ impl JoinLeftData {
         visited_indices_bitmap: SharedBitmapBuilder,
         probe_threads_counter: AtomicUsize,
         reservation: MemoryReservation,
+        distributed_state: Option<Arc<SharedJoinState>>,
     ) -> Self {
         Self {
             hash_map,
@@ -126,6 +179,7 @@ impl JoinLeftData {
             values,
             visited_indices_bitmap,
             probe_threads_counter,
+            shared_state: distributed_state,
             _reservation: reservation,
         }
     }
@@ -149,12 +203,32 @@ impl JoinLeftData {
     fn visited_indices_bitmap(&self) -> &SharedBitmapBuilder {
         &self.visited_indices_bitmap
     }
-
     /// Decrements the counter of running threads, and returns `true`
     /// if caller is the last running thread
     fn report_probe_completed(&self) -> bool {
-        self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
+        self.probe_threads_counter.load(Ordering::Relaxed) == 0
+            || self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
     }
+}
+
+fn merge_bitmap(m1: &mut BooleanBufferBuilder, m2: BooleanBuffer) -> Result<()> {
+    if m1.len() != m2.len() {
+        return Err(DataFusionError::Execution(format!(
+            "local and shared indices bitmaps have different lengths: {} and {}",
+            m1.len(),
+            m2.len()
+        )));
+    }
+
+    for (b1, b2) in m1
+        .as_slice_mut()
+        .iter_mut()
+        .zip(m2.inner().as_slice().iter().copied())
+    {
+        *b1 |= b2;
+    }
+
+    Ok(())
 }
 
 #[allow(rustdoc::private_intra_doc_links)]
@@ -802,6 +876,9 @@ impl ExecutionPlan for HashJoinExec {
             );
         }
 
+        let distributed_state =
+            context.session_config().get_extension::<SharedJoinState>();
+
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
         let left_fut = match self.mode {
             PartitionMode::CollectLeft => self.left_fut.try_once(|| {
@@ -810,6 +887,16 @@ impl ExecutionPlan for HashJoinExec {
                 let reservation =
                     MemoryConsumer::new("HashJoinInput").register(context.memory_pool());
 
+                let probe_threads = distributed_state
+                    .as_ref()
+                    .map(|s| {
+                        s.register_metrics(&self.metrics, partition);
+                        s.num_task_partitions()
+                    })
+                    .unwrap_or_else(|| {
+                        self.right().output_partitioning().partition_count()
+                    });
+
                 Ok(collect_left_input(
                     self.random_state.clone(),
                     left_stream,
@@ -817,7 +904,8 @@ impl ExecutionPlan for HashJoinExec {
                     join_metrics.clone(),
                     reservation,
                     need_produce_result_in_final(self.join_type),
-                    self.right().output_partitioning().partition_count(),
+                    probe_threads,
+                    distributed_state,
                 ))
             })?,
             PartitionMode::Partitioned => {
@@ -835,6 +923,7 @@ impl ExecutionPlan for HashJoinExec {
                     reservation,
                     need_produce_result_in_final(self.join_type),
                     1,
+                    None,
                 ))
             }
             PartitionMode::Auto => {
@@ -948,6 +1037,7 @@ impl ExecutionPlan for HashJoinExec {
 
 /// Reads the left (build) side of the input, buffering it in memory, to build a
 /// hash table (`LeftJoinData`)
+#[allow(clippy::too_many_arguments)]
 async fn collect_left_input(
     random_state: RandomState,
     left_stream: SendableRecordBatchStream,
@@ -956,6 +1046,7 @@ async fn collect_left_input(
     reservation: MemoryReservation,
     with_visited_indices_bitmap: bool,
     probe_threads_count: usize,
+    distributed_state: Option<Arc<SharedJoinState>>,
 ) -> Result<JoinLeftData> {
     let schema = left_stream.schema();
 
@@ -1041,6 +1132,7 @@ async fn collect_left_input(
         Mutex::new(visited_indices_bitmap),
         AtomicUsize::new(probe_threads_count),
         reservation,
+        distributed_state,
     );
 
     Ok(data)
@@ -1394,7 +1486,7 @@ impl HashJoinStream {
     /// that partial borrows work correctly
     fn poll_next_impl(
         &mut self,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Option<Result<RecordBatch>>> {
         loop {
             return match self.state {
@@ -1408,7 +1500,7 @@ impl HashJoinStream {
                     handle_state!(self.process_probe_batch())
                 }
                 HashJoinStreamState::ExhaustedProbeSide => {
-                    handle_state!(self.process_unmatched_build_batch())
+                    handle_state!(ready!(self.process_unmatched_build_batch(cx)))
                 }
                 HashJoinStreamState::Completed => Poll::Ready(None),
             };
@@ -1420,7 +1512,7 @@ impl HashJoinStream {
     /// Updates build-side to `Ready`, and state to `FetchProbeSide`
     fn collect_build_side(
         &mut self,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         let build_timer = self.join_metrics.build_time.timer();
         // build hash table from left (build) side, if not yet done
@@ -1443,7 +1535,7 @@ impl HashJoinStream {
     /// otherwise updates state to `ExhaustedProbeSide`
     fn fetch_probe_batch(
         &mut self,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         match ready!(self.right.poll_next_unpin(cx)) {
             None => {
@@ -1593,18 +1685,35 @@ impl HashJoinStream {
     /// Updates state to `Completed`
     fn process_unmatched_build_batch(
         &mut self,
-    ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         let timer = self.join_metrics.join_time.timer();
 
         if !need_produce_result_in_final(self.join_type) {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
         }
 
         let build_side = self.build_side.try_as_ready()?;
         if !build_side.left_data.report_probe_completed() {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
+        }
+
+        if let Some(shared_state) = build_side.left_data.shared_state.as_ref() {
+            let mut guard = build_side.left_data.visited_indices_bitmap().lock();
+            match ready!(shared_state.poll_probe_completed(guard.deref(), cx)) {
+                Ok(SharedProbeState::Continue) => {
+                    self.state = HashJoinStreamState::Completed;
+                    return Poll::Ready(Ok(StatefulStreamResult::Continue));
+                }
+                Ok(SharedProbeState::Ready(shared_mask)) => {
+                    if let Err(e) = merge_bitmap(guard.deref_mut(), shared_mask) {
+                        return Poll::Ready(Err(e));
+                    }
+                }
+                Err(err) => return Poll::Ready(Err(err)),
+            }
         }
 
         // use the global left bitmap to produce the left indices and right indices
@@ -1635,7 +1744,7 @@ impl HashJoinStream {
 
         self.state = HashJoinStreamState::Completed;
 
-        Ok(StatefulStreamResult::Ready(Some(result?)))
+        Poll::Ready(Ok(StatefulStreamResult::Ready(Some(result?))))
     }
 }
 
@@ -1644,7 +1753,7 @@ impl Stream for HashJoinStream {
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         self.poll_next_impl(cx)
     }
