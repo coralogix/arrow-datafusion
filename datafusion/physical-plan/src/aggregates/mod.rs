@@ -822,7 +822,7 @@ fn create_schema(
     Ok(Schema::new(fields))
 }
 
-pub fn group_schema(schema: &Schema, group_count: usize) -> SchemaRef {
+fn group_schema(schema: &Schema, group_count: usize) -> SchemaRef {
     let group_fields = schema.fields()[0..group_count].to_vec();
     Arc::new(Schema::new(group_fields))
 }
