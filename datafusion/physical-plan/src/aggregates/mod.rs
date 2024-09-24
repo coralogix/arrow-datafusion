@@ -48,7 +48,7 @@ use datafusion_physical_expr::{
 
 use itertools::Itertools;
 
-mod group_values;
+pub mod group_values;
 mod no_grouping;
 mod order;
 mod row_hash;
