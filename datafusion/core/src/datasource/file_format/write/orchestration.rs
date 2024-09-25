@@ -176,7 +176,7 @@ pub(crate) async fn stateless_serialize_and_write_files(
         if let Err(e) = writer.shutdown().await {
             // ignore if writer already closed
             if e.kind() != std::io::ErrorKind::InvalidInput {
-                return internal_datafusion_err!("Error encountered while finalizing writes! Partial results may have been written to ObjectStore! Error: {e}");
+                return Err(internal_datafusion_err!("Error encountered while finalizing writes! Partial results may have been written to ObjectStore! Error: {e}"));
             }
         }
     }
