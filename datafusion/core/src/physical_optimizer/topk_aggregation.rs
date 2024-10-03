@@ -34,6 +34,7 @@ use datafusion_common::Result;
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::PhysicalSortExpr;
 
+use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use itertools::Itertools;
 
 /// An optimizer rule that passes a `limit` hint to aggregations if the whole result is not needed
@@ -99,6 +100,10 @@ impl TopKAggregation {
                 .is_some()
                 || plan.as_any().downcast_ref::<RepartitionExec>().is_some()
                 || plan.as_any().downcast_ref::<FilterExec>().is_some()
+                || plan
+                    .as_any()
+                    .downcast_ref::<CoalescePartitionsExec>()
+                    .is_some()
         };
 
         let mut cardinality_preserved = true;
