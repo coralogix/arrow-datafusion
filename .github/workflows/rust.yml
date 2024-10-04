@@ -172,6 +172,7 @@ jobs:
       - name: Verify Working Directory Clean
         run: git diff --exit-code
 
+# Always breaks for coralogix
 #  linux-test-example:
 #    name: cargo examples (amd64)
 #    needs: [ linux-build-lib ]
@@ -486,6 +487,7 @@ jobs:
         run: ci/scripts/rust_clippy.sh
 
   # Check answers are correct when hash values collide
+# Always breaks in coralogix
 #  hash-collisions:
 #    name: cargo test hash collisions (amd64)
 #    needs: [ linux-build-lib ]
