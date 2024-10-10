@@ -94,6 +94,7 @@ mod test {
         basic_parse();
     }
 
+    #[allow(dead_code)]
     #[wasm_bindgen_test(unsupported = tokio::test)]
     async fn basic_execute() {
         let sql = "SELECT 2 + 2;";
