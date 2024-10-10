@@ -3464,9 +3464,8 @@ mod tests {
     use crate::assert_batches_eq;
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::{is_null, kernels};
-    use arrow::error::ArrowError;
     use arrow::util::pretty::pretty_format_columns;
-    use arrow_buffer::Buffer;
+    use arrow_buffer::{Buffer, NullBuffer};
     use arrow_schema::Fields;
     use chrono::NaiveDate;
     use rand::Rng;
