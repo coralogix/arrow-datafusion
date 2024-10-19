@@ -208,8 +208,8 @@ macro_rules! make_math_unary_udf {
                     $EVALUATE_BOUNDS(inputs)
                 }
 
-                fn invoke(&self, col_args: &[ColumnarValue]) -> Result<ColumnarValue> {
-                    let args = ColumnarValue::values_to_arrays(col_args)?;
+                fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
+                    let args = ColumnarValue::values_to_arrays(args)?;
                     let arr: ArrayRef = match args[0].data_type() {
                         DataType::Float64 => Arc::new(
                             args[0]
@@ -229,7 +229,7 @@ macro_rules! make_math_unary_udf {
                         }
                     };
 
-                    ColumnarValue::from_args_and_result(col_args, arr)
+                    Ok(ColumnarValue::Array(arr))
                 }
 
                 fn documentation(&self) -> Option<&Documentation> {
@@ -316,8 +316,8 @@ macro_rules! make_math_binary_udf {
                     $OUTPUT_ORDERING(input)
                 }
 
-                fn invoke(&self, col_args: &[ColumnarValue]) -> Result<ColumnarValue> {
-                    let args = ColumnarValue::values_to_arrays(col_args)?;
+                fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
+                    let args = ColumnarValue::values_to_arrays(args)?;
                     let arr: ArrayRef = match args[0].data_type() {
                         DataType::Float64 => {
                             let y = args[0].as_primitive::<Float64Type>();
@@ -347,7 +347,7 @@ macro_rules! make_math_binary_udf {
                         }
                     };
 
-                    ColumnarValue::from_args_and_result(col_args, arr)
+                    Ok(ColumnarValue::Array(arr))
                 }
 
                 fn documentation(&self) -> Option<&Documentation> {
