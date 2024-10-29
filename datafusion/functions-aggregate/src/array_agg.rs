@@ -37,6 +37,7 @@ use datafusion_functions_aggregate_common::merge_arrays::merge_ordered_arrays;
 use datafusion_functions_aggregate_common::utils::ordering_fields;
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
 use std::collections::{HashSet, VecDeque};
+use std::mem::{size_of, size_of_val};
 use std::sync::{Arc, OnceLock};
 
 make_udaf_expr_and_func!(
@@ -272,15 +273,15 @@ impl Accumulator for ArrayAggAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
-            + (std::mem::size_of::<ArrayRef>() * self.values.capacity())
+        size_of_val(self)
+            + (size_of::<ArrayRef>() * self.values.capacity())
             + self
                 .values
                 .iter()
                 .map(|arr| arr.get_array_memory_size())
                 .sum::<usize>()
             + self.datatype.size()
-            - std::mem::size_of_val(&self.datatype)
+            - size_of_val(&self.datatype)
     }
 }
 
@@ -356,10 +357,10 @@ impl Accumulator for DistinctArrayAggAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) + ScalarValue::size_of_hashset(&self.values)
-            - std::mem::size_of_val(&self.values)
+        size_of_val(self) + ScalarValue::size_of_hashset(&self.values)
+            - size_of_val(&self.values)
             + self.datatype.size()
-            - std::mem::size_of_val(&self.datatype)
+            - size_of_val(&self.datatype)
     }
 }
 
@@ -539,25 +540,23 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
     }
 
     fn size(&self) -> usize {
-        let mut total = std::mem::size_of_val(self)
-            + ScalarValue::size_of_vec(&self.values)
-            - std::mem::size_of_val(&self.values);
+        let mut total = size_of_val(self) + ScalarValue::size_of_vec(&self.values)
+            - size_of_val(&self.values);
 
         // Add size of the `self.ordering_values`
-        total +=
-            std::mem::size_of::<Vec<ScalarValue>>() * self.ordering_values.capacity();
+        total += size_of::<Vec<ScalarValue>>() * self.ordering_values.capacity();
         for row in &self.ordering_values {
-            total += ScalarValue::size_of_vec(row) - std::mem::size_of_val(row);
+            total += ScalarValue::size_of_vec(row) - size_of_val(row);
         }
 
         // Add size of the `self.datatypes`
-        total += std::mem::size_of::<DataType>() * self.datatypes.capacity();
+        total += size_of::<DataType>() * self.datatypes.capacity();
         for dtype in &self.datatypes {
-            total += dtype.size() - std::mem::size_of_val(dtype);
+            total += dtype.size() - size_of_val(dtype);
         }
 
         // Add size of the `self.ordering_req`
-        total += std::mem::size_of::<PhysicalSortExpr>() * self.ordering_req.capacity();
+        total += size_of::<PhysicalSortExpr>() * self.ordering_req.capacity();
         // TODO: Calculate size of each `PhysicalSortExpr` more accurately.
         total
     }

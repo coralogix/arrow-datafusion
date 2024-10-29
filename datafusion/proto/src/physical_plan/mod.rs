@@ -854,7 +854,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                                 "physical_plan::from_proto() Unexpected expr {self:?}"
                             ))
                         })?;
-                        if let protobuf::physical_expr_node::ExprType::Sort(sort_expr) = expr {
+                        if let ExprType::Sort(sort_expr) = expr {
                             let expr = sort_expr
                                 .expr
                                 .as_ref()
@@ -901,7 +901,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                                 "physical_plan::from_proto() Unexpected expr {self:?}"
                             ))
                         })?;
-                        if let protobuf::physical_expr_node::ExprType::Sort(sort_expr) = expr {
+                        if let ExprType::Sort(sort_expr) = expr {
                             let expr = sort_expr
                                 .expr
                                 .as_ref()
@@ -1717,9 +1717,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                         nulls_first: expr.options.nulls_first,
                     });
                     Ok(protobuf::PhysicalExprNode {
-                        expr_type: Some(protobuf::physical_expr_node::ExprType::Sort(
-                            sort_expr,
-                        )),
+                        expr_type: Some(ExprType::Sort(sort_expr)),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -1786,9 +1784,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                         nulls_first: expr.options.nulls_first,
                     });
                     Ok(protobuf::PhysicalExprNode {
-                        expr_type: Some(protobuf::physical_expr_node::ExprType::Sort(
-                            sort_expr,
-                        )),
+                        expr_type: Some(ExprType::Sort(sort_expr)),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;

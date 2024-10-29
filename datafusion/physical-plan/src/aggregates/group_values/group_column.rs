@@ -37,7 +37,7 @@ use crate::aggregates::group_values::null_builder::MaybeNullBufferBuilder;
 use arrow_array::types::GenericStringType;
 use datafusion_physical_expr_common::binary_map::{OutputType, INITIAL_BUFFER_CAPACITY};
 use std::marker::PhantomData;
-use std::mem;
+use std::mem::{replace, size_of};
 use std::sync::Arc;
 use std::vec;
 
@@ -305,7 +305,7 @@ where
     }
 
     fn size(&self) -> usize {
-        self.buffer.capacity() * std::mem::size_of::<u8>()
+        self.buffer.capacity() * size_of::<u8>()
             + self.offsets.allocated_size()
             + self.nulls.allocated_size()
     }
@@ -502,7 +502,7 @@ impl<B: ByteViewType> ByteViewGroupValueBuilder<B> {
 
         // If current block isn't big enough, flush it and create a new in progress block
         if require_cap > self.max_block_size {
-            let flushed_block = mem::replace(
+            let flushed_block = replace(
                 &mut self.in_progress,
                 Vec::with_capacity(self.max_block_size),
             );
@@ -625,7 +625,7 @@ impl<B: ByteViewType> ByteViewGroupValueBuilder<B> {
         // The `n == len` case, we need to take all
         if self.len() == n {
             let new_builder = Self::new().with_max_block_size(self.max_block_size);
-            let cur_builder = std::mem::replace(self, new_builder);
+            let cur_builder = replace(self, new_builder);
             return cur_builder.build_inner();
         }
 
@@ -773,7 +773,7 @@ impl<B: ByteViewType> ByteViewGroupValueBuilder<B> {
     }
 
     fn flush_in_progress(&mut self) {
-        let flushed_block = mem::replace(
+        let flushed_block = replace(
             &mut self.in_progress,
             Vec::with_capacity(self.max_block_size),
         );
@@ -799,14 +799,14 @@ impl<B: ByteViewType> GroupColumn for ByteViewGroupValueBuilder<B> {
         let buffers_size = self
             .completed
             .iter()
-            .map(|buf| buf.capacity() * std::mem::size_of::<u8>())
+            .map(|buf| buf.capacity() * size_of::<u8>())
             .sum::<usize>();
 
         self.nulls.allocated_size()
-            + self.views.capacity() * std::mem::size_of::<u128>()
-            + self.in_progress.capacity() * std::mem::size_of::<u8>()
+            + self.views.capacity() * size_of::<u128>()
+            + self.in_progress.capacity() * size_of::<u8>()
             + buffers_size
-            + std::mem::size_of::<Self>()
+            + size_of::<Self>()
     }
 
     fn build(self: Box<Self>) -> ArrayRef {

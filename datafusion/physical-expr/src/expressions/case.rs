@@ -1181,16 +1181,15 @@ mod tests {
 
         let expr2 = Arc::clone(&expr)
             .transform(|e| {
-                let transformed =
-                    match e.as_any().downcast_ref::<crate::expressions::Literal>() {
-                        Some(lit_value) => match lit_value.value() {
-                            ScalarValue::Utf8(Some(str_value)) => {
-                                Some(lit(str_value.to_uppercase()))
-                            }
-                            _ => None,
-                        },
+                let transformed = match e.as_any().downcast_ref::<Literal>() {
+                    Some(lit_value) => match lit_value.value() {
+                        ScalarValue::Utf8(Some(str_value)) => {
+                            Some(lit(str_value.to_uppercase()))
+                        }
                         _ => None,
-                    };
+                    },
+                    _ => None,
+                };
                 Ok(if let Some(transformed) = transformed {
                     Transformed::yes(transformed)
                 } else {
@@ -1202,16 +1201,15 @@ mod tests {
 
         let expr3 = Arc::clone(&expr)
             .transform_down(|e| {
-                let transformed =
-                    match e.as_any().downcast_ref::<crate::expressions::Literal>() {
-                        Some(lit_value) => match lit_value.value() {
-                            ScalarValue::Utf8(Some(str_value)) => {
-                                Some(lit(str_value.to_uppercase()))
-                            }
-                            _ => None,
-                        },
+                let transformed = match e.as_any().downcast_ref::<Literal>() {
+                    Some(lit_value) => match lit_value.value() {
+                        ScalarValue::Utf8(Some(str_value)) => {
+                            Some(lit(str_value.to_uppercase()))
+                        }
                         _ => None,
-                    };
+                    },
+                    _ => None,
+                };
                 Ok(if let Some(transformed) = transformed {
                     Transformed::yes(transformed)
                 } else {

@@ -61,6 +61,7 @@ use datafusion_expr::{
 };
 use datafusion_expr::{GroupsAccumulator, StatisticsArgs};
 use half::f16;
+use std::mem::size_of_val;
 use std::ops::Deref;
 use std::sync::OnceLock;
 
@@ -964,7 +965,7 @@ impl Accumulator for MaxAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) - std::mem::size_of_val(&self.max) + self.max.size()
+        size_of_val(self) - size_of_val(&self.max) + self.max.size()
     }
 }
 
@@ -1023,7 +1024,7 @@ impl Accumulator for SlidingMaxAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) - std::mem::size_of_val(&self.max) + self.max.size()
+        size_of_val(self) - size_of_val(&self.max) + self.max.size()
     }
 }
 
@@ -1285,7 +1286,7 @@ impl Accumulator for MinAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) - std::mem::size_of_val(&self.min) + self.min.size()
+        size_of_val(self) - size_of_val(&self.min) + self.min.size()
     }
 }
 
@@ -1348,7 +1349,7 @@ impl Accumulator for SlidingMinAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) - std::mem::size_of_val(&self.min) + self.min.size()
+        size_of_val(self) - size_of_val(&self.min) + self.min.size()
     }
 }
 
