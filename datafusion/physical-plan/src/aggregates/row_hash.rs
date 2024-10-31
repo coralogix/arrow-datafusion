@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::vec;
+use std::{mem, vec};
 
 use crate::aggregates::group_values::{new_group_values, GroupValues};
 use crate::aggregates::order::GroupOrderingFull;
@@ -28,7 +28,9 @@ use crate::aggregates::{
     PhysicalGroupBy,
 };
 use crate::common::IPCWriter;
-use crate::metrics::{BaselineMetrics, RecordOutput};
+use crate::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, RecordOutput, Time,
+};
 use crate::sorts::sort::{read_spill_as_stream, sort_batch};
 use crate::sorts::streaming_merge;
 use crate::stream::RecordBatchStreamAdapter;
@@ -38,6 +40,7 @@ use crate::{RecordBatchStream, SendableRecordBatchStream};
 use arrow::array::*;
 use arrow::datatypes::SchemaRef;
 use arrow_schema::SortOptions;
+use datafusion_common::instant::Instant;
 use datafusion_common::{DataFusionError, Result};
 use datafusion_execution::disk_manager::RefCountedTempFile;
 use datafusion_execution::memory_pool::proxy::VecAllocExt;
@@ -53,6 +56,30 @@ use datafusion_physical_expr::{
 use futures::ready;
 use futures::stream::{Stream, StreamExt};
 use log::debug;
+
+struct AggregateStreamMetrics {
+    processing_time: Time,
+    idle_time: Time,
+    last_batch_at: Instant,
+}
+
+impl AggregateStreamMetrics {
+    pub fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self {
+            processing_time: MetricBuilder::new(metrics)
+                .subset_time("processing_time", partition),
+            idle_time: MetricBuilder::new(metrics).subset_time("idle_time", partition),
+            last_batch_at: Instant::now(),
+        }
+    }
+
+    pub fn record(&mut self, started: Instant) {
+        let last_batch_at = mem::replace(&mut self.last_batch_at, started);
+        let idle_duration = started.duration_since(last_batch_at);
+        self.idle_time.add_duration(idle_duration);
+        self.processing_time.add_duration(started.elapsed());
+    }
+}
 
 #[derive(Debug, Clone)]
 /// This object tracks the aggregation phase (input/output)
@@ -252,6 +279,9 @@ pub(crate) struct GroupedHashAggregateStream {
     /// Execution metrics
     baseline_metrics: BaselineMetrics,
 
+    /// Execution metrics
+    aggregate_stream_metrics: AggregateStreamMetrics,
+
     /// max rows in output RecordBatches
     batch_size: usize,
 
@@ -291,6 +321,8 @@ impl GroupedHashAggregateStream {
         let batch_size = context.session_config().batch_size();
         let input = agg.input.execute(partition, Arc::clone(&context))?;
         let baseline_metrics = BaselineMetrics::new(&agg.metrics, partition);
+        let aggregate_stream_metrics =
+            AggregateStreamMetrics::new(&agg.metrics, partition);
 
         let timer = baseline_metrics.elapsed_compute().timer();
 
@@ -377,6 +409,7 @@ impl GroupedHashAggregateStream {
             current_group_indices: Default::default(),
             exec_state,
             baseline_metrics,
+            aggregate_stream_metrics,
             batch_size,
             group_ordering,
             input_done: false,
@@ -424,6 +457,7 @@ impl Stream for GroupedHashAggregateStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let now = Instant::now();
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
 
         loop {
@@ -496,6 +530,7 @@ impl Stream for GroupedHashAggregateStream {
                         let output = batch.slice(0, size);
                         (ExecutionState::ProducingOutput(remaining), output)
                     };
+                    self.aggregate_stream_metrics.record(now);
                     return Poll::Ready(Some(Ok(
                         output_batch.record_output(&self.baseline_metrics)
                     )));
@@ -506,6 +541,7 @@ impl Stream for GroupedHashAggregateStream {
                     // some memory reservation, so make some room for it.
                     self.clear_all();
                     let _ = self.update_memory_reservation();
+                    self.aggregate_stream_metrics.record(now);
                     return Poll::Ready(None);
                 }
             }
