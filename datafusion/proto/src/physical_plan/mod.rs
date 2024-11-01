@@ -35,7 +35,7 @@ use datafusion::datasource::physical_plan::{AvroExec, CsvExec};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
-use datafusion::physical_expr::{PhysicalExprRef, PhysicalSortRequirement};
+use datafusion::physical_expr::{LexOrdering, PhysicalExprRef, PhysicalSortRequirement};
 use datafusion::physical_plan::aggregates::AggregateMode;
 use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::analyze::AnalyzeExec;
@@ -504,8 +504,9 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                             ExprType::AggregateExpr(agg_node) => {
                                 let input_phy_expr: Vec<Arc<dyn PhysicalExpr>> = agg_node.expr.iter()
                                     .map(|e| parse_physical_expr(e, registry, &physical_schema, extension_codec)).collect::<Result<Vec<_>>>()?;
-                                let ordering_req: Vec<PhysicalSortExpr> = agg_node.ordering_req.iter()
-                                    .map(|e| parse_physical_sort_expr(e, registry, &physical_schema, extension_codec)).collect::<Result<Vec<_>>>()?;
+                                let ordering_req: LexOrdering = agg_node.ordering_req.iter()
+                                    .map(|e| parse_physical_sort_expr(e, registry, &physical_schema, extension_codec))
+                                    .collect::<Result<LexOrdering>>()?;
                                 agg_node.aggregate_function.as_ref().map(|func| {
                                     match func {
                                         AggregateFunction::UserDefinedAggrFunction(udaf_name) => {
@@ -877,7 +878,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                             )
                         }
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<LexOrdering, _>>()?;
                 let fetch = if sort.fetch < 0 {
                     None
                 } else {
@@ -924,7 +925,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                             )
                         }
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<LexOrdering, _>>()?;
                 let fetch = if sort.fetch < 0 {
                     None
                 } else {
@@ -1039,7 +1040,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                             &sink_schema,
                             extension_codec,
                         )
-                        .map(|item| PhysicalSortRequirement::from_sort_exprs(&item))
+                        .map(|item| PhysicalSortRequirement::from_sort_exprs(&item.inner))
                     })
                     .transpose()?;
                 Ok(Arc::new(DataSinkExec::new(
@@ -1069,7 +1070,7 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                             &sink_schema,
                             extension_codec,
                         )
-                        .map(|item| PhysicalSortRequirement::from_sort_exprs(&item))
+                        .map(|item| PhysicalSortRequirement::from_sort_exprs(&item.inner))
                     })
                     .transpose()?;
                 Ok(Arc::new(DataSinkExec::new(
@@ -1106,7 +1107,9 @@ impl AsExecutionPlan for protobuf::PhysicalPlanNode {
                                 &sink_schema,
                                 extension_codec,
                             )
-                            .map(|item| PhysicalSortRequirement::from_sort_exprs(&item))
+                            .map(|item| {
+                                PhysicalSortRequirement::from_sort_exprs(&item.inner)
+                            })
                         })
                         .transpose()?;
                     Ok(Arc::new(DataSinkExec::new(
