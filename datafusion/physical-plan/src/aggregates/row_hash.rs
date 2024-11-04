@@ -29,7 +29,7 @@ use crate::aggregates::{
 };
 use crate::common::IPCWriter;
 use crate::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, RecordOutput, Time,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, RecordOutput, Time,
 };
 use crate::sorts::sort::{read_spill_as_stream, sort_batch};
 use crate::sorts::streaming_merge;
@@ -62,6 +62,8 @@ struct AggregateStreamMetrics {
     idle_time: Time,
     last_batch_at: Instant,
     wait_time: Time,
+    input_rows: Count,
+    input_bytes: Count,
 }
 
 impl AggregateStreamMetrics {
@@ -72,6 +74,8 @@ impl AggregateStreamMetrics {
             idle_time: MetricBuilder::new(metrics).subset_time("idle_time", partition),
             last_batch_at: Instant::now(),
             wait_time: MetricBuilder::new(metrics).subset_time("wait_time", partition),
+            input_rows: MetricBuilder::new(metrics).counter("inpuit_rows", partition),
+            input_bytes: MetricBuilder::new(metrics).counter("input_bytes", partition),
         }
     }
 
@@ -80,6 +84,11 @@ impl AggregateStreamMetrics {
         let idle_duration = started.duration_since(last_batch_at);
         self.idle_time.add_duration(idle_duration);
         self.processing_time.add_duration(started.elapsed());
+    }
+
+    pub fn record_batch(&mut self, batch: &RecordBatch) {
+        self.input_rows.add(batch.num_rows());
+        self.input_bytes.add(batch.get_array_memory_size());
     }
 }
 
@@ -464,6 +473,7 @@ impl Stream for GroupedHashAggregateStream {
                         // new batch to aggregate
                         Some(Ok(batch)) => {
                             let timer = elapsed_compute.timer();
+                            self.aggregate_stream_metrics.record_batch(&batch);
                             // Make sure we have enough capacity for `batch`, otherwise spill
                             if let Err(e) = self.spill_previous_if_necessary(&batch) {
                                 self.aggregate_stream_metrics.record(now);
