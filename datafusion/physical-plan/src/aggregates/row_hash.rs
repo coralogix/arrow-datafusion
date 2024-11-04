@@ -65,6 +65,7 @@ struct AggregateStreamMetrics {
     input_rows: Count,
     input_bytes: Count,
     output_bytes: Count,
+    aggregation_time: Time,
 }
 
 impl AggregateStreamMetrics {
@@ -78,6 +79,8 @@ impl AggregateStreamMetrics {
             input_rows: MetricBuilder::new(metrics).counter("input_rows", partition),
             input_bytes: MetricBuilder::new(metrics).counter("input_bytes", partition),
             output_bytes: MetricBuilder::new(metrics).counter("output_bytes", partition),
+            aggregation_time: MetricBuilder::new(metrics)
+                .subset_time("aggregation_time", partition),
         }
     }
 
@@ -96,6 +99,15 @@ impl AggregateStreamMetrics {
     pub fn record_output_batch(&mut self, batch: &RecordBatch) {
         self.output_bytes.add(batch.get_array_memory_size());
     }
+}
+
+macro_rules! record_action {
+    ($METRIC:expr, $ACTION:expr) => {{
+        let now = Instant::now();
+        let result = $ACTION;
+        $METRIC.add_duration(now.elapsed());
+        result
+    }};
 }
 
 #[derive(Debug, Clone)]
@@ -470,12 +482,10 @@ impl Stream for GroupedHashAggregateStream {
         loop {
             match &self.exec_state {
                 ExecutionState::ReadingInput => 'reading_input: {
-                    let started = Instant::now();
-                    let result = ready!(self.input.poll_next_unpin(cx));
-                    self.aggregate_stream_metrics
-                        .wait_time
-                        .add_duration(started.elapsed());
-                    match result {
+                    match record_action!(
+                        self.aggregate_stream_metrics.wait_time,
+                        ready!(self.input.poll_next_unpin(cx))
+                    ) {
                         // new batch to aggregate
                         Some(Ok(batch)) => {
                             let timer = elapsed_compute.timer();
@@ -487,10 +497,13 @@ impl Stream for GroupedHashAggregateStream {
                             }
 
                             // Do the grouping
-                            if let Err(e) = self.group_aggregate_batch(batch) {
-                                self.aggregate_stream_metrics.record(now);
-                                return Poll::Ready(Some(Err(e)));
-                            }
+                            record_action!(
+                                self.aggregate_stream_metrics.aggregation_time,
+                                if let Err(e) = self.group_aggregate_batch(batch) {
+                                    self.aggregate_stream_metrics.record(now);
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                            );
 
                             // If we can begin emitting rows, do so,
                             // otherwise keep consuming input
