@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::vec;
+use std::{mem, vec};
 
 use crate::aggregates::group_values::{new_group_values, GroupValues};
 use crate::aggregates::order::GroupOrderingFull;
@@ -28,7 +28,9 @@ use crate::aggregates::{
     PhysicalGroupBy,
 };
 use crate::common::IPCWriter;
-use crate::metrics::{BaselineMetrics, RecordOutput};
+use crate::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, RecordOutput, Time,
+};
 use crate::sorts::sort::{read_spill_as_stream, sort_batch};
 use crate::sorts::streaming_merge;
 use crate::stream::RecordBatchStreamAdapter;
@@ -38,6 +40,7 @@ use crate::{RecordBatchStream, SendableRecordBatchStream};
 use arrow::array::*;
 use arrow::datatypes::SchemaRef;
 use arrow_schema::SortOptions;
+use datafusion_common::instant::Instant;
 use datafusion_common::{DataFusionError, Result};
 use datafusion_execution::disk_manager::RefCountedTempFile;
 use datafusion_execution::memory_pool::proxy::VecAllocExt;
@@ -53,6 +56,59 @@ use datafusion_physical_expr::{
 use futures::ready;
 use futures::stream::{Stream, StreamExt};
 use log::debug;
+
+struct AggregateStreamMetrics {
+    processing_time: Time,
+    idle_time: Time,
+    last_batch_at: Instant,
+    wait_time: Time,
+    input_rows: Count,
+    input_bytes: Count,
+    output_bytes: Count,
+    aggregation_time: Time,
+}
+
+impl AggregateStreamMetrics {
+    pub fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self {
+            processing_time: MetricBuilder::new(metrics)
+                .subset_time("processing_time", partition),
+            idle_time: MetricBuilder::new(metrics).subset_time("idle_time", partition),
+            last_batch_at: Instant::now(),
+            wait_time: MetricBuilder::new(metrics).subset_time("wait_time", partition),
+            input_rows: MetricBuilder::new(metrics).counter("input_rows", partition),
+            input_bytes: MetricBuilder::new(metrics).counter("input_bytes", partition),
+            output_bytes: MetricBuilder::new(metrics).counter("output_bytes", partition),
+            aggregation_time: MetricBuilder::new(metrics)
+                .subset_time("aggregation_time", partition),
+        }
+    }
+
+    pub fn record(&mut self, started: Instant) {
+        let last_batch_at = mem::replace(&mut self.last_batch_at, started);
+        let idle_duration = started.duration_since(last_batch_at);
+        self.idle_time.add_duration(idle_duration);
+        self.processing_time.add_duration(started.elapsed());
+    }
+
+    pub fn record_input_batch(&mut self, batch: &RecordBatch) {
+        self.input_rows.add(batch.num_rows());
+        self.input_bytes.add(batch.get_array_memory_size());
+    }
+
+    pub fn record_output_batch(&mut self, batch: &RecordBatch) {
+        self.output_bytes.add(batch.get_array_memory_size());
+    }
+}
+
+macro_rules! record_action {
+    ($METRIC:expr, $ACTION:expr) => {{
+        let now = Instant::now();
+        let result = $ACTION;
+        $METRIC.add_duration(now.elapsed());
+        result
+    }};
+}
 
 #[derive(Debug, Clone)]
 /// This object tracks the aggregation phase (input/output)
@@ -252,6 +308,9 @@ pub(crate) struct GroupedHashAggregateStream {
     /// Execution metrics
     baseline_metrics: BaselineMetrics,
 
+    /// Execution metrics
+    aggregate_stream_metrics: AggregateStreamMetrics,
+
     /// max rows in output RecordBatches
     batch_size: usize,
 
@@ -291,6 +350,8 @@ impl GroupedHashAggregateStream {
         let batch_size = context.session_config().batch_size();
         let input = agg.input.execute(partition, Arc::clone(&context))?;
         let baseline_metrics = BaselineMetrics::new(&agg.metrics, partition);
+        let aggregate_stream_metrics =
+            AggregateStreamMetrics::new(&agg.metrics, partition);
 
         let timer = baseline_metrics.elapsed_compute().timer();
 
@@ -377,6 +438,7 @@ impl GroupedHashAggregateStream {
             current_group_indices: Default::default(),
             exec_state,
             baseline_metrics,
+            aggregate_stream_metrics,
             batch_size,
             group_ordering,
             input_done: false,
@@ -407,16 +469,6 @@ pub(crate) fn create_group_accumulator(
     }
 }
 
-/// Extracts a successful Ok(_) or returns Poll::Ready(Some(Err(e))) with errors
-macro_rules! extract_ok {
-    ($RES: expr) => {{
-        match $RES {
-            Ok(v) => v,
-            Err(e) => return Poll::Ready(Some(Err(e))),
-        }
-    }};
-}
-
 impl Stream for GroupedHashAggregateStream {
     type Item = Result<RecordBatch>;
 
@@ -424,20 +476,34 @@ impl Stream for GroupedHashAggregateStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let now = Instant::now();
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
 
         loop {
             match &self.exec_state {
                 ExecutionState::ReadingInput => 'reading_input: {
-                    match ready!(self.input.poll_next_unpin(cx)) {
+                    match record_action!(
+                        self.aggregate_stream_metrics.wait_time,
+                        ready!(self.input.poll_next_unpin(cx))
+                    ) {
                         // new batch to aggregate
                         Some(Ok(batch)) => {
                             let timer = elapsed_compute.timer();
+                            self.aggregate_stream_metrics.record_input_batch(&batch);
                             // Make sure we have enough capacity for `batch`, otherwise spill
-                            extract_ok!(self.spill_previous_if_necessary(&batch));
+                            if let Err(e) = self.spill_previous_if_necessary(&batch) {
+                                self.aggregate_stream_metrics.record(now);
+                                return Poll::Ready(Some(Err(e)));
+                            }
 
                             // Do the grouping
-                            extract_ok!(self.group_aggregate_batch(batch));
+                            record_action!(
+                                self.aggregate_stream_metrics.aggregation_time,
+                                if let Err(e) = self.group_aggregate_batch(batch) {
+                                    self.aggregate_stream_metrics.record(now);
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                            );
 
                             // If we can begin emitting rows, do so,
                             // otherwise keep consuming input
@@ -447,30 +513,48 @@ impl Stream for GroupedHashAggregateStream {
                             // emit all groups and switch to producing output
                             if self.hit_soft_group_limit() {
                                 timer.done();
-                                extract_ok!(self.set_input_done_and_produce_output());
+                                if let Err(e) = self.set_input_done_and_produce_output() {
+                                    self.aggregate_stream_metrics.record(now);
+                                    return Poll::Ready(Some(Err(e)));
+                                }
                                 // make sure the exec_state just set is not overwritten below
                                 break 'reading_input;
                             }
 
                             if let Some(to_emit) = self.group_ordering.emit_to() {
-                                let batch = extract_ok!(self.emit(to_emit, false));
-                                self.exec_state = ExecutionState::ProducingOutput(batch);
-                                timer.done();
-                                // make sure the exec_state just set is not overwritten below
-                                break 'reading_input;
+                                match self.emit(to_emit, false) {
+                                    Ok(b) => {
+                                        self.exec_state =
+                                            ExecutionState::ProducingOutput(b);
+                                        timer.done();
+                                        // make sure the exec_state just set is not overwritten below
+                                        break 'reading_input;
+                                    }
+                                    Err(e) => {
+                                        self.aggregate_stream_metrics.record(now);
+                                        return Poll::Ready(Some(Err(e)));
+                                    }
+                                }
                             }
 
-                            extract_ok!(self.emit_early_if_necessary());
+                            if let Err(e) = self.emit_early_if_necessary() {
+                                self.aggregate_stream_metrics.record(now);
+                                return Poll::Ready(Some(Err(e)));
+                            }
 
                             timer.done();
                         }
                         Some(Err(e)) => {
                             // inner had error, return to caller
+                            self.aggregate_stream_metrics.record(now);
                             return Poll::Ready(Some(Err(e)));
                         }
                         None => {
                             // inner is done, emit all rows and switch to producing output
-                            extract_ok!(self.set_input_done_and_produce_output());
+                            if let Err(e) = self.set_input_done_and_produce_output() {
+                                self.aggregate_stream_metrics.record(now);
+                                return Poll::Ready(Some(Err(e)));
+                            }
                         }
                     }
                 }
@@ -496,6 +580,9 @@ impl Stream for GroupedHashAggregateStream {
                         let output = batch.slice(0, size);
                         (ExecutionState::ProducingOutput(remaining), output)
                     };
+                    self.aggregate_stream_metrics.record(now);
+                    self.aggregate_stream_metrics
+                        .record_output_batch(&output_batch);
                     return Poll::Ready(Some(Ok(
                         output_batch.record_output(&self.baseline_metrics)
                     )));
@@ -506,6 +593,7 @@ impl Stream for GroupedHashAggregateStream {
                     // some memory reservation, so make some room for it.
                     self.clear_all();
                     let _ = self.update_memory_reservation();
+                    self.aggregate_stream_metrics.record(now);
                     return Poll::Ready(None);
                 }
             }
