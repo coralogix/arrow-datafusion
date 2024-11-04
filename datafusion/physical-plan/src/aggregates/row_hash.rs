@@ -64,6 +64,7 @@ struct AggregateStreamMetrics {
     wait_time: Time,
     input_rows: Count,
     input_bytes: Count,
+    output_bytes: Count,
 }
 
 impl AggregateStreamMetrics {
@@ -74,8 +75,9 @@ impl AggregateStreamMetrics {
             idle_time: MetricBuilder::new(metrics).subset_time("idle_time", partition),
             last_batch_at: Instant::now(),
             wait_time: MetricBuilder::new(metrics).subset_time("wait_time", partition),
-            input_rows: MetricBuilder::new(metrics).counter("inpuit_rows", partition),
+            input_rows: MetricBuilder::new(metrics).counter("input_rows", partition),
             input_bytes: MetricBuilder::new(metrics).counter("input_bytes", partition),
+            output_bytes: MetricBuilder::new(metrics).counter("output_bytes", partition),
         }
     }
 
@@ -86,9 +88,13 @@ impl AggregateStreamMetrics {
         self.processing_time.add_duration(started.elapsed());
     }
 
-    pub fn record_batch(&mut self, batch: &RecordBatch) {
+    pub fn record_input_batch(&mut self, batch: &RecordBatch) {
         self.input_rows.add(batch.num_rows());
         self.input_bytes.add(batch.get_array_memory_size());
+    }
+
+    pub fn record_output_batch(&mut self, batch: &RecordBatch) {
+        self.output_bytes.add(batch.get_array_memory_size());
     }
 }
 
@@ -473,7 +479,7 @@ impl Stream for GroupedHashAggregateStream {
                         // new batch to aggregate
                         Some(Ok(batch)) => {
                             let timer = elapsed_compute.timer();
-                            self.aggregate_stream_metrics.record_batch(&batch);
+                            self.aggregate_stream_metrics.record_input_batch(&batch);
                             // Make sure we have enough capacity for `batch`, otherwise spill
                             if let Err(e) = self.spill_previous_if_necessary(&batch) {
                                 self.aggregate_stream_metrics.record(now);
@@ -562,6 +568,8 @@ impl Stream for GroupedHashAggregateStream {
                         (ExecutionState::ProducingOutput(remaining), output)
                     };
                     self.aggregate_stream_metrics.record(now);
+                    self.aggregate_stream_metrics
+                        .record_output_batch(&output_batch);
                     return Poll::Ready(Some(Ok(
                         output_batch.record_output(&self.baseline_metrics)
                     )));
