@@ -135,11 +135,11 @@ fn plan_with_order_preserving_variants(
         return Ok(sort_input);
     } else if is_coalesce_partitions(&sort_input.plan) && is_spm_better {
         let child = &sort_input.children[0].plan;
-        if let Some(ordering) = child.output_ordering().map(Vec::from) {
+        if let Some(ordering) = child.output_ordering() {
             // When the input of a `CoalescePartitionsExec` has an ordering,
             // replace it with a `SortPreservingMergeExec` if appropriate:
             let spm = SortPreservingMergeExec::new(
-                LexOrdering::new(ordering),
+                LexOrdering::new(ordering.inner.clone()),
                 Arc::clone(child),
             )
             .with_fetch(fetch);
@@ -267,7 +267,12 @@ pub(crate) fn replace_with_order_preserving_variants(
     if alternate_plan
         .plan
         .equivalence_properties()
-        .ordering_satisfy(requirements.plan.output_ordering().unwrap_or_default())
+        .ordering_satisfy(
+            requirements
+                .plan
+                .output_ordering()
+                .unwrap_or(LexOrdering::empty()),
+        )
     {
         for child in alternate_plan.children.iter_mut() {
             child.data = false;

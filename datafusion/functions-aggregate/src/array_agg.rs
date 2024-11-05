@@ -146,7 +146,7 @@ impl AggregateUDFImpl for ArrayAgg {
         OrderSensitiveArrayAggAccumulator::try_new(
             &data_type,
             &ordering_dtypes,
-            LexOrdering::from_ref(acc_args.ordering_req),
+            acc_args.ordering_req.clone(),
             acc_args.is_reversed,
             ignore_nulls,
         )
