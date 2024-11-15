@@ -738,15 +738,14 @@ pub struct WindowExprNode {
     pub window_frame: ::core::option::Option<WindowFrame>,
     #[prost(bytes = "vec", optional, tag = "10")]
     pub fun_definition: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "window_expr_node::WindowFunction", tags = "2, 3, 9")]
+    #[prost(oneof = "window_expr_node::WindowFunction", tags = "3, 9")]
     pub window_function: ::core::option::Option<window_expr_node::WindowFunction>,
 }
 /// Nested message and enum types in `WindowExprNode`.
 pub mod window_expr_node {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum WindowFunction {
-        #[prost(enumeration = "super::BuiltInWindowFunction", tag = "2")]
-        BuiltInFunction(i32),
+        /// BuiltInWindowFunction built_in_function = 2;
         #[prost(string, tag = "3")]
         Udaf(::prost::alloc::string::String),
         #[prost(string, tag = "9")]
@@ -1261,7 +1260,7 @@ pub struct PhysicalWindowExprNode {
     pub name: ::prost::alloc::string::String,
     #[prost(bytes = "vec", optional, tag = "9")]
     pub fun_definition: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "physical_window_expr_node::WindowFunction", tags = "2, 3")]
+    #[prost(oneof = "physical_window_expr_node::WindowFunction", tags = "3")]
     pub window_function: ::core::option::Option<
         physical_window_expr_node::WindowFunction,
     >,
@@ -1270,8 +1269,7 @@ pub struct PhysicalWindowExprNode {
 pub mod physical_window_expr_node {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum WindowFunction {
-        #[prost(enumeration = "super::BuiltInWindowFunction", tag = "2")]
-        BuiltInFunction(i32),
+        /// BuiltInWindowFunction built_in_function = 2;
         #[prost(string, tag = "3")]
         UserDefinedAggrFunction(::prost::alloc::string::String),
     }
@@ -1810,30 +1808,6 @@ pub struct PartitionStats {
     pub num_bytes: i64,
     #[prost(message, repeated, tag = "4")]
     pub column_stats: ::prost::alloc::vec::Vec<super::datafusion_common::ColumnStats>,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum BuiltInWindowFunction {
-    /// <https://protobuf.dev/programming-guides/dos-donts/#unspecified-enum>
-    Unspecified = 0,
-}
-impl BuiltInWindowFunction {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "UNSPECIFIED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "UNSPECIFIED" => Some(Self::Unspecified),
-            _ => None,
-        }
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
