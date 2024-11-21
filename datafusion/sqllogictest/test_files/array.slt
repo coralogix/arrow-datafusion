@@ -1155,6 +1155,18 @@ select column1, column5 from arrays_values_without_nulls;
 [21, 22, 23, 24, 25, 26, 27, 28, 29, 30] [6, 7]
 [31, 32, 33, 34, 35, 26, 37, 38, 39, 40] [8, 9]
 
+# make array with arrays of different types
+query ?
+select make_array(make_array(1), arrow_cast(make_array(-1), 'LargeList(Int8)'))
+----
+[[1], [-1]]
+
+query T
+select arrow_typeof(make_array(make_array(1), arrow_cast(make_array(-1), 'LargeList(Int8)')));
+----
+List(Field { name: "item", data_type: LargeList(Field { name: "item", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
+
+
 query ???
 select make_array(column1),
        make_array(column1, column5),
@@ -1488,7 +1500,7 @@ select input, array_max(input) from (select make_array(d - 1, d, d + 1) input fr
 [9, 10, 11] 11
 [19, 20, 21] 21
 [29, 30, 31] 31
-[NULL, NULL, NULL] NULL
+[, , ] NULL
 
 query II
 select array_max(arrow_cast(make_array(1, 2, 3), 'FixedSizeList(3, Int64)')), array_max(arrow_cast(make_array(1), 'FixedSizeList(1, Int64)'));
@@ -1501,7 +1513,7 @@ select array_max(make_array());
 NULL
 
 # Testing with empty arguments should result in an error
-query error DataFusion error: Error during planning: 'array_max' does not support zero arguments
+query error DataFusion error: Error during planning: Error during planning: array_max does not support zero arguments.
 select array_max();
 
 ## array_pop_back (aliases: `list_pop_back`)
@@ -3033,13 +3045,13 @@ select array_concat(
 # Concatenating Mixed types
 query ?T
 select
-    array_concat([arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')], [arrow_cast('3', 'Utf8View')]),
-    arrow_typeof(array_concat([arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')], [arrow_cast('3', 'Utf8View')]));
+    array_concat([arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')], [arrow_cast('3', 'Utf8')]),
+    arrow_typeof(array_concat([arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')], [arrow_cast('3', 'Utf8')]));
 ----
-[1, 2, 3] List(Field { name: "item", data_type: Utf8View, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
+[1, 2, 3] List(Field { name: "item", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
 
 # array_concat error
-query error DataFusion error: Error during planning: Execution error: Function 'array_concat' user-defined coercion failed with "Error during planning: array_concat does not support type Int64"
+query error DataFusion error: Error during planning: Execution error: User-defined coercion failed with Plan\("array_concat does not support type Int64"\)
 select array_concat(1, 2);
 
 # array_concat scalar function #1
@@ -3350,10 +3362,10 @@ SELECT array_position(arrow_cast([1, 1, 100, 1, 1], 'LargeList(Int32)'), 100)
 ----
 3
 
-query error DataFusion error: Error during planning: Failed to coerce arguments to satisfy a call to 'array_position' function: coercion from
+query error DataFusion error: Error during planning: Error during planning: Coercion from
 SELECT array_position([1, 2, 3], 'foo')
 
-query error DataFusion error: Error during planning: Failed to coerce arguments to satisfy a call to 'array_position' function: coercion from
+query error DataFusion error: Error during planning: Error during planning: Coercion from
 SELECT array_position([1, 2, 3], 'foo', 2)
 
 # list_position scalar function #5 (function alias `array_position`)
@@ -4334,7 +4346,7 @@ select array_union([[null]], []);
 ----
 [[]]
 
-query error DataFusion error: Error during planning: Failed to coerce arguments to satisfy a call to 'array_union' function:
+query error DataFusion error: Error during planning: Error during planning: Coercion from
 select array_union(arrow_cast([[null]], 'LargeList(List(Int64))'), arrow_cast([], 'LargeList(Int64)'));
 
 # array_union scalar function #8
@@ -6915,8 +6927,8 @@ select make_array(f0) from fixed_size_list_array
 query T
 select arrow_typeof(make_array(f0)) from fixed_size_list_array
 ----
-List(Field { name: "item", data_type: List(Field { name: "item", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
-List(Field { name: "item", data_type: List(Field { name: "item", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
+List(Field { name: "item", data_type: FixedSizeList(Field { name: "item", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }, 2), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
+List(Field { name: "item", data_type: FixedSizeList(Field { name: "item", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }, 2), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })
 
 
 query ?

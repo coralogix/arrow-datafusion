@@ -24,10 +24,8 @@ use datafusion_common::cast::{as_large_list_array, as_list_array};
 use datafusion_common::utils::take_function_args;
 use datafusion_common::Result;
 use datafusion_common::{exec_err, plan_err, ScalarValue};
-use datafusion_doc::Documentation;
 use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
 use datafusion_functions_aggregate::min_max;
-use datafusion_macros::user_doc;
 use itertools::Itertools;
 use std::any::Any;
 
@@ -39,23 +37,6 @@ make_udf_expr_and_func!(
     array_max_udf
 );
 
-#[user_doc(
-    doc_section(label = "Array Functions"),
-    description = "Returns the maximum value in the array.",
-    syntax_example = "array_max(array)",
-    sql_example = r#"```sql
-> select array_max([3,1,4,2]);
-+-----------------------------------------+
-| array_max(List([3,1,4,2]))              |
-+-----------------------------------------+
-| 4                                       |
-+-----------------------------------------+
-```"#,
-    argument(
-        name = "array",
-        description = "Array expression. Can be a constant, column, or function, and any combination of array operators."
-    )
-)]
 #[derive(Debug)]
 pub struct ArrayMax {
     signature: Signature,
@@ -108,10 +89,6 @@ impl ScalarUDFImpl for ArrayMax {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
-    }
-
-    fn documentation(&self) -> Option<&Documentation> {
-        self.doc()
     }
 }
 

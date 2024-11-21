@@ -34,7 +34,7 @@ use datafusion_expr::binary::{
 };
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
-    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
 use crate::utils::make_scalar_function;
@@ -61,7 +61,10 @@ impl Default for MakeArray {
 impl MakeArray {
     pub fn new() -> Self {
         Self {
-            signature: Signature::user_defined(Volatility::Immutable),
+            signature: Signature::one_of(
+                vec![TypeSignature::UserDefined, TypeSignature::Any(0)],
+                Volatility::Immutable,
+            ),
             aliases: vec![String::from("make_list")],
         }
     }
