@@ -23,8 +23,6 @@
 //! pipeline-friendly ones. To achieve the second goal, it selects the proper
 //! `PartitionMode` and the build side using the available statistics for hash joins.
 
-use std::sync::Arc;
-
 use crate::config::ConfigOptions;
 use crate::error::Result;
 use crate::physical_optimizer::PhysicalOptimizerRule;
@@ -35,6 +33,8 @@ use crate::physical_plan::joins::{
 };
 use crate::physical_plan::projection::ProjectionExec;
 use crate::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use arrow_array::Array;
+use std::sync::Arc;
 
 use arrow_schema::Schema;
 use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -193,11 +193,12 @@ pub fn swap_hash_join(
         Ok(Arc::new(new_join))
     } else {
         // TODO avoid adding ProjectionExec again and again, only adding Final Projection
-        let proj = ProjectionExec::try_new(
-            swap_reverting_projection(&left.schema(), &right.schema()),
-            Arc::new(new_join),
-        )?;
-        Ok(Arc::new(proj))
+        // let proj = ProjectionExec::try_new(
+        //     swap_reverting_projection(&left.schema(), &right.schema(), hash_join.projection.as_ref()),
+        //     Arc::new(new_join),
+        // )?;
+        // Ok(Arc::new(proj))
+        Ok(Arc::new(new_join))
     }
 }
 
@@ -224,8 +225,11 @@ fn swap_nl_join(join: &NestedLoopJoinExec) -> Result<Arc<dyn ExecutionPlan>> {
     ) {
         Arc::new(new_join)
     } else {
-        let projection =
-            swap_reverting_projection(&join.left().schema(), &join.right().schema());
+        let projection = swap_reverting_projection(
+            &join.left().schema(),
+            &join.right().schema(),
+            None,
+        );
 
         Arc::new(ProjectionExec::try_new(projection, Arc::new(new_join))?)
     };
@@ -240,6 +244,7 @@ fn swap_nl_join(join: &NestedLoopJoinExec) -> Result<Arc<dyn ExecutionPlan>> {
 fn swap_reverting_projection(
     left_schema: &Schema,
     right_schema: &Schema,
+    _projection: Option<&Vec<usize>>,
 ) -> Vec<(Arc<dyn PhysicalExpr>, String)> {
     let right_cols = right_schema.fields().iter().enumerate().map(|(i, f)| {
         (
@@ -465,7 +470,7 @@ fn statistical_join_selection_subrule(
                 let new_join = CrossJoinExec::new(Arc::clone(right), Arc::clone(left));
                 // TODO avoid adding ProjectionExec again and again, only adding Final Projection
                 let proj: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
-                    swap_reverting_projection(&left.schema(), &right.schema()),
+                    swap_reverting_projection(&left.schema(), &right.schema(), None),
                     Arc::new(new_join),
                 )?);
                 Some(proj)
@@ -1296,7 +1301,7 @@ mod tests_statistical {
 
         let right_schema = Schema::new(vec![Field::new("c", DataType::Int32, false)]);
 
-        let proj = swap_reverting_projection(&left_schema, &right_schema);
+        let proj = swap_reverting_projection(&left_schema, &right_schema, None);
 
         assert_eq!(proj.len(), 3);
 
