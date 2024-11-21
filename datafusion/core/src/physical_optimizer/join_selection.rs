@@ -191,13 +191,18 @@ pub fn swap_hash_join(
             | JoinType::RightAnti
     ) {
         Ok(Arc::new(new_join))
-    } else {
+    } else if hash_join.projection.is_none() {
         // TODO avoid adding ProjectionExec again and again, only adding Final Projection
-        // let proj = ProjectionExec::try_new(
-        //     swap_reverting_projection(&left.schema(), &right.schema(), hash_join.projection.as_ref()),
-        //     Arc::new(new_join),
-        // )?;
-        // Ok(Arc::new(proj))
+        let proj = ProjectionExec::try_new(
+            swap_reverting_projection(
+                &left.schema(),
+                &right.schema(),
+                hash_join.projection.as_ref(),
+            ),
+            Arc::new(new_join),
+        )?;
+        Ok(Arc::new(proj))
+    } else {
         Ok(Arc::new(new_join))
     }
 }
