@@ -542,6 +542,7 @@ mod tests {
     use crate::physical_plan::collect;
     use crate::prelude::{CsvReadOptions, SessionConfig, SessionContext};
     use crate::test_util::arrow_test_data;
+    use std::iter::repeat;
 
     use arrow::compute::concat_batches;
     use arrow_array::StringArray;
@@ -553,13 +554,15 @@ mod tests {
     use datafusion_expr::{col, lit};
 
     use chrono::DateTime;
+    use datafusion_common::parsers::CompressionTypeVariant;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+    use object_store::aws::AmazonS3Builder;
+    use object_store::aws::Checksum;
     use object_store::local::LocalFileSystem;
     use object_store::path::Path;
     use regex::Regex;
     use rstest::*;
     use url::Url;
-    use datafusion_common::parsers::CompressionTypeVariant;
-    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 
     #[tokio::test]
     async fn write_multipart_csv_with_signature() {
@@ -568,18 +571,30 @@ mod tests {
         let session_ctx = SessionContext::new_with_config(config);
         let task_ctx = session_ctx.task_ctx();
 
+        let bucket = "cgx-production-c4c-archive-data";
+        let s3root = format!("s3://{bucket}");
+        let store = AmazonS3Builder::from_env()
+            .with_bucket_name(bucket)
+            .with_checksum_algorithm(Checksum::SHA256) // fails for large text
+            .build()
+            .unwrap();
+        let _ = session_ctx
+            .register_object_store(&Url::parse(&s3root).unwrap(), Arc::new(store));
+
         // setup sink
-        let str = "s3://eu-west-1_cgx-production-c4c-archive-data/cx/exports/team_id=555585/file9.csv";
-        let url = Url::parse(str).unwrap();
+        let str = format!("{s3root}/cx/exports/team_id=555585/file9.csv");
+        let url = Url::parse(&str).unwrap();
         let table = ListingTableUrl::parse(str).unwrap();
         let cfg = FileSinkConfig {
             object_store_url: url,
             file_groups: vec![],
             table_paths: vec![table],
             output_schema: Arc::new(Schema {
-                fields: Fields::from(vec![
-                    Field::new("applicationname", DataType::Utf8, true),
-                ]),
+                fields: Fields::from(vec![Field::new(
+                    "applicationname",
+                    DataType::Utf8,
+                    true,
+                )]),
                 metadata: Default::default(),
             }),
             table_partition_cols: vec![],
@@ -587,19 +602,19 @@ mod tests {
         };
         let opts = CsvWriterOptions {
             writer_options: Default::default(),
-            compression: CompressionTypeVariant::UNCOMPRESSED
+            compression: CompressionTypeVariant::UNCOMPRESSED,
         };
         let sink = CsvSink::new(cfg, opts);
 
         // Generate data
-        let id_array = StringArray::from(vec!["hello", "world"]);
-        let schema = Schema::new(vec![
-            Field::new("applicationname", DataType::Utf8, false)
-        ]);
-        let batch = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![Arc::new(id_array)]
-        ).unwrap();
+        let text = "Hello, World!".to_string();
+        let row_count = 1_000_000;
+        let values: Vec<String> = repeat(text).take(row_count).collect();
+        let id_array = StringArray::from(values);
+        let schema =
+            Schema::new(vec![Field::new("applicationname", DataType::Utf8, false)]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(id_array)]).unwrap();
         let schema = batch.schema();
         let batches = Box::pin(RecordBatchStreamAdapter::new(
             schema.clone(),
@@ -607,8 +622,8 @@ mod tests {
         )) as SendableRecordBatchStream;
 
         // write the data
-        let res = sink.write_all(batches, &task_ctx).await.unwrap();
-        assert_eq!(res, 0);
+        let num_rows = sink.write_all(batches, &task_ctx).await.unwrap();
+        assert_eq!(num_rows, row_count);
     }
 
     #[tokio::test]
