@@ -23,8 +23,6 @@
 //! pipeline-friendly ones. To achieve the second goal, it selects the proper
 //! `PartitionMode` and the build side using the available statistics for hash joins.
 
-use std::sync::Arc;
-
 use crate::config::ConfigOptions;
 use crate::error::Result;
 use crate::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
@@ -34,6 +32,7 @@ use crate::physical_plan::joins::{
 };
 use crate::physical_plan::projection::ProjectionExec;
 use crate::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use std::sync::Arc;
 
 use arrow_schema::Schema;
 use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -1197,6 +1196,65 @@ mod tests_statistical {
     }
 
     #[rstest(
+        join_type, projection, small_on_right,
+        case::inner(JoinType::Inner, vec![1], true),
+        case::left(JoinType::Left, vec![1], true),
+        case::right(JoinType::Right, vec![1], true),
+        case::full(JoinType::Full, vec![1], true),
+        case::left_anti(JoinType::LeftAnti, vec![0], false),
+        case::left_semi(JoinType::LeftSemi, vec![0], false),
+        case::right_anti(JoinType::RightAnti, vec![0], true),
+        case::right_semi(JoinType::RightSemi, vec![0], true),
+    )]
+    #[tokio::test]
+    async fn test_hash_join_swap_on_joins_with_projections(
+        join_type: JoinType,
+        projection: Vec<usize>,
+        small_on_right: bool,
+    ) -> Result<()> {
+        let (big, small) = create_big_and_small();
+
+        let left = if small_on_right { &big } else { &small };
+        let right = if small_on_right { &small } else { &big };
+
+        let left_on = if small_on_right {
+            "big_col"
+        } else {
+            "small_col"
+        };
+        let right_on = if small_on_right {
+            "small_col"
+        } else {
+            "big_col"
+        };
+
+        let join = Arc::new(HashJoinExec::try_new(
+            Arc::clone(left),
+            Arc::clone(right),
+            vec![(
+                Arc::new(Column::new_with_schema(left_on, &left.schema())?),
+                Arc::new(Column::new_with_schema(right_on, &right.schema())?),
+            )],
+            None,
+            &join_type,
+            Some(projection),
+            PartitionMode::Partitioned,
+            false,
+        )?);
+
+        let swapped = swap_hash_join(&join.clone(), PartitionMode::Partitioned)
+            .expect("swap_hash_join must support joins with projections");
+        let swapped_join = swapped.as_any().downcast_ref::<HashJoinExec>().expect(
+            "ProjectionExec won't be added above if HashJoinExec contains embedded projection",
+        );
+
+        assert_eq!(swapped_join.projection, Some(vec![0_usize]));
+        assert_eq!(swapped.schema().fields.len(), 1);
+        assert_eq!(swapped.schema().fields[0].name(), "small_col");
+        Ok(())
+    }
+
+    #[rstest(
         join_type,
         case::inner(JoinType::Inner),
         case::left(JoinType::Left),
@@ -1323,65 +1381,6 @@ mod tests_statistical {
             swapped_join.right().statistics().unwrap().total_byte_size,
             Precision::Inexact(2097152)
         );
-    }
-
-    #[rstest(
-        join_type, projection, small_on_right,
-        case::inner(JoinType::Inner, vec![1], true),
-        case::left(JoinType::Left, vec![1], true),
-        case::right(JoinType::Right, vec![1], true),
-        case::full(JoinType::Full, vec![1], true),
-        case::left_anti(JoinType::LeftAnti, vec![0], false),
-        case::left_semi(JoinType::LeftSemi, vec![0], false),
-        case::right_anti(JoinType::RightAnti, vec![0], true),
-        case::right_semi(JoinType::RightSemi, vec![0], true),
-    )]
-    #[tokio::test]
-    async fn test_hash_join_swap_on_joins_with_projections(
-        join_type: JoinType,
-        projection: Vec<usize>,
-        small_on_right: bool,
-    ) -> Result<()> {
-        let (big, small) = create_big_and_small();
-
-        let left = if small_on_right { &big } else { &small };
-        let right = if small_on_right { &small } else { &big };
-
-        let left_on = if small_on_right {
-            "big_col"
-        } else {
-            "small_col"
-        };
-        let right_on = if small_on_right {
-            "small_col"
-        } else {
-            "big_col"
-        };
-
-        let join = Arc::new(HashJoinExec::try_new(
-            Arc::clone(left),
-            Arc::clone(right),
-            vec![(
-                Arc::new(Column::new_with_schema(left_on, &left.schema())?),
-                Arc::new(Column::new_with_schema(right_on, &right.schema())?),
-            )],
-            None,
-            &join_type,
-            Some(projection),
-            PartitionMode::Partitioned,
-            false,
-        )?);
-
-        let swapped = swap_hash_join(&join.clone(), PartitionMode::Partitioned)
-            .expect("swap_hash_join must support joins with projections");
-        let swapped_join = swapped.as_any().downcast_ref::<HashJoinExec>().expect(
-            "ProjectionExec won't be added above if HashJoinExec contains embedded projection",
-        );
-
-        assert_eq!(swapped_join.projection, Some(vec![0_usize]));
-        assert_eq!(swapped.schema().fields.len(), 1);
-        assert_eq!(swapped.schema().fields[0].name(), "small_col");
-        Ok(())
     }
 
     #[tokio::test]
