@@ -538,12 +538,13 @@ mod tests {
     use crate::assert_batches_eq;
     use crate::datasource::file_format::file_compression_type::FileCompressionType;
     use crate::datasource::file_format::test_util::VariableStream;
-    use crate::datasource::listing::ListingOptions;
+    use crate::datasource::listing::{ListingOptions, ListingTableUrl};
     use crate::physical_plan::collect;
     use crate::prelude::{CsvReadOptions, SessionConfig, SessionContext};
     use crate::test_util::arrow_test_data;
 
     use arrow::compute::concat_batches;
+    use arrow_array::StringArray;
     use datafusion_common::cast::as_string_array;
     use datafusion_common::internal_err;
     use datafusion_common::stats::Precision;
@@ -556,6 +557,59 @@ mod tests {
     use object_store::path::Path;
     use regex::Regex;
     use rstest::*;
+    use url::Url;
+    use datafusion_common::parsers::CompressionTypeVariant;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+
+    #[tokio::test]
+    async fn write_multipart_csv_with_signature() {
+        // setup session
+        let config = SessionConfig::new().with_batch_size(2);
+        let session_ctx = SessionContext::new_with_config(config);
+        let task_ctx = session_ctx.task_ctx();
+
+        // setup sink
+        let str = "s3://eu-west-1_cgx-production-c4c-archive-data/cx/exports/team_id=555585/file9.csv";
+        let url = Url::parse(str).unwrap();
+        let table = ListingTableUrl::parse(str).unwrap();
+        let cfg = FileSinkConfig {
+            object_store_url: url,
+            file_groups: vec![],
+            table_paths: vec![table],
+            output_schema: Arc::new(Schema {
+                fields: Fields::from(vec![
+                    Field::new("applicationname", DataType::Utf8, true),
+                ]),
+                metadata: Default::default(),
+            }),
+            table_partition_cols: vec![],
+            overwrite: false,
+        };
+        let opts = CsvWriterOptions {
+            writer_options: Default::default(),
+            compression: CompressionTypeVariant::UNCOMPRESSED
+        };
+        let sink = CsvSink::new(cfg, opts);
+
+        // Generate data
+        let id_array = StringArray::from(vec!["hello", "world"]);
+        let schema = Schema::new(vec![
+            Field::new("applicationname", DataType::Utf8, false)
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(id_array)]
+        ).unwrap();
+        let schema = batch.schema();
+        let batches = Box::pin(RecordBatchStreamAdapter::new(
+            schema.clone(),
+            futures::stream::once(async { Ok(batch) }),
+        )) as SendableRecordBatchStream;
+
+        // write the data
+        let res = sink.write_all(batches, &task_ctx).await.unwrap();
+        assert_eq!(res, 0);
+    }
 
     #[tokio::test]
     async fn read_small_batches() -> Result<()> {
