@@ -205,7 +205,6 @@ pub fn swap_hash_join(
     {
         Ok(Arc::new(new_join))
     } else {
-        println!("{:?}", hash_join.projection);
         // TODO avoid adding ProjectionExec again and again, only adding Final Projection
         let proj = ProjectionExec::try_new(
             swap_reverting_projection(&left.schema(), &right.schema()),
