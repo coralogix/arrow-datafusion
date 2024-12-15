@@ -15,8 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::util::pretty::pretty_format_batches;
 use super::*;
 use datafusion::scalar::ScalarValue;
+
+#[tokio::test]
+async fn parquet_agg_oom() -> Result<()> {
+    let ctx = SessionContext::new();
+    let testdata = datafusion::test_util::arrow_test_data();
+    let schema = test_util::aggr_test_schema();
+    ctx.register_csv(
+        "aggregate_test_100",
+        &format!("{testdata}/csv/aggregate_test_100.csv"),
+        CsvReadOptions::new().schema(&schema),
+    )
+        .await?;
+
+    let sql = "SELECT c1, c2 FROM aggregate_test_100 order by c1 limit 1";
+    let actual = execute_to_batches(&ctx, sql).await;
+    let actual = format!("{}", pretty_format_batches(actual.as_slice()).unwrap());
+    let expected = r#"
++----+----+
+| c1 | c2 |
++----+----+
+| a  | 1  |
++----+----+
+    "#.trim();
+
+    assert_eq!(actual, expected);
+
+    Ok(())
+}
 
 #[tokio::test]
 async fn csv_query_array_agg_distinct() -> Result<()> {
