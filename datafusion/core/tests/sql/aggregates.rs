@@ -17,10 +17,20 @@
 
 use super::*;
 use datafusion::scalar::ScalarValue;
+use datafusion_execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 
 #[tokio::test]
 async fn parquet_agg_oom() -> Result<()> {
-    let ctx = SessionContext::new();
+    let memory_limit = 7_000_000;
+    let MEMORY_FRACTION = 1.0;
+    let rt_config = RuntimeConfig::new()
+        .with_memory_limit(memory_limit, MEMORY_FRACTION);
+
+    let runtime = RuntimeEnv::new(rt_config).unwrap();
+
+    // Configure execution
+    let config = SessionConfig::new();
+    let ctx = SessionContext::new_with_config_rt(config, Arc::new(runtime));
     ctx.register_parquet(
         "agg_oom",
         &format!("/Users/bgardner/Downloads/fffe1163-1dcb-4b83-9b29-ab1a1fbe9e0c.parquet"),
@@ -46,23 +56,35 @@ from (
     group by truncated_time, k8s_deployment_name, message
 ) group by truncated_time
 "#;
+//     let sql = r#"
+// SELECT
+//     fs__event_metadata__priorityclass__paxotxj5r733hqnv2mtnyec2twekis3z AS priorityclass,
+//     fs__event_metadata__timestamp__uwqbxd5fgh5k2vtdact65xx5chcnah66 AS timestamp,
+//     date_trunc('day', fs__event_metadata__timestamp__uwqbxd5fgh5k2vtdact65xx5chcnah66) AS truncated_time,
+//     fs__user_data__resource__sep__attributes__sep__k8s_deployment_name__qkthsul42nc677ot3oujq3ypey3tqnyc AS k8s_deployment_name,
+//     fs__user_data__message__n6nzv46nn2fyu46czxhng77j6wjcnyt5 as message
+// FROM agg_oom
+// where fs__event_metadata__priorityclass__paxotxj5r733hqnv2mtnyec2twekis3z != 'low'
+//     "#;
     let batches = execute_to_batches(&ctx, sql).await;
     println!("batches={}", batches.len());
-    let batch = batches.get(0).unwrap();
-    for field in batch.schema().fields.iter() {
-        println!("field={:?}", field);
-    }
+    // let batch = batches.get(0).unwrap();
+    // for field in batch.schema().fields.iter() {
+    //     println!("field={:?}", field);
+    // }
 
     // let mut max_len = 0;
+    // let mut total_bytes = 0;
     // for batch in batches.iter() {
     //     println!("rows={}", batch.num_rows());
     //     let col = batch.column_by_name("message").unwrap();
     //     let strs = col.as_any().downcast_ref::<StringArray>();
     //     for str in strs.iter() {
+    //         total_bytes += str.len();
     //         max_len = usize::max(max_len, str.len());
     //     }
     // }
-    // println!("max_len={max_len}");
+    // println!("max_len={max_len} total_bytes={total_bytes}"); // 190kb
 
     use arrow::util::pretty::print_batches;
     print_batches(batches.as_slice()).unwrap();
