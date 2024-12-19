@@ -846,10 +846,13 @@ pub fn apply_operator(op: &Operator, lhs: &Interval, rhs: &Interval) -> Result<I
         Operator::Multiply => lhs.mul(rhs),
         Operator::Divide => lhs.div(rhs),
         Operator::IsDistinctFrom | Operator::IsNotDistinctFrom => {
-            let nullable_interval = NullableInterval::from(lhs).apply_operator(op, &NullableInterval::from(rhs));
-            nullable_interval.and_then(|x|x.values()
-                .cloned()
-                .ok_or(DataFusionError::Internal("Unexpected null value interval".to_string())))
+            let nullable_interval = NullableInterval::from(lhs)
+                .apply_operator(op, &NullableInterval::from(rhs));
+            nullable_interval.and_then(|x| {
+                x.values().cloned().ok_or(DataFusionError::Internal(
+                    "Unexpected null value interval".to_string(),
+                ))
+            })
         }
         _ => internal_err!("Interval arithmetic does not support the operator {op}"),
     }
@@ -1581,7 +1584,9 @@ impl From<&Interval> for NullableInterval {
                 datatype: value.data_type(),
             }
         } else {
-            Self::MaybeNull { values: value.clone() }
+            Self::MaybeNull {
+                values: value.clone(),
+            }
         }
     }
 }
