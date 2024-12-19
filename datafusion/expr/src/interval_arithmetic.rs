@@ -28,7 +28,7 @@ use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::DataType;
 use arrow::datatypes::{IntervalUnit, TimeUnit};
 use datafusion_common::rounding::{alter_fp_rounding_mode, next_down, next_up};
-use datafusion_common::{internal_err, Result, ScalarValue};
+use datafusion_common::{internal_err, DataFusionError, Result, ScalarValue};
 
 macro_rules! get_extreme_value {
     ($extreme:ident, $value:expr) => {
@@ -845,6 +845,12 @@ pub fn apply_operator(op: &Operator, lhs: &Interval, rhs: &Interval) -> Result<I
         Operator::Minus => lhs.sub(rhs),
         Operator::Multiply => lhs.mul(rhs),
         Operator::Divide => lhs.div(rhs),
+        Operator::IsDistinctFrom | Operator::IsNotDistinctFrom => {
+            let nullable_interval = NullableInterval::from(lhs).apply_operator(op, &NullableInterval::from(rhs));
+            nullable_interval.and_then(|x|x.values()
+                .cloned()
+                .ok_or(DataFusionError::Internal("Unexpected null value interval".to_string())))
+        }
         _ => internal_err!("Interval arithmetic does not support the operator {op}"),
     }
 }
@@ -1564,6 +1570,18 @@ impl Display for NullableInterval {
                 write!(f, "NullableInterval: {} U {{NULL}}", values)
             }
             Self::NotNull { values } => write!(f, "NullableInterval: {}", values),
+        }
+    }
+}
+
+impl From<&Interval> for NullableInterval {
+    fn from(value: &Interval) -> Self {
+        if value.lower().is_null() && value.upper().is_null() {
+            Self::Null {
+                datatype: value.data_type(),
+            }
+        } else {
+            Self::MaybeNull { values: value.clone() }
         }
     }
 }
