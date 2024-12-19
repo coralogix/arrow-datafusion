@@ -635,6 +635,7 @@ impl GroupedHashAggregateStream {
         for group_values in &group_by_values {
             // calculate the group indices for each input row
             let starting_num_groups = self.group_values.len();
+            self.reservation.try_resize(self.reservation.size() * 2)?;
             self.group_values
                 .intern(group_values, &mut self.current_group_indices)?;
             let group_indices = &self.current_group_indices;
