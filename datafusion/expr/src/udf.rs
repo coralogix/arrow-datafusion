@@ -686,4 +686,13 @@ impl ScalarUDFImpl for ScalarUdfLegacyWrapper {
     fn aliases(&self) -> &[String] {
         &[]
     }
+
+    fn evaluate_bounds(&self, input: &[&Interval]) -> Result<Interval> {
+        let arg_types = input
+            .iter()
+            .map(|i| i.data_type())
+            .collect::<Vec<DataType>>();
+        let return_type = self.return_type(&arg_types)?;
+        Interval::make_unbounded(&return_type)
+    }
 }
