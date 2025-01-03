@@ -478,9 +478,10 @@ pub trait ScalarUDFImpl: Debug + Send + Sync {
     ///
     /// If the function is `ABS(a)`, and the input interval is `a: [-3, 2]`,
     /// then the output interval would be `[0, 3]`.
-    fn evaluate_bounds(&self, _input: &[&Interval]) -> Result<Interval> {
-        // We cannot assume the input datatype is the same of output type.
-        Interval::make_unbounded(&DataType::Null)
+    fn evaluate_bounds(&self, input: &[&Interval]) -> Result<Interval> {
+        let input_data_types: &[DataType] = input.iter().map(|i| i.data_type()).collect();
+        let return_type = self.return_type(input_data_types)?;
+        Interval::make_unbounded(&return_type)
     }
 
     /// Updates bounds for child expressions, given a known interval for this
@@ -685,14 +686,5 @@ impl ScalarUDFImpl for ScalarUdfLegacyWrapper {
 
     fn aliases(&self) -> &[String] {
         &[]
-    }
-
-    fn evaluate_bounds(&self, input: &[&Interval]) -> Result<Interval> {
-        let arg_types = input
-            .iter()
-            .map(|i| i.data_type())
-            .collect::<Vec<DataType>>();
-        let return_type = self.return_type(&arg_types)?;
-        Interval::make_unbounded(&return_type)
     }
 }
