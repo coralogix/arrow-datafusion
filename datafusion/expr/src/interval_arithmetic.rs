@@ -289,10 +289,14 @@ impl Interval {
             DataType::Float32 => handle_float_intervals!(Float32, f32, lower, upper),
             DataType::Float64 => handle_float_intervals!(Float64, f64, lower, upper),
             // Lower bounds of unsigned integer null values are set to zero:
-            // DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 if lower.is_null() => Self {
-            //     lower: ScalarValue::new_zero(&lower.data_type()).unwrap(),
-            //     upper,
-            // },
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64
+                if lower.is_null() =>
+            {
+                Self {
+                    lower: ScalarValue::new_zero(&lower.data_type()).unwrap(),
+                    upper,
+                }
+            }
             // Other data types do not require standardization:
             _ => Self { lower, upper },
         }
@@ -2556,7 +2560,7 @@ mod tests {
             (
                 Interval::make(None, Some(2000_u64))?,
                 Interval::make(Some(500_u64), None)?,
-                Interval::make(Some(500_u64), Some(2000_u64))?,
+                Interval::make(Some(0_u64), Some(2000_u64))?,
             ),
             (
                 Interval::make(Some(0_u64), Some(0_u64))?,
@@ -2585,12 +2589,7 @@ mod tests {
             ),
         ];
         for (first, second, expected) in possible_cases {
-            let union = first.union(second.clone())?.unwrap();
-            println!(
-                "\nleft:{:?} right:{:?} \nunion: {} expected:{:?}",
-                first, second, &union, expected
-            );
-            assert_eq!(union, expected)
+            assert_eq!(first.union(second.clone())?.unwrap(), expected)
         }
 
         Ok(())
