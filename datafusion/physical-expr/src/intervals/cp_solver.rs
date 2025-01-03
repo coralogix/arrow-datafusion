@@ -314,12 +314,14 @@ pub fn propagate_comparison(
 ) -> Result<Option<(Interval, Interval)>> {
     if parent == &Interval::CERTAINLY_TRUE {
         match op {
-            Operator::Eq | Operator::IsNotDistinctFrom => left_child.intersect(right_child).map(|result| {
-                result.map(|intersection| (intersection.clone(), intersection))
-            }),
-            Operator::NotEq | Operator::IsDistinctFrom => left_child.union(right_child).map(|result| {
-                result.map(|unin| (unin.clone(), unin))
-            }),
+            Operator::Eq | Operator::IsNotDistinctFrom => {
+                left_child.intersect(right_child).map(|result| {
+                    result.map(|intersection| (intersection.clone(), intersection))
+                })
+            }
+            Operator::NotEq | Operator::IsDistinctFrom => left_child
+                .union(right_child)
+                .map(|result| result.map(|unin| (unin.clone(), unin))),
             Operator::Gt => satisfy_greater(left_child, right_child, true),
             Operator::GtEq => satisfy_greater(left_child, right_child, false),
             Operator::Lt => satisfy_greater(right_child, left_child, true)
@@ -332,7 +334,10 @@ pub fn propagate_comparison(
         }
     } else if parent == &Interval::CERTAINLY_FALSE {
         match op {
-            Operator::Eq | Operator::IsNotDistinctFrom | Operator::NotEq | Operator::IsDistinctFrom => {
+            Operator::Eq
+            | Operator::IsNotDistinctFrom
+            | Operator::NotEq
+            | Operator::IsDistinctFrom => {
                 // TODO: Propagation is not possible until we support interval sets.
                 Ok(None)
             }

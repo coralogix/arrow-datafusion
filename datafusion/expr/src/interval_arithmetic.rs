@@ -871,10 +871,10 @@ pub fn apply_operator(op: &Operator, lhs: &Interval, rhs: &Interval) -> Result<I
             NullableInterval::from(lhs)
                 .apply_operator(op, &NullableInterval::from(rhs))
                 .and_then(|x| {
-                x.values().cloned().ok_or(DataFusionError::Internal(
-                    "Unexpected null value interval".to_string(),
-                ))
-            })
+                    x.values().cloned().ok_or(DataFusionError::Internal(
+                        "Unexpected null value interval".to_string(),
+                    ))
+                })
         }
         _ => internal_err!("Interval arithmetic does not support the operator {op}"),
     }
@@ -1218,7 +1218,7 @@ pub fn satisfy_greater(
             // Right-hand side: <------------0--======---->
             // No intersection, infeasible to propagate:
             Ok(None)
-        }
+        };
     }
 
     // Only the lower bound of left hand side and the upper bound of the right
@@ -2586,7 +2586,10 @@ mod tests {
         ];
         for (first, second, expected) in possible_cases {
             let union = first.union(second.clone())?.unwrap();
-            println!("\nleft:{:?} right:{:?} \nunion: {} expected:{:?}", first, second, &union, expected);
+            println!(
+                "\nleft:{:?} right:{:?} \nunion: {} expected:{:?}",
+                first, second, &union, expected
+            );
             assert_eq!(union, expected)
         }
 
