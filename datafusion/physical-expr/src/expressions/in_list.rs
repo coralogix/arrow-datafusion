@@ -42,6 +42,7 @@ use datafusion_common::{exec_err, internal_err, not_impl_err, Result, ScalarValu
 use datafusion_expr::ColumnarValue;
 
 use ahash::RandomState;
+use datafusion_expr::interval_arithmetic::Interval;
 use hashbrown::hash_map::RawEntryMut;
 use hashbrown::HashMap;
 
@@ -400,6 +401,33 @@ impl PhysicalExpr for InListExpr {
         self.negated.hash(&mut s);
         self.list.hash(&mut s);
         // Add `self.static_filter` when hash is available
+    }
+
+    /// Computes the output interval for the `InListExpr` expression,
+    /// given the input intervals.
+    ///
+    /// ```text
+    /// Full interval range of expr: ....---------------------....
+    /// Some list items:             .....|.......|.....|.|.......
+    /// New interval range:          .....|---------------|.......
+    /// ```
+    ///
+    /// If `negated` is true, the expr's interval range is returned.
+    fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {
+        // children[0]: expr bounds
+        // children[1..]: list item bounds
+        let expr_bounds = children[0];
+        if self.negated {
+            return Ok(expr_bounds.clone());
+        }
+
+        let list_bound = children[1..]
+            .iter()
+            .try_fold(Some(children[1].clone()), |acc, item| {
+                acc.expect("children[1] must not be absent").union(*item)
+            })?;
+
+        Ok(list_bound.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?))
     }
 }
 

@@ -922,7 +922,14 @@ fn sub_bounds<const UPPER: bool>(
     rhs: &ScalarValue,
 ) -> ScalarValue {
     if lhs.is_null() || rhs.is_null() {
-        return ScalarValue::try_from(dt).unwrap();
+        return Interval::make_unbounded(dt).unwrap().lower;
+        // return ScalarValue::try_from(dt).unwrap();
+        // } else if lhs.is_null() && dt.is_unsigned_integer() {
+        //     // null values for lower bounds are set to zero:
+        //     let sanitized_lower = ScalarValue::new_zero(dt).unwrap();
+        //     return sub_bounds::<UPPER>(dt, &sanitized_lower, rhs);
+        // } else if rhs.is_null() {
+        //     return sub_bounds::<UPPER>(dt, lhs, &ScalarValue::new_zero(dt).unwrap());
     }
 
     match dt {
@@ -1032,14 +1039,14 @@ fn handle_overflow<const UPPER: bool>(
     }
 }
 
-// This function should remain private since it may corrupt the an interval if
+// This function should remain private since it may corrupt an interval if
 // used without caution.
 fn next_value(value: ScalarValue) -> ScalarValue {
     use ScalarValue::*;
     value_transition!(MAX, true, value)
 }
 
-// This function should remain private since it may corrupt the an interval if
+// This function should remain private since it may corrupt an interval if
 // used without caution.
 fn prev_value(value: ScalarValue) -> ScalarValue {
     use ScalarValue::*;
@@ -1049,10 +1056,10 @@ fn prev_value(value: ScalarValue) -> ScalarValue {
 trait OneTrait: Sized + std::ops::Add + std::ops::Sub {
     fn one() -> Self;
 }
-macro_rules! impl_OneTrait{
+macro_rules! impl_one_trait {
     ($($m:ty),*) => {$( impl OneTrait for $m  { fn one() -> Self { 1 as $m } })*}
 }
-impl_OneTrait! {u8, u16, u32, u64, i8, i16, i32, i64, i128}
+impl_one_trait! {u8, u16, u32, u64, i8, i16, i32, i64, i128}
 
 impl OneTrait for IntervalDayTime {
     fn one() -> Self {
