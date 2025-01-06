@@ -409,7 +409,7 @@ impl PhysicalExpr for InListExpr {
     /// ```text
     /// Full interval range of expr: ....---------------------....
     /// Some list items:             .....|.......|.....|.|.......
-    /// New interval range:          .....|---------------|.......
+    /// New interval range:          .....-----------------.......
     /// ```
     ///
     /// If `negated` is true, the expr's interval range is returned.
@@ -427,7 +427,9 @@ impl PhysicalExpr for InListExpr {
                 acc.expect("children[1] must not be absent").union(*item)
             })?;
 
-        Ok(list_bound.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?))
+        let _input_interval = list_bound.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?);
+
+        Interval::try_new(ScalarValue::Boolean(Some(false)), ScalarValue::Boolean(Some(true)))
     }
 }
 
