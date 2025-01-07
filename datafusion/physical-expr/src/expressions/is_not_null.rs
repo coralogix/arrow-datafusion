@@ -29,6 +29,7 @@ use arrow::{
 use datafusion_common::Result;
 use datafusion_common::ScalarValue;
 use datafusion_expr::ColumnarValue;
+use datafusion_expr::interval_arithmetic::Interval;
 
 /// IS NOT NULL expression
 #[derive(Debug, Hash)]
@@ -96,6 +97,17 @@ impl PhysicalExpr for IsNotNullExpr {
     fn dyn_hash(&self, state: &mut dyn Hasher) {
         let mut s = state;
         self.hash(&mut s);
+    }
+
+    fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {
+        let inner = children[0];
+        Ok(if inner.is_null() {
+            Interval::CERTAINLY_FALSE
+        } else if inner.lower().is_null() || inner.upper().is_null() {
+            Interval::UNCERTAIN
+        } else {
+            Interval::CERTAINLY_TRUE
+        })
     }
 }
 

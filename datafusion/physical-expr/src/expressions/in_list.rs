@@ -414,22 +414,26 @@ impl PhysicalExpr for InListExpr {
     ///
     /// If `negated` is true, the expr's interval range is returned.
     fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {
-        // children[0]: expr bounds
-        // children[1..]: list item bounds
         let expr_bounds = children[0];
-        if self.negated {
-            return Ok(expr_bounds.clone());
+
+        let mut list_bound = children[1].clone();
+        if children.len() > 2 {
+            list_bound = children[2..]
+                .iter()
+                .try_fold(Some(list_bound), |acc, item| {
+                    if let Some(acc) = acc {
+                        acc.union(*item)
+                    } else {
+                        Some(Interval::make_unbounded(&expr_bounds.data_type())).transpose()
+                    }
+                })?.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?);
         }
 
-        let list_bound = children[1..]
-            .iter()
-            .try_fold(Some(children[1].clone()), |acc, item| {
-                acc.expect("children[1] must not be absent").union(*item)
-            })?;
-
-        let _input_interval = list_bound.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?);
-
-        Interval::try_new(ScalarValue::Boolean(Some(false)), ScalarValue::Boolean(Some(true)))
+        if self.negated {
+            expr_bounds.contains(list_bound)?.boolean_negate()
+        } else {
+            expr_bounds.contains(list_bound)
+        }
     }
 }
 

@@ -584,7 +584,7 @@ impl Interval {
         // New lower and upper bounds must always construct a valid interval.
         assert!(
             lower.is_null() || upper.is_null() || (lower <= upper),
-            "The intersection of two intervals can not be an invalid interval"
+            "The union of two intervals can not be an invalid interval"
         );
 
         Ok(Some(Self { lower, upper }))
@@ -847,6 +847,17 @@ impl Interval {
         Ok(Self {
             lower: self.upper().clone().arithmetic_negate()?,
             upper: self.lower().clone().arithmetic_negate()?,
+        })
+    }
+
+    pub fn boolean_negate(self) -> Result<Self> {
+        if self.data_type() != DataType::Boolean {
+            return internal_err!("Boolean negation is only supported for boolean intervals");
+        }
+
+        Ok(Self {
+            lower: self.lower().clone().boolean_negate()?,
+            upper: self.upper().clone().boolean_negate()?,
         })
     }
 }
