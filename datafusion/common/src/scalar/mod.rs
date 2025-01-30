@@ -1210,9 +1210,9 @@ impl ScalarValue {
         match self {
             ScalarValue::Boolean(None) => Ok(self.clone()),
             ScalarValue::Boolean(Some(value)) => Ok(ScalarValue::Boolean(Some(!value))),
-            value => _internal_err!(
-                    "Can not run boolean negative on scalar value {value:?}"
-                ),
+            value => {
+                _internal_err!("Can not run boolean negative on scalar value {value:?}")
+            }
         }
     }
 

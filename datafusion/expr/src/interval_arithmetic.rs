@@ -852,7 +852,9 @@ impl Interval {
 
     pub fn boolean_negate(self) -> Result<Self> {
         if self.data_type() != DataType::Boolean {
-            return internal_err!("Boolean negation is only supported for boolean intervals");
+            return internal_err!(
+                "Boolean negation is only supported for boolean intervals"
+            );
         }
 
         Ok(Self {
@@ -1863,8 +1865,10 @@ mod tests {
 
     use arrow::datatypes::DataType;
     use arrow_buffer::IntervalDayTime as ArrowIntervalDayTime;
+    use datafusion_common::ScalarValue::{
+        Date32, DurationSecond, IntervalDayTime, IntervalYearMonth, TimestampSecond,
+    };
     use datafusion_common::{Result, ScalarValue};
-    use datafusion_common::ScalarValue::{Date32, DurationSecond, IntervalDayTime, IntervalYearMonth, TimestampSecond};
 
     #[test]
     fn test_next_prev_value() -> Result<()> {
@@ -2087,15 +2091,30 @@ mod tests {
             ),
             (
                 Interval::new(ScalarValue::Date64(Some(1)), ScalarValue::Date64(Some(1))),
-                Interval::new(ScalarValue::Date64(Some(-1)), ScalarValue::Date64(Some(-1))),
+                Interval::new(
+                    ScalarValue::Date64(Some(-1)),
+                    ScalarValue::Date64(Some(-1)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(-10), None), ScalarValue::TimestampSecond(Some(-1), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(-10), None),
+                    ScalarValue::TimestampSecond(Some(-1), None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(1)), ScalarValue::DurationSecond(Some(10))),
-                Interval::new(ScalarValue::DurationSecond(Some(-10)), ScalarValue::DurationSecond(Some(-1))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(1)),
+                    ScalarValue::DurationSecond(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(-10)),
+                    ScalarValue::DurationSecond(Some(-1)),
+                ),
             ),
         ];
         for (first, second) in exactly_gt_cases {
@@ -2135,16 +2154,31 @@ mod tests {
                 )?,
             ),
             (
-                Interval::new(ScalarValue::Date64(Some(1)), ScalarValue::Date64(Some(10))),
+                Interval::new(
+                    ScalarValue::Date64(Some(1)),
+                    ScalarValue::Date64(Some(10)),
+                ),
                 Interval::new(ScalarValue::Date64(Some(1)), ScalarValue::Date64(Some(1))),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(1), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(1), None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(1)), ScalarValue::DurationSecond(Some(10))),
-                Interval::new(ScalarValue::DurationSecond(Some(1)), ScalarValue::DurationSecond(Some(1))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(1)),
+                    ScalarValue::DurationSecond(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(1)),
+                    ScalarValue::DurationSecond(Some(1)),
+                ),
             ),
         ];
         for (first, second) in possibly_gt_cases {
@@ -2184,16 +2218,34 @@ mod tests {
                 )?,
             ),
             (
-                Interval::new(ScalarValue::Date64(Some(1)), ScalarValue::Date64(Some(10))),
-                Interval::new(ScalarValue::Date64(Some(10)), ScalarValue::Date64(Some(100))),
+                Interval::new(
+                    ScalarValue::Date64(Some(1)),
+                    ScalarValue::Date64(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::Date64(Some(10)),
+                    ScalarValue::Date64(Some(100)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(10), None), ScalarValue::TimestampSecond(None, None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(10), None),
+                    ScalarValue::TimestampSecond(None, None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(-10)), ScalarValue::DurationSecond(Some(-1))),
-                Interval::new(ScalarValue::DurationSecond(Some(1)), ScalarValue::DurationSecond(Some(1))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(-10)),
+                    ScalarValue::DurationSecond(Some(-1)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(1)),
+                    ScalarValue::DurationSecond(Some(1)),
+                ),
             ),
         ];
         for (first, second) in not_gt_cases {
@@ -2242,16 +2294,34 @@ mod tests {
                 )?,
             ),
             (
-                Interval::new(ScalarValue::Time32Second(Some(0)), ScalarValue::Time32Second(Some(10))),
-                Interval::new(ScalarValue::Time32Second(Some(-1)), ScalarValue::Time32Second(Some(-1))),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(0)),
+                    ScalarValue::Time32Second(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(-1)),
+                    ScalarValue::Time32Second(Some(-1)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(1), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(1), None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(-10)), ScalarValue::DurationSecond(Some(1))),
-                Interval::new(ScalarValue::DurationSecond(Some(-10)), ScalarValue::DurationSecond(Some(-10))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(-10)),
+                    ScalarValue::DurationSecond(Some(1)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(-10)),
+                    ScalarValue::DurationSecond(Some(-10)),
+                ),
             ),
         ];
         for (first, second) in exactly_gteq_cases {
@@ -2291,16 +2361,34 @@ mod tests {
                 )?,
             ),
             (
-                Interval::new(ScalarValue::Time32Second(Some(0)), ScalarValue::Time32Second(Some(10))),
-                Interval::new(ScalarValue::Time32Second(Some(0)), ScalarValue::Time32Second(None)),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(0)),
+                    ScalarValue::Time32Second(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(0)),
+                    ScalarValue::Time32Second(None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(-10)), ScalarValue::DurationSecond(Some(1))),
-                Interval::new(ScalarValue::DurationSecond(None), ScalarValue::DurationSecond(Some(0))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(-10)),
+                    ScalarValue::DurationSecond(Some(1)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(None),
+                    ScalarValue::DurationSecond(Some(0)),
+                ),
             ),
         ];
         for (first, second) in possibly_gteq_cases {
@@ -2336,16 +2424,34 @@ mod tests {
                 )?,
             ),
             (
-                Interval::new(ScalarValue::Time32Second(Some(-10)), ScalarValue::Time32Second(Some(0))),
-                Interval::new(ScalarValue::Time32Second(Some(1)), ScalarValue::Time32Second(Some(10))),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(-10)),
+                    ScalarValue::Time32Second(Some(0)),
+                ),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(1)),
+                    ScalarValue::Time32Second(Some(10)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(5), None), ScalarValue::TimestampSecond(Some(9), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(10), None), ScalarValue::TimestampSecond(Some(100), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(5), None),
+                    ScalarValue::TimestampSecond(Some(9), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(10), None),
+                    ScalarValue::TimestampSecond(Some(100), None),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(None), ScalarValue::DurationSecond(Some(-1))),
-                Interval::new(ScalarValue::DurationSecond(Some(0)), ScalarValue::DurationSecond(Some(1))),
+                Interval::new(
+                    ScalarValue::DurationSecond(None),
+                    ScalarValue::DurationSecond(Some(-1)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(0)),
+                    ScalarValue::DurationSecond(Some(1)),
+                ),
             ),
         ];
         for (first, second) in not_gteq_cases {
@@ -2376,20 +2482,44 @@ mod tests {
                 Interval::make(Some(f64::MIN), Some(f64::MIN))?,
             ),
             (
-                Interval::new(ScalarValue::Date64(Some(1000)), ScalarValue::Date64(Some(1000))),
-                Interval::new(ScalarValue::Date64(Some(1000)), ScalarValue::Date64(Some(1000))),
+                Interval::new(
+                    ScalarValue::Date64(Some(1000)),
+                    ScalarValue::Date64(Some(1000)),
+                ),
+                Interval::new(
+                    ScalarValue::Date64(Some(1000)),
+                    ScalarValue::Date64(Some(1000)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::Time32Millisecond(Some(1000)), ScalarValue::Time32Millisecond(Some(1000))),
-                Interval::new(ScalarValue::Time32Millisecond(Some(1000)), ScalarValue::Time32Millisecond(Some(1000))),
+                Interval::new(
+                    ScalarValue::Time32Millisecond(Some(1000)),
+                    ScalarValue::Time32Millisecond(Some(1000)),
+                ),
+                Interval::new(
+                    ScalarValue::Time32Millisecond(Some(1000)),
+                    ScalarValue::Time32Millisecond(Some(1000)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::IntervalYearMonth(Some(10)), ScalarValue::IntervalYearMonth(Some(10))),
-                Interval::new(ScalarValue::IntervalYearMonth(Some(10)), ScalarValue::IntervalYearMonth(Some(10))),
+                Interval::new(
+                    ScalarValue::IntervalYearMonth(Some(10)),
+                    ScalarValue::IntervalYearMonth(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::IntervalYearMonth(Some(10)),
+                    ScalarValue::IntervalYearMonth(Some(10)),
+                ),
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(10)), ScalarValue::DurationSecond(Some(10))),
-                Interval::new(ScalarValue::DurationSecond(Some(10)), ScalarValue::DurationSecond(Some(10))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(10)),
+                    ScalarValue::DurationSecond(Some(10)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(10)),
+                    ScalarValue::DurationSecond(Some(10)),
+                ),
             ),
         ];
         for (first, second) in exactly_eq_cases {
@@ -2710,13 +2840,25 @@ mod tests {
                 Interval::CERTAINLY_TRUE,
             ),
             (
-                Interval::new(ScalarValue::TimestampSecond(Some(1), None), ScalarValue::TimestampSecond(Some(10), None)),
-                Interval::new(ScalarValue::TimestampSecond(Some(2), None), ScalarValue::TimestampSecond(Some(5), None)),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(1), None),
+                    ScalarValue::TimestampSecond(Some(10), None),
+                ),
+                Interval::new(
+                    ScalarValue::TimestampSecond(Some(2), None),
+                    ScalarValue::TimestampSecond(Some(5), None),
+                ),
                 Interval::CERTAINLY_TRUE,
             ),
             (
-                Interval::new(ScalarValue::DurationSecond(Some(0)), ScalarValue::DurationSecond(Some(600))),
-                Interval::new(ScalarValue::DurationSecond(Some(1)), ScalarValue::DurationSecond(Some(599))),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(0)),
+                    ScalarValue::DurationSecond(Some(600)),
+                ),
+                Interval::new(
+                    ScalarValue::DurationSecond(Some(1)),
+                    ScalarValue::DurationSecond(Some(599)),
+                ),
                 Interval::CERTAINLY_TRUE,
             ),
             (
@@ -2761,8 +2903,14 @@ mod tests {
                 Interval::CERTAINLY_FALSE,
             ),
             (
-                Interval::new(ScalarValue::Time32Second(Some(0)), ScalarValue::Time32Second(Some(60))),
-                Interval::new(ScalarValue::Time32Second(Some(61)), ScalarValue::Time32Second(Some(120))),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(0)),
+                    ScalarValue::Time32Second(Some(60)),
+                ),
+                Interval::new(
+                    ScalarValue::Time32Second(Some(61)),
+                    ScalarValue::Time32Second(Some(120)),
+                ),
                 Interval::CERTAINLY_FALSE,
             ),
         ];
@@ -2842,19 +2990,28 @@ mod tests {
                 Interval::make(None, Some(300_f64))?,
             ),
             (
-                Interval::new(TimestampSecond(Some(100), None), TimestampSecond(Some(200), None)),
+                Interval::new(
+                    TimestampSecond(Some(100), None),
+                    TimestampSecond(Some(200), None),
+                ),
                 Interval::new(DurationSecond(Some(100)), DurationSecond(Some(200))),
-                Interval::new(TimestampSecond(Some(200), None), TimestampSecond(Some(400), None)),
+                Interval::new(
+                    TimestampSecond(Some(200), None),
+                    TimestampSecond(Some(400), None),
+                ),
             ),
             (
                 Interval::new(Date32(Some(100)), Date32(Some(100))),
-                Interval::new(IntervalDayTime(Some(ArrowIntervalDayTime{
-                    days: 1,
-                    milliseconds: 0,
-                })), IntervalDayTime(Some(ArrowIntervalDayTime{
-                    days: 10,
-                    milliseconds: 0,
-                }))),
+                Interval::new(
+                    IntervalDayTime(Some(ArrowIntervalDayTime {
+                        days: 1,
+                        milliseconds: 0,
+                    })),
+                    IntervalDayTime(Some(ArrowIntervalDayTime {
+                        days: 10,
+                        milliseconds: 0,
+                    })),
+                ),
                 Interval::new(Date32(Some(101)), Date32(Some(110))),
             ),
             (

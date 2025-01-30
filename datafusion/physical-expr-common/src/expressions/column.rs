@@ -21,11 +21,11 @@ use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use arrow::datatypes::SchemaRef;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
-use arrow::datatypes::SchemaRef;
 use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
 

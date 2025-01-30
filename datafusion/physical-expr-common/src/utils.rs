@@ -149,7 +149,7 @@ pub fn is_supported_datatype_for_bounds_eval(data_type: &DataType) -> bool {
             | &DataType::Float64
             | &DataType::Float32
             | &DataType::Float16
-            | &DataType::Timestamp(_,_)
+            | &DataType::Timestamp(_, _)
             | &DataType::Date32
             | &DataType::Date64
             | &DataType::Time32(_)

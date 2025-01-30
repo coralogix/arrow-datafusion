@@ -432,9 +432,11 @@ impl PhysicalExpr for InListExpr {
                     if let Some(acc) = acc {
                         acc.union(*item)
                     } else {
-                        Some(Interval::make_unbounded(&expr_bounds.data_type())).transpose()
+                        Some(Interval::make_unbounded(&expr_bounds.data_type()))
+                            .transpose()
                     }
-                })?.unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?);
+                })?
+                .unwrap_or(Interval::make_unbounded(&expr_bounds.data_type())?);
         }
 
         if self.negated {
@@ -446,7 +448,10 @@ impl PhysicalExpr for InListExpr {
 
     fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
         self.expr.supports_bounds_evaluation(schema)
-            && self.list.iter().all(|expr| expr.supports_bounds_evaluation(schema))
+            && self
+                .list
+                .iter()
+                .all(|expr| expr.supports_bounds_evaluation(schema))
     }
 }
 

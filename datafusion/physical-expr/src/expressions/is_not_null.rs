@@ -28,8 +28,8 @@ use arrow::{
 };
 use datafusion_common::Result;
 use datafusion_common::ScalarValue;
-use datafusion_expr::ColumnarValue;
 use datafusion_expr::interval_arithmetic::Interval;
+use datafusion_expr::ColumnarValue;
 
 /// IS NOT NULL expression
 #[derive(Debug, Hash)]

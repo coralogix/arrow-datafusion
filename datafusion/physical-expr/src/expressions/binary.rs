@@ -41,12 +41,12 @@ use datafusion_expr::sort_properties::ExprProperties;
 use datafusion_expr::type_coercion::binary::get_result_type;
 use datafusion_expr::{ColumnarValue, Operator};
 
+use crate::intervals::utils::is_operator_supported;
 use kernels::{
     bitwise_and_dyn, bitwise_and_dyn_scalar, bitwise_or_dyn, bitwise_or_dyn_scalar,
     bitwise_shift_left_dyn, bitwise_shift_left_dyn_scalar, bitwise_shift_right_dyn,
     bitwise_shift_right_dyn_scalar, bitwise_xor_dyn, bitwise_xor_dyn_scalar,
 };
-use crate::intervals::utils::{is_operator_supported};
 
 /// Binary expression
 #[derive(Debug, Hash, Clone)]
@@ -330,7 +330,10 @@ impl PhysicalExpr for BinaryExpr {
 
     fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
         // Interval data types must be compatible for the given operation
-        if let (Ok(lhs), Ok(rhs)) = (self.left.data_type(schema.as_ref()), self.right.data_type(schema.as_ref())) {
+        if let (Ok(lhs), Ok(rhs)) = (
+            self.left.data_type(schema.as_ref()),
+            self.right.data_type(schema.as_ref()),
+        ) {
             if get_result_type(&lhs, &self.op, &rhs).is_err() {
                 return false;
             }
