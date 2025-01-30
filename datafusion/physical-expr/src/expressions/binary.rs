@@ -46,6 +46,7 @@ use kernels::{
     bitwise_shift_left_dyn, bitwise_shift_left_dyn_scalar, bitwise_shift_right_dyn,
     bitwise_shift_right_dyn_scalar, bitwise_xor_dyn, bitwise_xor_dyn_scalar,
 };
+use crate::intervals::utils::{is_operator_supported};
 
 /// Binary expression
 #[derive(Debug, Hash, Clone)]
@@ -325,6 +326,19 @@ impl PhysicalExpr for BinaryExpr {
             self.op,
             children[1].clone(),
         )))
+    }
+
+    fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
+        // Interval data types must be compatible for the given operation
+        if let (Ok(lhs), Ok(rhs)) = (self.left.data_type(schema.as_ref()), self.right.data_type(schema.as_ref())) {
+            if get_result_type(&lhs, &self.op, &rhs).is_err() {
+                return false;
+            }
+        }
+
+        is_operator_supported(&self.op)
+            && self.left.supports_bounds_evaluation(schema)
+            && self.right.supports_bounds_evaluation(schema)
     }
 
     fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {

@@ -41,7 +41,6 @@ use datafusion_common::{plan_err, DataFusionError, Result};
 use datafusion_execution::TaskContext;
 use datafusion_expr::Operator;
 use datafusion_physical_expr::expressions::BinaryExpr;
-use datafusion_physical_expr::intervals::utils::check_support;
 use datafusion_physical_expr::utils::collect_columns;
 use datafusion_physical_expr::{
     analyze, split_conjunction, AnalysisContext, ExprBoundaries, PhysicalExpr,
@@ -124,7 +123,7 @@ impl FilterExec {
     ) -> Result<Statistics> {
         let input_stats = input.statistics()?;
         let schema = input.schema();
-        if !check_support(predicate, &schema) {
+        if !predicate.supports_bounds_evaluation(&schema) {
             let selectivity = default_selectivity as f64 / 100.0;
             let mut stats = input_stats.into_inexact();
             stats.num_rows = stats.num_rows.with_estimated_selectivity(selectivity);

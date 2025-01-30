@@ -24,7 +24,7 @@ use crate::tree_node::ExprContext;
 
 use arrow::array::{make_array, Array, ArrayRef, BooleanArray, MutableArrayData};
 use arrow::compute::{and_kleene, is_not_null, SlicesIterator};
-use arrow::datatypes::Schema;
+use arrow::datatypes::{DataType, Schema};
 use datafusion_common::{exec_err, Result};
 use datafusion_expr::sort_properties::ExprProperties;
 use datafusion_expr::Expr;
@@ -132,6 +132,31 @@ pub fn limited_convert_logical_expr_to_physical_expr(
             "Unsupported expression: {expr} for conversion to Arc<dyn PhysicalExpr>"
         ),
     }
+}
+
+/// Indicates whether interval arithmetic is supported for the given data type.
+pub fn is_supported_datatype_for_bounds_eval(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        &DataType::Int64
+            | &DataType::Int32
+            | &DataType::Int16
+            | &DataType::Int8
+            | &DataType::UInt64
+            | &DataType::UInt32
+            | &DataType::UInt16
+            | &DataType::UInt8
+            | &DataType::Float64
+            | &DataType::Float32
+            | &DataType::Float16
+            | &DataType::Timestamp(_,_)
+            | &DataType::Date32
+            | &DataType::Date64
+            | &DataType::Time32(_)
+            | &DataType::Time64(_)
+            | &DataType::Interval(_)
+            | &DataType::Duration(_)
+    )
 }
 
 #[cfg(test)]
