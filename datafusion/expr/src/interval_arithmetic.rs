@@ -560,6 +560,11 @@ impl Interval {
         }
     }
 
+    /// Compute the union of this interval with the given interval.
+    ///
+    /// NOTE: This function only works with intervals of the same data type.
+    ///       Attempting to compare intervals of different data types will lead
+    ///       to an error.
     pub fn union<T: Borrow<Self>>(&self, other: T) -> Result<Option<Self>> {
         let rhs = other.borrow();
         if self.data_type().ne(&rhs.data_type()) {
@@ -570,16 +575,35 @@ impl Interval {
             );
         };
 
-        // If it is evident that the result is an empty interval, short-circuit
-        // and directly return `None`.
-        if (!(self.lower.is_null() || rhs.upper.is_null()) && self.lower > rhs.upper)
+        // If the upper bound of one side is less than the lower bound of
+        // the other side or vice versa, then the resulting interval is
+        // expanded accordingly. Note that, this can only happen if any
+        // side has a null value.
+        //
+        // Examples:
+        // [1, 2] ∪ [3, NULL] = [1, 3]
+        // [3, NULL] ∪ [1, NULL] = [1, 3]
+        // [3, NULL] ∪ [NULL, 1] = [1, 3]
+        let (lower, upper) = if (!(self.lower.is_null() || rhs.upper.is_null())
+            && self.lower > rhs.upper)
             || (!(self.upper.is_null() || rhs.lower.is_null()) && self.upper < rhs.lower)
         {
-            return Ok(None);
-        }
-
-        let lower = min_of_bounds(&self.lower, &rhs.lower);
-        let upper = max_of_bounds(&self.upper, &rhs.upper);
+            (
+                min_of_bounds(
+                    &min_of_bounds(&min_of_bounds(&self.lower, &rhs.lower), &self.upper),
+                    &rhs.upper,
+                ),
+                max_of_bounds(
+                    &max_of_bounds(&max_of_bounds(&self.lower, &rhs.lower), &self.upper),
+                    &rhs.upper,
+                ),
+            )
+        } else {
+            (
+                min_of_bounds(&self.lower, &rhs.lower),
+                max_of_bounds(&self.upper, &rhs.upper),
+            )
+        };
 
         // New lower and upper bounds must always construct a valid interval.
         assert!(
@@ -2760,13 +2784,28 @@ mod tests {
             ),
             (
                 Interval::make(Some(1000_i64), None)?,
-                Interval::make(None, Some(1000_i64))?,
-                Interval::make(Some(1000_i64), Some(1000_i64))?,
+                Interval::make(Some(1000_i64), None)?,
+                Interval::make(Some(1000_i64), None)?,
             ),
             (
                 Interval::make(Some(1000_i64), None)?,
                 Interval::make(None, Some(2000_i64))?,
                 Interval::make(Some(1000_i64), Some(2000_i64))?,
+            ),
+            (
+                Interval::make::<i64>(None, None)?,
+                Interval::make(Some(1000_i64), Some(2000_i64))?,
+                Interval::make(Some(1000_i64), Some(2000_i64))?,
+            ),
+            (
+                Interval::make(Some(1000_i64), Some(2000_i64))?,
+                Interval::make::<i64>(None, None)?,
+                Interval::make(Some(1000_i64), Some(2000_i64))?,
+            ),
+            (
+                Interval::make::<i64>(None, None)?,
+                Interval::make::<i64>(None, None)?,
+                Interval::make::<i64>(None, None)?,
             ),
             (
                 Interval::make(Some(1000_i64), Some(2000_i64))?,
@@ -2784,9 +2823,14 @@ mod tests {
                 Interval::make(Some(500_i64), Some(2000_i64))?,
             ),
             (
-                Interval::make::<i64>(None, None)?,
-                Interval::make::<i64>(None, None)?,
-                Interval::make::<i64>(None, None)?,
+                Interval::make(Some(1000_i64), None)?,
+                Interval::make(None, Some(10_i64))?,
+                Interval::make(Some(10_i64), Some(1000_i64))?,
+            ),
+            (
+                Interval::make(Some(1000_i64), None)?,
+                Interval::make(Some(1_i64), Some(10_i64))?,
+                Interval::make(Some(1_i64), Some(1000_i64))?,
             ),
             (
                 Interval::make(None, Some(2000_u64))?,
