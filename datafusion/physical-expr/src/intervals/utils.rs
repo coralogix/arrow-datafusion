@@ -18,7 +18,6 @@
 //! Utility functions for the interval arithmetic library
 
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
-use arrow_schema::DataType;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::interval_arithmetic::Interval;
 use datafusion_expr::Operator;
@@ -32,43 +31,6 @@ pub fn get_inverse_op(op: Operator) -> Result<Operator> {
         Operator::Divide => Ok(Operator::Multiply),
         _ => internal_err!("Interval arithmetic does not support the operator {}", op),
     }
-}
-
-/// Indicates whether interval arithmetic is supported for the given operator.
-pub fn is_operator_supported(op: &Operator) -> bool {
-    matches!(
-        op,
-        &Operator::Plus
-            | &Operator::Minus
-            | &Operator::And
-            | &Operator::Gt
-            | &Operator::GtEq
-            | &Operator::Lt
-            | &Operator::LtEq
-            | &Operator::Eq
-            | &Operator::NotEq
-            | &Operator::Multiply
-            | &Operator::Divide
-            | &Operator::IsDistinctFrom
-            | &Operator::IsNotDistinctFrom
-    )
-}
-
-/// Indicates whether interval arithmetic is supported for the given data type.
-pub fn is_datatype_supported(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        &DataType::Int64
-            | &DataType::Int32
-            | &DataType::Int16
-            | &DataType::Int8
-            | &DataType::UInt64
-            | &DataType::UInt32
-            | &DataType::UInt16
-            | &DataType::UInt8
-            | &DataType::Float64
-            | &DataType::Float32
-    )
 }
 
 /// Converts an [`Interval`] of time intervals to one of `Duration`s, if applicable. Otherwise, returns [`None`].

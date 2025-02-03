@@ -41,7 +41,6 @@ use datafusion_expr::sort_properties::ExprProperties;
 use datafusion_expr::type_coercion::binary::get_result_type;
 use datafusion_expr::{ColumnarValue, Operator};
 
-use crate::intervals::utils::is_operator_supported;
 use kernels::{
     bitwise_and_dyn, bitwise_and_dyn_scalar, bitwise_or_dyn, bitwise_or_dyn_scalar,
     bitwise_shift_left_dyn, bitwise_shift_left_dyn_scalar, bitwise_shift_right_dyn,
@@ -79,6 +78,26 @@ impl BinaryExpr {
     /// Get the operator for this binary expression
     pub fn op(&self) -> &Operator {
         &self.op
+    }
+
+    /// Indicates whether interval arithmetic is supported for the given operator.
+    fn is_operator_supported(&self) -> bool {
+        matches!(
+            &self.op,
+            &Operator::Plus
+                | &Operator::Minus
+                | &Operator::And
+                | &Operator::Gt
+                | &Operator::GtEq
+                | &Operator::Lt
+                | &Operator::LtEq
+                | &Operator::Eq
+                | &Operator::NotEq
+                | &Operator::Multiply
+                | &Operator::Divide
+                | &Operator::IsDistinctFrom
+                | &Operator::IsNotDistinctFrom
+        )
     }
 }
 
@@ -339,7 +358,7 @@ impl PhysicalExpr for BinaryExpr {
             }
         }
 
-        is_operator_supported(&self.op)
+        self.is_operator_supported()
             && self.left.supports_bounds_evaluation(schema)
             && self.right.supports_bounds_evaluation(schema)
     }

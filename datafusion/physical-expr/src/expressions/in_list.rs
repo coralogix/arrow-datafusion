@@ -411,7 +411,7 @@ impl PhysicalExpr for InListExpr {
     /// # Example:
     /// If the input expression's interval is a superset of the
     /// conjunction of the list items intervals, the output
-    /// interval is [`CERTAINLY_TRUE`].
+    /// interval is [`Interval::CERTAINLY_TRUE`].
     ///
     /// ```text
     /// interval of expr:   ....---------------------....

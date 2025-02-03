@@ -29,7 +29,7 @@ use crate::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_common::config::OptimizerOptions;
 use datafusion_common::plan_err;
 use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion_physical_expr::intervals::utils::is_datatype_supported;
+use datafusion_physical_expr_common::utils::is_supported_datatype_for_bounds_eval;
 use datafusion_physical_plan::joins::SymmetricHashJoinExec;
 
 /// The PipelineChecker rule rejects non-runnable query plans that use
@@ -103,7 +103,7 @@ fn is_prunable(join: &SymmetricHashJoinExec) -> bool {
                 .schema()
                 .fields()
                 .iter()
-                .all(|f| is_datatype_supported(f.data_type()))
+                .all(|f| is_supported_datatype_for_bounds_eval(f.data_type()))
     })
 }
 
