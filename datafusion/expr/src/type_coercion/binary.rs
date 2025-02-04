@@ -1106,8 +1106,8 @@ fn null_coercion(lhs_type: &DataType, rhs_type: &DataType) -> Option<DataType> {
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::IntervalUnit::{MonthDayNano, YearMonth};
     use super::*;
+    use arrow::datatypes::IntervalUnit::{MonthDayNano, YearMonth};
 
     use datafusion_common::assert_contains;
 

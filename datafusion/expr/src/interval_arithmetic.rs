@@ -1905,7 +1905,10 @@ mod tests {
 
     use arrow::datatypes::DataType;
     use arrow_buffer::IntervalDayTime as ArrowIntervalDayTime;
-    use datafusion_common::ScalarValue::{Date32, DurationMillisecond, DurationSecond, IntervalDayTime, IntervalYearMonth, TimestampSecond};
+    use datafusion_common::ScalarValue::{
+        Date32, DurationMillisecond, DurationSecond, IntervalDayTime, IntervalYearMonth,
+        TimestampSecond,
+    };
     use datafusion_common::{Result, ScalarValue};
 
     #[test]
@@ -2889,14 +2892,8 @@ mod tests {
             ),
             (
                 Interval::new(DurationSecond(Some(1)), DurationSecond(Some(10))),
-                Interval::new(
-                    DurationSecond(Some(10)),
-                    DurationSecond(Some(100)),
-                ),
-                Interval::new(
-                    DurationSecond(Some(1)),
-                    DurationSecond(Some(100)),
-                ),
+                Interval::new(DurationSecond(Some(10)), DurationSecond(Some(100))),
+                Interval::new(DurationSecond(Some(1)), DurationSecond(Some(100))),
             ),
         ];
         for (first, second, expected) in possible_cases {

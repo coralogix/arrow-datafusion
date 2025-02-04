@@ -33,11 +33,11 @@ use datafusion_common::{internal_err, Result};
 use datafusion_expr::interval_arithmetic::{apply_operator, satisfy_greater, Interval};
 use datafusion_expr::Operator;
 
+use datafusion_expr::type_coercion::{is_datetime, is_interval};
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::{DefaultIx, StableGraph};
 use petgraph::visit::{Bfs, Dfs, DfsPostOrder, EdgeRef};
 use petgraph::Outgoing;
-use datafusion_expr::type_coercion::{is_datetime, is_interval};
 // Interval arithmetic provides a way to perform mathematical operations on
 // intervals, which represent a range of possible values rather than a single
 // point value. This allows for the propagation of ranges through mathematical
@@ -228,26 +228,14 @@ pub fn propagate_arithmetic(
     // we need special handling since timestamp differencing results in
     // a Duration type.
     if is_datetime(&left_child.data_type()) && is_interval(&right_child.data_type()) {
-        propagate_time_interval_at_right(
-            left_child,
-            right_child,
-            parent,
-            op,
-            &inverse_op,
-        )
-    } else if is_interval(&left_child.data_type()) && is_datetime(&right_child.data_type()) {
-        propagate_time_interval_at_left(
-            left_child,
-            right_child,
-            parent,
-            op,
-            &inverse_op,
-        )
+        propagate_time_interval_at_right(left_child, right_child, parent, op, &inverse_op)
+    } else if is_interval(&left_child.data_type())
+        && is_datetime(&right_child.data_type())
+    {
+        propagate_time_interval_at_left(left_child, right_child, parent, op, &inverse_op)
     } else {
         // First, propagate to the left:
-        match apply_operator(&inverse_op, parent, right_child)?
-            .intersect(left_child)?
-        {
+        match apply_operator(&inverse_op, parent, right_child)?.intersect(left_child)? {
             // Left is feasible:
             Some(value) => Ok(
                 // Propagate to the right using the new left.
