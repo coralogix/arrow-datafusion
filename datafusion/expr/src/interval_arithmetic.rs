@@ -567,17 +567,23 @@ impl Interval {
     ///       to an error.
     pub fn union<T: Borrow<Self>>(&self, other: T) -> Result<Option<Self>> {
         let rhs = other.borrow();
+
         if self.data_type().ne(&rhs.data_type()) {
-            return internal_err!(
-                "Only intervals with the same data type are intersectable, lhs:{}, rhs:{}",
-                self.data_type(),
-                rhs.data_type()
-            );
+            get_result_type(&self.data_type(), &Operator::Plus, &rhs.data_type())
+                .map_err(|e|
+                    DataFusionError::Internal(
+                        format!(
+                            "Cannot coerce data types for interval union, lhs:{}, rhs:{}. internal error: {}",
+                            self.data_type(),
+                            rhs.data_type(),
+                            e
+                        ))
+                )?;
         };
 
         // If the upper bound of one side is less than the lower bound of
         // the other side or vice versa, then the resulting interval is
-        // expanded accordingly. Note that, this can only happen if any
+        // expanded accordingly. Note that, this can only happen if one
         // side has a null value.
         //
         // Examples:
@@ -622,13 +628,19 @@ impl Interval {
     ///       to an error.
     pub fn intersect<T: Borrow<Self>>(&self, other: T) -> Result<Option<Self>> {
         let rhs = other.borrow();
+
         if self.data_type().ne(&rhs.data_type()) {
-            return internal_err!(
-                "Only intervals with the same data type are intersectable, lhs:{}, rhs:{}",
-                self.data_type(),
-                rhs.data_type()
-            );
-        };
+            get_result_type(&self.data_type(), &Operator::Plus, &rhs.data_type())
+                .map_err(|e|
+                    DataFusionError::Internal(
+                        format!(
+                            "Cannot coerce data types for interval intersection, lhs:{}, rhs:{}. internal error: {}",
+                            self.data_type(),
+                            rhs.data_type(),
+                            e
+                        ))
+                )?;
+        }
 
         // If it is evident that the result is an empty interval, short-circuit
         // and directly return `None`.
@@ -910,7 +922,7 @@ pub fn apply_operator(op: &Operator, lhs: &Interval, rhs: &Interval) -> Result<I
         Operator::Divide => lhs.div(rhs),
         Operator::IsDistinctFrom | Operator::IsNotDistinctFrom => {
             NullableInterval::from(lhs)
-                .apply_operator(op, &NullableInterval::from(rhs))
+                .apply_operator(op, &rhs.into())
                 .and_then(|x| {
                     x.values().cloned().ok_or(DataFusionError::Internal(
                         "Unexpected null value interval".to_string(),
@@ -1646,8 +1658,12 @@ impl From<&Interval> for NullableInterval {
             Self::Null {
                 datatype: value.data_type(),
             }
-        } else {
+        } else if value.lower.is_null() || value.upper.is_null() {
             Self::MaybeNull {
+                values: value.clone(),
+            }
+        } else {
+            Self::NotNull {
                 values: value.clone(),
             }
         }
@@ -1889,9 +1905,7 @@ mod tests {
 
     use arrow::datatypes::DataType;
     use arrow_buffer::IntervalDayTime as ArrowIntervalDayTime;
-    use datafusion_common::ScalarValue::{
-        Date32, DurationSecond, IntervalDayTime, IntervalYearMonth, TimestampSecond,
-    };
+    use datafusion_common::ScalarValue::{Date32, DurationMillisecond, DurationSecond, IntervalDayTime, IntervalYearMonth, TimestampSecond};
     use datafusion_common::{Result, ScalarValue};
 
     #[test]
@@ -2730,6 +2744,17 @@ mod tests {
                 Interval::make(Some(32.0_f64), Some(64.0_f64))?,
                 Interval::make(Some(32.0_f64), Some(32.0_f64))?,
             ),
+            (
+                Interval::new(DurationSecond(Some(1)), DurationSecond(Some(10))),
+                Interval::new(
+                    DurationMillisecond(Some(1001)),
+                    DurationMillisecond(Some(1010)),
+                ),
+                Interval::new(
+                    DurationMillisecond(Some(1001)),
+                    DurationMillisecond(Some(1010)),
+                ),
+            ),
         ];
         for (first, second, expected) in possible_cases {
             assert_eq!(first.intersect(second)?.unwrap(), expected)
@@ -2861,6 +2886,17 @@ mod tests {
                 Interval::make(Some(16.0_f64), Some(32.0_f64))?,
                 Interval::make(Some(32.0_f64), Some(64.0_f64))?,
                 Interval::make(Some(16.0_f64), Some(64.0_f64))?,
+            ),
+            (
+                Interval::new(DurationSecond(Some(1)), DurationSecond(Some(10))),
+                Interval::new(
+                    DurationSecond(Some(10)),
+                    DurationSecond(Some(100)),
+                ),
+                Interval::new(
+                    DurationSecond(Some(1)),
+                    DurationSecond(Some(100)),
+                ),
             ),
         ];
         for (first, second, expected) in possible_cases {

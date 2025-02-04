@@ -1035,6 +1035,7 @@ fn temporal_coercion(lhs_type: &DataType, rhs_type: &DataType) -> Option<DataTyp
 
     match (lhs_type, rhs_type) {
         (Interval(_), Interval(_)) => Some(Interval(MonthDayNano)),
+        (Duration(_), Duration(_)) => Some(Duration(Nanosecond)),
         (Date64, Date32) | (Date32, Date64) => Some(Date64),
         (Timestamp(_, None), Date64) | (Date64, Timestamp(_, None)) => {
             Some(Timestamp(Nanosecond, None))
@@ -1105,6 +1106,7 @@ fn null_coercion(lhs_type: &DataType, rhs_type: &DataType) -> Option<DataType> {
 
 #[cfg(test)]
 mod tests {
+    use arrow::datatypes::IntervalUnit::{MonthDayNano, YearMonth};
     use super::*;
 
     use datafusion_common::assert_contains;
@@ -1473,6 +1475,35 @@ mod tests {
             DataType::UInt32,
             Operator::BitwiseAnd,
             DataType::UInt32
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_type_coercion_temporal() -> Result<()> {
+        test_coercion_binary_rule!(
+            DataType::Duration(TimeUnit::Second),
+            DataType::Duration(TimeUnit::Second),
+            Operator::Plus,
+            DataType::Duration(TimeUnit::Second)
+        );
+        test_coercion_binary_rule!(
+            DataType::Duration(TimeUnit::Second),
+            DataType::Duration(TimeUnit::Nanosecond),
+            Operator::Plus,
+            DataType::Duration(TimeUnit::Nanosecond)
+        );
+        test_coercion_binary_rule!(
+            DataType::Interval(YearMonth),
+            DataType::Interval(YearMonth),
+            Operator::Plus,
+            DataType::Interval(YearMonth)
+        );
+        test_coercion_binary_rule!(
+            DataType::Interval(YearMonth),
+            DataType::Interval(MonthDayNano),
+            Operator::Plus,
+            DataType::Interval(MonthDayNano)
         );
         Ok(())
     }

@@ -419,7 +419,6 @@ impl PhysicalExpr for InListExpr {
     ///
     /// output interval:    [`true`, `true`]
     /// ```
-    ///
     fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {
         let expr_bounds = children[0];
 
