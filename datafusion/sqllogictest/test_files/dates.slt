@@ -38,22 +38,25 @@ CREATE TABLE test(
 ;
 
 
-query error
+query T rowsort
 select i_item_desc
 from test
 where d3_date > d2_date + INTERVAL '1 days';
 ----
-DataFusion error: Internal error: Only intervals with the same data type are intersectable, lhs:Duration(Second), rhs:Interval(MonthDayNano).
-This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
+c
+d
+e
+f
+g
+h
 
-
-query error
+query T rowsort
 select i_item_desc
 from test
 where d3_date > d2_date + INTERVAL '5 days';
 ----
-DataFusion error: Internal error: Only intervals with the same data type are intersectable, lhs:Duration(Second), rhs:Interval(MonthDayNano).
-This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
+g
+h
 
 
 # date and other predicate
