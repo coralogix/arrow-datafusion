@@ -22,7 +22,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, SchemaRef};
 
 use datafusion_common::{not_impl_err, ExprSchema, Result};
 
@@ -221,6 +221,11 @@ impl ScalarUDF {
     /// then the output interval would be `[0, 3]`.
     pub fn evaluate_bounds(&self, inputs: &[&Interval]) -> Result<Interval> {
         self.inner.evaluate_bounds(inputs)
+    }
+
+    /// Indicates whether this ['ScalarUDF'] supports interval arithmetic.
+    pub fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
+        self.inner.supports_bounds_evaluation(schema)
     }
 
     /// Updates bounds for child expressions, given a known interval for this
@@ -485,6 +490,11 @@ pub trait ScalarUDFImpl: Debug + Send + Sync {
             .collect::<Vec<DataType>>();
         let return_type = self.return_type(&input_data_types)?;
         Interval::make_unbounded(&return_type)
+    }
+
+    /// Indicates whether this ['ScalarUDFImpl'] supports interval arithmetic.
+    fn supports_bounds_evaluation(&self, _schema: &SchemaRef) -> bool {
+        false
     }
 
     /// Updates bounds for child expressions, given a known interval for this
