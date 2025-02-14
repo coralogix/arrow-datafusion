@@ -20,18 +20,20 @@
 use std::sync::{Arc, OnceLock};
 use std::{any::Any, cmp::Ordering};
 
-use arrow::array::{Capacities, MutableArrayData};
-use arrow_array::{Array, ArrayRef, GenericListArray, OffsetSizeTrait};
+use arrow::array::{
+    Array, ArrayRef, Capacities, GenericListArray, MutableArrayData, OffsetSizeTrait,
+};
 use arrow_buffer::{BooleanBufferBuilder, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field};
+use datafusion_common::utils::ListCoercion;
 use datafusion_common::Result;
 use datafusion_common::{
     cast::as_generic_list_array, exec_err, not_impl_err, plan_err, utils::list_ndims,
 };
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
-    type_coercion::binary::get_wider_type, ColumnarValue, Documentation, ScalarUDFImpl,
-    Signature, Volatility,
+    type_coercion::binary::get_wider_type, ArrayFunctionArgument, ArrayFunctionSignature,
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
 use crate::utils::{align_array_dimensions, check_datatypes, make_scalar_function};
@@ -155,7 +157,18 @@ impl Default for ArrayPrepend {
 impl ArrayPrepend {
     pub fn new() -> Self {
         Self {
-            signature: Signature::element_and_array(Volatility::Immutable),
+            signature: Signature {
+                type_signature: TypeSignature::ArraySignature(
+                    ArrayFunctionSignature::Array {
+                        arguments: vec![
+                            ArrayFunctionArgument::Element,
+                            ArrayFunctionArgument::Array,
+                        ],
+                        array_coercion: Some(ListCoercion::FixedSizedListToList),
+                    },
+                ),
+                volatility: Volatility::Immutable,
+            },
             aliases: vec![
                 String::from("list_prepend"),
                 String::from("array_push_front"),

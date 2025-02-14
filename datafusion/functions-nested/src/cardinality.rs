@@ -28,8 +28,8 @@ use datafusion_common::Result;
 use datafusion_common::{exec_err, plan_err};
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
-    ArrayFunctionSignature, ColumnarValue, Documentation, ScalarUDFImpl, Signature,
-    TypeSignature, Volatility,
+    ArrayFunctionArgument, ArrayFunctionSignature, ColumnarValue, Documentation,
+    ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
@@ -47,7 +47,10 @@ impl Cardinality {
         Self {
             signature: Signature::one_of(
                 vec![
-                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array),
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![ArrayFunctionArgument::Array],
+                        array_coercion: None,
+                    }),
                     TypeSignature::ArraySignature(ArrayFunctionSignature::MapArray),
                 ],
                 Volatility::Immutable,

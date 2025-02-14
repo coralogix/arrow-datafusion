@@ -32,8 +32,8 @@ use datafusion_expr::aggregate_doc_sections::DOC_SECTION_GENERAL;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::utils::{format_state_name, AggregateOrderSensitivity};
 use datafusion_expr::{
-    Accumulator, AggregateUDFImpl, ArrayFunctionSignature, Documentation, Expr,
-    ExprFunctionExt, Signature, SortExpr, TypeSignature, Volatility,
+    Accumulator, AggregateUDFImpl, ArrayFunctionArgument, ArrayFunctionSignature,
+    Documentation, Expr, ExprFunctionExt, Signature, SortExpr, TypeSignature, Volatility,
 };
 use datafusion_functions_aggregate_common::utils::get_sort_options;
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
@@ -81,7 +81,10 @@ impl FirstValue {
             signature: Signature::one_of(
                 vec![
                     // TODO: we can introduce more strict signature that only numeric of array types are allowed
-                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array),
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![ArrayFunctionArgument::Array],
+                        array_coercion: None,
+                    }),
                     TypeSignature::Numeric(1),
                     TypeSignature::Uniform(1, vec![DataType::Utf8]),
                 ],
@@ -406,7 +409,10 @@ impl LastValue {
             signature: Signature::one_of(
                 vec![
                     // TODO: we can introduce more strict signature that only numeric of array types are allowed
-                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array),
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![ArrayFunctionArgument::Array],
+                        array_coercion: None,
+                    }),
                     TypeSignature::Numeric(1),
                     TypeSignature::Uniform(1, vec![DataType::Utf8]),
                 ],
