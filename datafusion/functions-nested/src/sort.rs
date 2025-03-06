@@ -18,16 +18,18 @@
 //! [`ScalarUDFImpl`] definitions for array_sort function.
 
 use crate::utils::make_scalar_function;
-use arrow::compute;
-use arrow_array::{Array, ArrayRef, ListArray};
-use arrow_buffer::{BooleanBufferBuilder, NullBuffer, OffsetBuffer};
-use arrow_schema::DataType::{FixedSizeList, LargeList, List};
-use arrow_schema::{DataType, Field, SortOptions};
+use arrow::array::{new_null_array, Array, ArrayRef, ListArray};
+use arrow::buffer::OffsetBuffer;
+use arrow::datatypes::DataType::{FixedSizeList, LargeList, List};
+use arrow::datatypes::{DataType, Field};
+use arrow::{compute, compute::SortOptions};
+use arrow_buffer::NullBufferBuilder;
 use datafusion_common::cast::{as_list_array, as_string_array};
 use datafusion_common::{exec_err, Result};
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
-    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
+    ArrayFunctionArgument, ArrayFunctionSignature, ColumnarValue, Documentation,
+    ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
@@ -49,7 +51,30 @@ pub(super) struct ArraySort {
 impl ArraySort {
     pub fn new() -> Self {
         Self {
-            signature: Signature::variadic_any(Volatility::Immutable),
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![ArrayFunctionArgument::Array],
+                        array_coercion: None,
+                    }),
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![
+                            ArrayFunctionArgument::Array,
+                            ArrayFunctionArgument::String,
+                        ],
+                        array_coercion: None,
+                    }),
+                    TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
+                        arguments: vec![
+                            ArrayFunctionArgument::Array,
+                            ArrayFunctionArgument::String,
+                            ArrayFunctionArgument::String,
+                        ],
+                        array_coercion: None,
+                    }),
+                ],
+                Volatility::Immutable,
+            ),
             aliases: vec!["list_sort".to_string()],
         }
     }
@@ -80,6 +105,7 @@ impl ScalarUDFImpl for ArraySort {
                 field.data_type().clone(),
                 true,
             )))),
+            DataType::Null => Ok(DataType::Null),
             _ => exec_err!(
                 "Not reachable, data_type should be List, LargeList or FixedSizeList"
             ),
@@ -142,6 +168,10 @@ pub fn array_sort_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
         return exec_err!("array_sort expects one to three arguments");
     }
 
+    if args[1..].iter().any(|array| array.is_null(0)) {
+        return Ok(new_null_array(args[0].data_type(), args[0].len()));
+    }
+
     let sort_option = match args.len() {
         1 => None,
         2 => {
@@ -170,7 +200,7 @@ pub fn array_sort_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
 
     let mut array_lengths = vec![];
     let mut arrays = vec![];
-    let mut valid = BooleanBufferBuilder::new(row_count);
+    let mut valid = NullBufferBuilder::new(row_count);
     for i in 0..row_count {
         if list_array.is_null(i) {
             array_lengths.push(0);
@@ -195,12 +225,16 @@ pub fn array_sort_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
         .map(|a| a.as_ref())
         .collect::<Vec<&dyn Array>>();
 
-    let list_arr = ListArray::new(
-        Arc::new(Field::new("item", data_type, true)),
-        OffsetBuffer::from_lengths(array_lengths),
-        Arc::new(compute::concat(elements.as_slice())?),
-        Some(NullBuffer::new(buffer)),
-    );
+    let list_arr = if elements.is_empty() {
+        ListArray::new_null(Arc::new(Field::new_list_field(data_type, true)), row_count)
+    } else {
+        ListArray::new(
+            Arc::new(Field::new_list_field(data_type, true)),
+            OffsetBuffer::from_lengths(array_lengths),
+            Arc::new(compute::concat(elements.as_slice())?),
+            buffer,
+        )
+    };
     Ok(Arc::new(list_arr))
 }
 

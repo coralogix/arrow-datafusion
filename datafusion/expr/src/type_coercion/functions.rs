@@ -19,7 +19,7 @@ use super::binary::{binary_numeric_coercion, comparison_coercion};
 use crate::{AggregateUDF, ScalarUDF, Signature, TypeSignature, WindowUDF};
 use arrow::{
     compute::can_cast_types,
-    datatypes::{DataType, TimeUnit},
+    datatypes::{DataType, Field, TimeUnit},
 };
 use datafusion_common::utils::ListCoercion;
 use datafusion_common::{
@@ -338,7 +338,7 @@ fn get_valid_types(
                 ArrayFunctionArgument::Element | ArrayFunctionArgument::Array => {
                     new_base_type = coerce_array_types(current_type, &new_base_type)?;
                 }
-                ArrayFunctionArgument::Index => {}
+                ArrayFunctionArgument::Index | ArrayFunctionArgument::String => {}
             }
         }
         let new_array_type = datafusion_common::utils::coerced_type_with_base_type_only(
@@ -359,6 +359,7 @@ fn get_valid_types(
             let valid_type = match argument_type {
                 ArrayFunctionArgument::Element => new_elem_type.clone(),
                 ArrayFunctionArgument::Index => DataType::Int64,
+                ArrayFunctionArgument::String => DataType::Utf8,
                 ArrayFunctionArgument::Array => {
                     let Some(current_type) = array(current_type) else {
                         return Ok(vec![vec![]]);
@@ -385,6 +386,10 @@ fn get_valid_types(
         match array_type {
             DataType::List(_) | DataType::LargeList(_) => Some(array_type.clone()),
             DataType::FixedSizeList(field, _) => Some(DataType::List(Arc::clone(field))),
+            DataType::Null => Some(DataType::List(Arc::new(Field::new_list_field(
+                DataType::Int64,
+                true,
+            )))),
             _ => None,
         }
     }
