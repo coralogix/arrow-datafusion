@@ -18,14 +18,17 @@
 //! [`ScalarUDFImpl`] definitions for cardinality function.
 
 use crate::utils::make_scalar_function;
+use arrow::datatypes::{
+    DataType,
+    DataType::{LargeList, List, Map, Null, UInt64},
+};
 use arrow_array::{
     Array, ArrayRef, GenericListArray, MapArray, OffsetSizeTrait, UInt64Array,
 };
-use arrow_schema::DataType;
-use arrow_schema::DataType::{FixedSizeList, LargeList, List, Map, UInt64};
 use datafusion_common::cast::{as_large_list_array, as_list_array, as_map_array};
+use datafusion_common::exec_err;
+use datafusion_common::utils::{take_function_args, ListCoercion};
 use datafusion_common::Result;
-use datafusion_common::{exec_err, plan_err};
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
     ArrayFunctionArgument, ArrayFunctionSignature, ColumnarValue, Documentation,
@@ -49,7 +52,7 @@ impl Cardinality {
                 vec![
                     TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
                         arguments: vec![ArrayFunctionArgument::Array],
-                        array_coercion: None,
+                        array_coercion: Some(ListCoercion::FixedSizedListToList),
                     }),
                     TypeSignature::ArraySignature(ArrayFunctionSignature::MapArray),
                 ],
@@ -77,13 +80,8 @@ impl ScalarUDFImpl for Cardinality {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        Ok(match arg_types[0] {
-            List(_) | LargeList(_) | FixedSizeList(_, _) | Map(_, _) => UInt64,
-            _ => {
-                return plan_err!("The cardinality function can only accept List/LargeList/FixedSizeList/Map.");
-            }
-        })
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(UInt64)
     }
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
@@ -130,25 +128,23 @@ fn get_cardinality_doc() -> &'static Documentation {
 
 /// Cardinality SQL function
 pub fn cardinality_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
-    if args.len() != 1 {
-        return exec_err!("cardinality expects one argument");
-    }
-
-    match &args[0].data_type() {
+    let [array] = take_function_args("cardinality", args)?;
+    match array.data_type() {
+        Null => Ok(Arc::new(UInt64Array::from_value(0, array.len()))),
         List(_) => {
-            let list_array = as_list_array(&args[0])?;
+            let list_array = as_list_array(array)?;
             generic_list_cardinality::<i32>(list_array)
         }
         LargeList(_) => {
-            let list_array = as_large_list_array(&args[0])?;
+            let list_array = as_large_list_array(array)?;
             generic_list_cardinality::<i64>(list_array)
         }
         Map(_, _) => {
-            let map_array = as_map_array(&args[0])?;
+            let map_array = as_map_array(array)?;
             generic_map_cardinality(map_array)
         }
-        other => {
-            exec_err!("cardinality does not support type '{:?}'", other)
+        arg_type => {
+            exec_err!("cardinality does not support an argument of type '{arg_type}'")
         }
     }
 }

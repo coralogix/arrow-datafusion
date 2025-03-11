@@ -1182,7 +1182,7 @@ select array_element([1, 2], NULL);
 ----
 NULL
 
-query I
+query ?
 select array_element(NULL, 2);
 ----
 NULL
@@ -1412,6 +1412,91 @@ NULL 23
 2 33
 NULL 43
 5 NULL
+
+## array_max
+# array_max scalar function #1 (with positive index)
+query I
+select array_max(make_array(5, 3, 6, 4));
+----
+6
+
+query I
+select array_max(make_array(5, 3, 4, NULL, 6, NULL));
+----
+6
+
+query ?
+select array_max(make_array(NULL, NULL));
+----
+NULL
+
+query T
+select array_max(make_array('h', 'e', 'o', 'l', 'l'));
+----
+o
+
+query T
+select array_max(make_array('h', 'e', 'l', NULL, 'l', 'o', NULL));
+----
+o
+
+query B
+select array_max(make_array(false, true, false, true));
+----
+true
+
+query B
+select array_max(make_array(false, true, NULL, false, true));
+----
+true
+
+query D
+select array_max(make_array(DATE '1992-09-01', DATE '1993-03-01', DATE '1999-05-01', DATE '1985-11-01'));
+----
+1999-05-01
+
+query D
+select array_max(make_array(DATE '1995-09-01', DATE '1999-05-01', DATE '1993-03-01', NULL));
+----
+1999-05-01
+
+query P
+select array_max(make_array(TIMESTAMP '1992-09-01', TIMESTAMP '1995-06-01', TIMESTAMP '1984-10-01'));
+----
+1995-06-01T00:00:00
+
+query P
+select array_max(make_array(NULL, TIMESTAMP '1996-10-01', TIMESTAMP '1995-06-01'));
+----
+1996-10-01T00:00:00
+
+query R
+select array_max(make_array(5.1, -3.2, 6.3, 4.9));
+----
+6.3
+
+query ?I
+select input, array_max(input) from (select make_array(d - 1, d, d + 1) input from (values (0), (10), (20), (30), (NULL)) t(d))
+----
+[-1, 0, 1] 1
+[9, 10, 11] 11
+[19, 20, 21] 21
+[29, 30, 31] 31
+[NULL, NULL, NULL] NULL
+
+query II
+select array_max(arrow_cast(make_array(1, 2, 3), 'FixedSizeList(3, Int64)')), array_max(arrow_cast(make_array(1), 'FixedSizeList(1, Int64)'));
+----
+3 1
+
+query ?
+select array_max(make_array());
+----
+NULL
+
+# Testing with empty arguments should result in an error
+query error DataFusion error: Error during planning: 'array_max' does not support zero arguments
+select array_max();
 
 ## array_pop_back (aliases: `list_pop_back`)
 
@@ -2044,7 +2129,7 @@ select array_any_value(1), array_any_value('a'), array_any_value(NULL);
 
 # array_any_value scalar function #1 (with null and non-null elements)
 
-query ITII
+query IT?I
 select array_any_value(make_array(NULL, 1, 2, 3, 4, 5)), array_any_value(make_array(NULL, 'h', 'e', 'l', 'l', 'o')), array_any_value(make_array(NULL, NULL)), array_any_value(make_array(NULL, NULL, 1, 2, 3));
 ----
 1 h NULL 1
@@ -2297,11 +2382,15 @@ select array_append(null, 1);
 ----
 [1]
 
-query error
+query ?
 select array_append(null, [2, 3]);
+----
+[[2, 3]]
 
-query error
+query ?
 select array_append(null, [[4]]);
+----
+[[[4]]]
 
 query ????
 select
@@ -2578,8 +2667,10 @@ select array_prepend(null, [[1,2,3]]);
 # DuckDB: [[]]
 # ClickHouse: [[]]
 # TODO: We may also return [[]]
-query error
+query ?
 select array_prepend([], []);
+----
+[[]]
 
 query ?
 select array_prepend(null, null);
@@ -2892,8 +2983,53 @@ select array_concat([]);
 ----
 []
 
+# Concatenating strings arrays
+query ?
+select array_concat(
+  ['1', '2'],
+  ['3']
+);
+----
+[1, 2, 3]
+
+# Concatenating string arrays
+query ?
+select array_concat(
+  [arrow_cast('1', 'LargeUtf8'), arrow_cast('2', 'LargeUtf8')],
+  [arrow_cast('3', 'LargeUtf8')]
+);
+----
+[1, 2, 3]
+
+# Concatenating stringview
+query ?
+select array_concat(
+  [arrow_cast('1', 'Utf8View'), arrow_cast('2', 'Utf8View')],
+  [arrow_cast('3', 'Utf8View')]
+);
+----
+[1, 2, 3]
+
+# Concatenating Mixed types
+query ?
+select array_concat(
+  [arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')],
+  [arrow_cast('3', 'LargeUtf8')]
+);
+----
+[1, 2, 3]
+
+# Concatenating Mixed types
+query ?
+select array_concat(
+  [arrow_cast('1', 'Utf8'), arrow_cast('2', 'Utf8')],
+  [arrow_cast('3', 'Utf8View')]
+);
+----
+[1, 2, 3]
+
 # array_concat error
-query error DataFusion error: Error during planning: The array_concat function can only accept list as the args\.
+query error DataFusion error: Error during planning: Execution error: Function 'array_concat' user-defined coercion failed with "Error during planning: array_concat does not support an argument of type Int64"
 select array_concat(1, 2);
 
 # array_concat scalar function #1
@@ -3204,15 +3340,11 @@ SELECT array_position(arrow_cast([1, 1, 100, 1, 1], 'LargeList(Int32)'), 100)
 ----
 3
 
-query I
+query error DataFusion error: Error during planning: Failed to coerce arguments to satisfy a call to 'array_position' function: coercion from
 SELECT array_position([1, 2, 3], 'foo')
-----
-NULL
 
-query I
+query error DataFusion error: Error during planning: Failed to coerce arguments to satisfy a call to 'array_position' function: coercion from
 SELECT array_position([1, 2, 3], 'foo', 2)
-----
-NULL
 
 # list_position scalar function #5 (function alias `array_position`)
 query III
@@ -4150,7 +4282,8 @@ select array_union(arrow_cast([1, 2, 3, 4], 'LargeList(Int64)'), arrow_cast([5, 
 statement ok
 CREATE TABLE arrays_with_repeating_elements_for_union
 AS VALUES
-  ([1], [2]),
+  ([0, 1, 1], []),
+  ([1, 1], [2]),
   ([2, 3], [3]),
   ([3], [3, 4])
 ;
@@ -4158,6 +4291,7 @@ AS VALUES
 query ?
 select array_union(column1, column2) from arrays_with_repeating_elements_for_union;
 ----
+[0, 1]
 [1, 2]
 [2, 3]
 [3, 4]
@@ -4165,6 +4299,7 @@ select array_union(column1, column2) from arrays_with_repeating_elements_for_uni
 query ?
 select array_union(arrow_cast(column1, 'LargeList(Int64)'), arrow_cast(column2, 'LargeList(Int64)')) from arrays_with_repeating_elements_for_union;
 ----
+[0, 1]
 [1, 2]
 [2, 3]
 [3, 4]
@@ -4189,10 +4324,8 @@ select array_union([[null]], []);
 ----
 [[]]
 
-query ?
+query error DataFusion error: Error during planning: Failed to unify argument types of array_union:
 select array_union(arrow_cast([[null]], 'LargeList(List(Int64))'), arrow_cast([], 'LargeList(Int64)'));
-----
-[[]]
 
 # array_union scalar function #8
 query ?
@@ -5968,12 +6101,12 @@ select array_intersect(arrow_cast([1, 1, 2, 2, 3, 3], 'LargeList(Int64)'), null)
 query ?
 select array_intersect(null, [1, 1, 2, 2, 3, 3]);
 ----
-NULL
+[]
 
 query ?
 select array_intersect(null, arrow_cast([1, 1, 2, 2, 3, 3], 'LargeList(Int64)'));
 ----
-NULL
+[]
 
 query ?
 select array_intersect([], null);
@@ -5998,12 +6131,12 @@ select array_intersect(arrow_cast([], 'LargeList(Int64)'), null);
 query ?
 select array_intersect(null, []);
 ----
-NULL
+[]
 
 query ?
 select array_intersect(null, arrow_cast([], 'LargeList(Int64)'));
 ----
-NULL
+[]
 
 query ?
 select array_intersect(null, null);

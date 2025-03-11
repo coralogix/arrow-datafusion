@@ -17,26 +17,31 @@
 
 //! [`ScalarUDFImpl`] definitions for `array_append`, `array_prepend` and `array_concat` functions.
 
+use std::any::Any;
 use std::sync::{Arc, OnceLock};
-use std::{any::Any, cmp::Ordering};
 
+use crate::make_array::make_array_inner;
+use crate::utils::{align_array_dimensions, check_datatypes, make_scalar_function};
 use arrow::array::{
     Array, ArrayRef, Capacities, GenericListArray, MutableArrayData, OffsetSizeTrait,
 };
+use arrow_array::NullArray;
 use arrow_buffer::{BooleanBufferBuilder, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field};
-use datafusion_common::utils::ListCoercion;
+use datafusion_common::utils::{
+    base_type, coerced_type_with_base_type_only, ListCoercion,
+};
 use datafusion_common::Result;
 use datafusion_common::{
-    cast::as_generic_list_array, exec_err, not_impl_err, plan_err, utils::list_ndims,
+    cast::as_generic_list_array,
+    exec_err, plan_err,
+    utils::{list_ndims, take_function_args},
 };
+use datafusion_expr::binary::type_union_resolution;
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
-    type_coercion::binary::get_wider_type, ArrayFunctionArgument, ArrayFunctionSignature,
-    ColumnarValue, Documentation, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
 };
-
-use crate::utils::{align_array_dimensions, check_datatypes, make_scalar_function};
 
 make_udf_expr_and_func!(
     ArrayAppend,
@@ -85,7 +90,12 @@ impl ScalarUDFImpl for ArrayAppend {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        Ok(arg_types[0].clone())
+        let [array_type, element_type] = take_function_args(self.name(), arg_types)?;
+        if array_type.is_null() {
+            Ok(DataType::new_list(element_type.clone(), true))
+        } else {
+            Ok(array_type.clone())
+        }
     }
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
@@ -157,18 +167,7 @@ impl Default for ArrayPrepend {
 impl ArrayPrepend {
     pub fn new() -> Self {
         Self {
-            signature: Signature {
-                type_signature: TypeSignature::ArraySignature(
-                    ArrayFunctionSignature::Array {
-                        arguments: vec![
-                            ArrayFunctionArgument::Element,
-                            ArrayFunctionArgument::Array,
-                        ],
-                        array_coercion: Some(ListCoercion::FixedSizedListToList),
-                    },
-                ),
-                volatility: Volatility::Immutable,
-            },
+            signature: Signature::element_and_array(Volatility::Immutable),
             aliases: vec![
                 String::from("list_prepend"),
                 String::from("array_push_front"),
@@ -192,7 +191,12 @@ impl ScalarUDFImpl for ArrayPrepend {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        Ok(arg_types[1].clone())
+        let [element_type, array_type] = take_function_args(self.name(), arg_types)?;
+        if array_type.is_null() {
+            Ok(DataType::new_list(element_type.clone(), true))
+        } else {
+            Ok(array_type.clone())
+        }
     }
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
@@ -261,7 +265,7 @@ impl Default for ArrayConcat {
 impl ArrayConcat {
     pub fn new() -> Self {
         Self {
-            signature: Signature::variadic_any(Volatility::Immutable),
+            signature: Signature::user_defined(Volatility::Immutable),
             aliases: vec![
                 String::from("array_cat"),
                 String::from("list_concat"),
@@ -285,32 +289,43 @@ impl ScalarUDFImpl for ArrayConcat {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        let mut expr_type = DataType::Null;
         let mut max_dims = 0;
+        let mut large_list = false;
+        let mut element_types = Vec::with_capacity(arg_types.len());
         for arg_type in arg_types {
             match arg_type {
-                DataType::List(field) => {
-                    if !field.data_type().equals_datatype(&DataType::Null) {
-                        let dims = list_ndims(arg_type);
-                        expr_type = match max_dims.cmp(&dims) {
-                            Ordering::Greater => expr_type,
-                            Ordering::Equal => get_wider_type(&expr_type, arg_type)?,
-                            Ordering::Less => {
-                                max_dims = dims;
-                                arg_type.clone()
-                            }
-                        };
-                    }
-                }
-                _ => {
+                DataType::Null | DataType::List(_) | DataType::FixedSizeList(..) => (),
+                DataType::LargeList(_) => large_list = true,
+                arg_type => {
                     return plan_err!(
-                        "The array_concat function can only accept list as the args."
+                        "{} does not support an argument of type {arg_type}",
+                        self.name()
                     )
                 }
             }
+
+            max_dims = max_dims.max(list_ndims(arg_type));
+            element_types.push(base_type(arg_type))
         }
 
-        Ok(expr_type)
+        if max_dims == 0 {
+            Ok(DataType::Null)
+        } else if let Some(mut return_type) = type_union_resolution(&element_types) {
+            for _ in 1..max_dims {
+                return_type = DataType::new_list(return_type, true)
+            }
+
+            if large_list {
+                Ok(DataType::new_large_list(return_type, true))
+            } else {
+                Ok(DataType::new_list(return_type, true))
+            }
+        } else {
+            plan_err!(
+                "Failed to unify argument types of {}: {arg_types:?}",
+                self.name()
+            )
+        }
     }
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
@@ -319,6 +334,16 @@ impl ScalarUDFImpl for ArrayConcat {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+
+    fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
+        let base_type = base_type(&self.return_type(arg_types)?);
+        let coercion = Some(&ListCoercion::FixedSizedListToList);
+        let arg_types = arg_types.iter().map(|arg_type| {
+            coerced_type_with_base_type_only(arg_type, &base_type, coercion)
+        });
+
+        Ok(arg_types.collect())
     }
 
     fn documentation(&self) -> Option<&Documentation> {
@@ -360,24 +385,27 @@ fn get_array_concat_doc() -> &'static Documentation {
 /// Array_concat/Array_cat SQL function
 pub(crate) fn array_concat_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
     if args.is_empty() {
-        return exec_err!("array_concat expects at least one arguments");
+        return exec_err!("array_concat expects at least one argument");
     }
 
-    let mut new_args = vec![];
+    let mut all_null = true;
+    let mut large_list = false;
     for arg in args {
-        let ndim = list_ndims(arg.data_type());
-        let base_type = datafusion_common::utils::base_type(arg.data_type());
-        if ndim == 0 {
-            return not_impl_err!("Array is not type '{base_type:?}'.");
+        match arg.data_type() {
+            DataType::Null => continue,
+            DataType::LargeList(_) => large_list = true,
+            _ => (),
         }
-        if !base_type.eq(&DataType::Null) {
-            new_args.push(Arc::clone(arg));
-        }
+
+        all_null = false
     }
 
-    match &args[0].data_type() {
-        DataType::LargeList(_) => concat_internal::<i64>(new_args.as_slice()),
-        _ => concat_internal::<i32>(new_args.as_slice()),
+    if all_null {
+        Ok(Arc::new(NullArray::new(args[0].len())))
+    } else if large_list {
+        concat_internal::<i64>(args)
+    } else {
+        concat_internal::<i32>(args)
     }
 }
 
@@ -447,25 +475,29 @@ fn concat_internal<O: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
 
 /// Array_append SQL function
 pub(crate) fn array_append_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
-    if args.len() != 2 {
-        return exec_err!("array_append expects two arguments");
-    }
+    let [array, values] = take_function_args("array_append", args)?;
 
-    match args[0].data_type() {
+    match array.data_type() {
+        DataType::Null => make_array_inner(&[Arc::clone(values)]),
+        DataType::List(_) => general_append_and_prepend::<i32>(args, true),
         DataType::LargeList(_) => general_append_and_prepend::<i64>(args, true),
-        _ => general_append_and_prepend::<i32>(args, true),
+        arg_type => {
+            exec_err!("array_append does not support an argument of type {arg_type}")
+        }
     }
 }
 
 /// Array_prepend SQL function
 pub(crate) fn array_prepend_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
-    if args.len() != 2 {
-        return exec_err!("array_prepend expects two arguments");
-    }
+    let [values, array] = take_function_args("array_prepend", args)?;
 
-    match args[1].data_type() {
+    match array.data_type() {
+        DataType::Null => make_array_inner(&[Arc::clone(values)]),
+        DataType::List(_) => general_append_and_prepend::<i32>(args, false),
         DataType::LargeList(_) => general_append_and_prepend::<i64>(args, false),
-        _ => general_append_and_prepend::<i32>(args, false),
+        arg_type => {
+            exec_err!("array_prepend does not support an argument of type {arg_type}")
+        }
     }
 }
 

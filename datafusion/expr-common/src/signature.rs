@@ -360,6 +360,7 @@ impl Signature {
             volatility,
         }
     }
+
     /// Any one of a list of [TypeSignature]s.
     pub fn one_of(type_signatures: Vec<TypeSignature>, volatility: Volatility) -> Self {
         Signature {
@@ -367,6 +368,7 @@ impl Signature {
             volatility,
         }
     }
+
     /// Specialized Signature for ArrayAppend and similar functions
     pub fn array_and_element(volatility: Volatility) -> Self {
         Signature {
@@ -382,6 +384,39 @@ impl Signature {
             volatility,
         }
     }
+
+    /// Specialized Signature for ArrayPrepend and similar functions
+    pub fn element_and_array(volatility: Volatility) -> Self {
+        Signature {
+            type_signature: TypeSignature::ArraySignature(
+                ArrayFunctionSignature::Array {
+                    arguments: vec![
+                        ArrayFunctionArgument::Element,
+                        ArrayFunctionArgument::Array,
+                    ],
+                    array_coercion: Some(ListCoercion::FixedSizedListToList),
+                },
+            ),
+            volatility,
+        }
+    }
+
+    /// Specialized Signature for ArrayUnion and similar functions
+    pub fn array_and_array(volatility: Volatility) -> Self {
+        Signature {
+            type_signature: TypeSignature::ArraySignature(
+                ArrayFunctionSignature::Array {
+                    arguments: vec![
+                        ArrayFunctionArgument::Array,
+                        ArrayFunctionArgument::Array,
+                    ],
+                    array_coercion: Some(ListCoercion::FixedSizedListToList),
+                },
+            ),
+            volatility,
+        }
+    }
+
     /// Specialized Signature for Array functions with an optional index
     pub fn array_and_element_and_optional_index(volatility: Volatility) -> Self {
         Signature {
@@ -415,7 +450,7 @@ impl Signature {
                         ArrayFunctionArgument::Array,
                         ArrayFunctionArgument::Index,
                     ],
-                    array_coercion: None,
+                    array_coercion: Some(ListCoercion::FixedSizedListToList),
                 },
             ),
             volatility,
@@ -427,7 +462,7 @@ impl Signature {
             type_signature: TypeSignature::ArraySignature(
                 ArrayFunctionSignature::Array {
                     arguments: vec![ArrayFunctionArgument::Array],
-                    array_coercion: None,
+                    array_coercion: Some(ListCoercion::FixedSizedListToList),
                 },
             ),
             volatility,
