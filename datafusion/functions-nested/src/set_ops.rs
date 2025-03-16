@@ -74,7 +74,7 @@ pub(super) struct ArrayUnion {
 impl ArrayUnion {
     pub fn new() -> Self {
         Self {
-            signature: Signature::array_and_array(Volatility::Immutable),
+            signature: Signature::arrays(2, Volatility::Immutable),
             aliases: vec![String::from("list_union")],
         }
     }
@@ -164,7 +164,7 @@ pub(super) struct ArrayIntersect {
 impl ArrayIntersect {
     pub fn new() -> Self {
         Self {
-            signature: Signature::array_and_array(Volatility::Immutable),
+            signature: Signature::arrays(2, Volatility::Immutable),
             aliases: vec![String::from("list_intersect")],
         }
     }

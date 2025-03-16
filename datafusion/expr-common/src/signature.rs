@@ -369,7 +369,7 @@ impl Signature {
         }
     }
 
-    /// Specialized Signature for ArrayAppend and similar functions
+    /// Specialized [Signature] for ArrayAppend and similar functions.
     pub fn array_and_element(volatility: Volatility) -> Self {
         Signature {
             type_signature: TypeSignature::ArraySignature(
@@ -385,7 +385,7 @@ impl Signature {
         }
     }
 
-    /// Specialized Signature for ArrayPrepend and similar functions
+    /// Specialized [Signature] for ArrayPrepend and similar functions.
     pub fn element_and_array(volatility: Volatility) -> Self {
         Signature {
             type_signature: TypeSignature::ArraySignature(
@@ -401,15 +401,12 @@ impl Signature {
         }
     }
 
-    /// Specialized Signature for ArrayUnion and similar functions
-    pub fn array_and_array(volatility: Volatility) -> Self {
+    /// Specialized [Signature] for functions that take a fixed number of arrays.
+    pub fn arrays(n: usize, volatility: Volatility) -> Self {
         Signature {
             type_signature: TypeSignature::ArraySignature(
                 ArrayFunctionSignature::Array {
-                    arguments: vec![
-                        ArrayFunctionArgument::Array,
-                        ArrayFunctionArgument::Array,
-                    ],
+                    arguments: vec![ArrayFunctionArgument::Array; n],
                     array_coercion: Some(ListCoercion::FixedSizedListToList),
                 },
             ),
@@ -417,7 +414,7 @@ impl Signature {
         }
     }
 
-    /// Specialized Signature for Array functions with an optional index
+    /// Specialized [Signature] for Array functions with an optional index.
     pub fn array_and_element_and_optional_index(volatility: Volatility) -> Self {
         Signature {
             type_signature: TypeSignature::OneOf(vec![
@@ -441,7 +438,7 @@ impl Signature {
         }
     }
 
-    /// Specialized Signature for ArrayElement and similar functions
+    /// Specialized [Signature] for ArrayElement and similar functions.
     pub fn array_and_index(volatility: Volatility) -> Self {
         Signature {
             type_signature: TypeSignature::ArraySignature(
@@ -456,17 +453,10 @@ impl Signature {
             volatility,
         }
     }
-    /// Specialized Signature for ArrayEmpty and similar functions
+
+    /// Specialized [Signature] for ArrayEmpty and similar functions.
     pub fn array(volatility: Volatility) -> Self {
-        Signature {
-            type_signature: TypeSignature::ArraySignature(
-                ArrayFunctionSignature::Array {
-                    arguments: vec![ArrayFunctionArgument::Array],
-                    array_coercion: Some(ListCoercion::FixedSizedListToList),
-                },
-            ),
-            volatility,
-        }
+        Signature::arrays(1, volatility)
     }
 }
 
