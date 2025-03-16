@@ -21,17 +21,16 @@ use std::sync::Arc;
 
 use arrow::{array::ArrayRef, datatypes::DataType};
 
+use arrow::buffer::OffsetBuffer;
 use arrow_array::{
-    Array, BooleanArray, GenericListArray, ListArray, OffsetSizeTrait, Scalar,
-    UInt32Array,
+    Array, BooleanArray, GenericListArray, OffsetSizeTrait, Scalar, UInt32Array,
 };
-use arrow_buffer::OffsetBuffer;
 use arrow_schema::{Field, Fields};
-use datafusion_common::cast::{as_large_list_array, as_list_array};
+use datafusion_common::cast::{
+    as_fixed_size_list_array, as_large_list_array, as_list_array,
+};
 use datafusion_common::{exec_err, internal_err, plan_err, Result, ScalarValue};
 
-use core::any::type_name;
-use datafusion_common::DataFusionError;
 use datafusion_expr::ColumnarValue;
 
 macro_rules! downcast_arg {
@@ -246,8 +245,16 @@ pub(crate) fn compute_array_dims(
 
     loop {
         match value.data_type() {
-            DataType::List(..) => {
-                value = downcast_arg!(value, ListArray).value(0);
+            DataType::List(_) => {
+                value = as_list_array(&value)?.value(0);
+                res.push(Some(value.len() as u64));
+            }
+            DataType::LargeList(_) => {
+                value = as_large_list_array(&value)?.value(0);
+                res.push(Some(value.len() as u64));
+            }
+            DataType::FixedSizeList(..) => {
+                value = as_fixed_size_list_array(&value)?.value(0);
                 res.push(Some(value.len() as u64));
             }
             _ => return Ok(Some(res)),
@@ -273,6 +280,7 @@ pub(crate) fn get_map_entry_field(data_type: &DataType) -> Result<&Fields> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::ListArray;
     use arrow::datatypes::Int64Type;
     use datafusion_common::utils::array_into_list_array_nullable;
 

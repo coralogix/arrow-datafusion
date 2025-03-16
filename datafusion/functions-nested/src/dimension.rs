@@ -17,19 +17,19 @@
 
 //! [`ScalarUDFImpl`] definitions for array_dims and array_ndims functions.
 
-use arrow::array::{
-    Array, ArrayRef, GenericListArray, ListArray, OffsetSizeTrait, UInt64Array,
-};
+use arrow::array::{Array, ArrayRef, ListArray, UInt64Array};
 
 use arrow::datatypes::{
     DataType,
-    DataType::{LargeList, List, Null, UInt64},
+    DataType::{FixedSizeList, LargeList, List, Null, UInt64},
     UInt64Type,
 };
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use std::any::Any;
 
-use datafusion_common::cast::{as_large_list_array, as_list_array};
+use datafusion_common::cast::{
+    as_fixed_size_list_array, as_large_list_array, as_list_array,
+};
 use datafusion_common::{exec_err, utils::take_function_args, Result};
 
 use crate::utils::{compute_array_dims, make_scalar_function};
@@ -37,6 +37,7 @@ use datafusion_common::utils::list_ndims;
 use datafusion_expr::{
     ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
 };
+use itertools::Itertools;
 use std::sync::{Arc, OnceLock};
 
 make_udf_expr_and_func!(
@@ -56,7 +57,7 @@ pub(super) struct ArrayDims {
 impl ArrayDims {
     pub fn new() -> Self {
         Self {
-            signature: Signature::array(Volatility::Immutable),
+            signature: Signature::arrays(1, None, Volatility::Immutable),
             aliases: vec!["list_dims".to_string()],
         }
     }
@@ -136,7 +137,7 @@ pub(super) struct ArrayNdims {
 impl ArrayNdims {
     pub fn new() -> Self {
         Self {
-            signature: Signature::array(Volatility::Immutable),
+            signature: Signature::arrays(1, None, Volatility::Immutable),
             aliases: vec![String::from("list_ndims")],
         }
     }
@@ -205,19 +206,21 @@ fn get_array_ndims_doc() -> &'static Documentation {
 /// Array_dims SQL function
 pub fn array_dims_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
     let [array] = take_function_args("array_dims", args)?;
-    let data = match array.data_type() {
+    let data: Vec<_> = match array.data_type() {
         List(_) => as_list_array(&array)?
             .iter()
             .map(compute_array_dims)
-            .collect::<Result<Vec<_>>>()?,
+            .try_collect()?,
         LargeList(_) => as_large_list_array(&array)?
             .iter()
             .map(compute_array_dims)
-            .collect::<Result<Vec<_>>>()?,
+            .try_collect()?,
+        FixedSizeList(..) => as_fixed_size_list_array(&array)?
+            .iter()
+            .map(compute_array_dims)
+            .try_collect()?,
         arg_type => {
-            return exec_err!(
-                "array_dims does not support an argument of type {arg_type}"
-            );
+            return exec_err!("array_dims does not support type {arg_type}");
         }
     };
 
@@ -229,9 +232,7 @@ pub fn array_dims_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
 pub fn array_ndims_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
     let [array] = take_function_args("array_ndims", args)?;
 
-    fn general_list_ndims<O: OffsetSizeTrait>(
-        array: &GenericListArray<O>,
-    ) -> Result<ArrayRef> {
+    fn general_list_ndims(array: &ArrayRef) -> Result<ArrayRef> {
         let ndims = list_ndims(array.data_type());
         let data = vec![ndims; array.len()];
         let result = UInt64Array::new(data.into(), array.nulls().cloned());
@@ -240,16 +241,7 @@ pub fn array_ndims_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
 
     match array.data_type() {
         Null => Ok(Arc::new(UInt64Array::new_null(array.len()))),
-        List(_) => {
-            let array = as_list_array(array)?;
-            general_list_ndims::<i32>(array)
-        }
-        LargeList(_) => {
-            let array = as_large_list_array(array)?;
-            general_list_ndims::<i64>(array)
-        }
-        arg_type => {
-            exec_err!("array_ndims does not support an argument of type type {arg_type}")
-        }
+        List(_) | LargeList(_) | FixedSizeList(..) => general_list_ndims(array),
+        arg_type => exec_err!("array_ndims does not support type {arg_type}"),
     }
 }

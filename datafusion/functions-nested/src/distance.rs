@@ -92,10 +92,7 @@ impl ScalarUDFImpl for ArrayDistance {
                     coercion,
                 ))
             } else {
-                plan_err!(
-                    "{} does not support an argument of type {arg_type}",
-                    self.name()
-                )
+                plan_err!("{} does not support type {arg_type}", self.name())
             }
         });
 
@@ -154,7 +151,7 @@ pub fn array_distance_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
         (List(_), List(_)) => general_array_distance::<i32>(args),
         (LargeList(_), LargeList(_)) => general_array_distance::<i64>(args),
         (arg_type1, arg_type2) => {
-            exec_err!("array_distance does not support arguments of type {arg_type1} and {arg_type2:?}")
+            exec_err!("array_distance does not support types {arg_type1} and {arg_type2}")
         }
     }
 }

@@ -941,7 +941,11 @@ mod tests {
 
     #[test]
     fn test_get_valid_types_array_and_array() -> Result<()> {
-        let signature = Signature::arrays(2, Volatility::Immutable);
+        let signature = Signature::arrays(
+            2,
+            Some(ListCoercion::FixedSizedListToList),
+            Volatility::Immutable,
+        );
 
         let data_types = vec![
             DataType::new_list(DataType::Int32, true),
@@ -1044,17 +1048,14 @@ mod tests {
 
     #[test]
     fn test_get_valid_types_fixed_size_arrays() -> Result<()> {
-        let signature = TypeSignature::ArraySignature(ArrayFunctionSignature::Array {
-            arguments: vec![ArrayFunctionArgument::Array; 2],
-            array_coercion: None,
-        });
+        let signature = Signature::arrays(2, None, Volatility::Immutable);
 
         let data_types = vec![
             DataType::new_fixed_size_list(DataType::Int64, 3, true),
             DataType::new_fixed_size_list(DataType::Int32, 5, true),
         ];
         assert_eq!(
-            get_valid_types(&signature, &data_types)?,
+            get_valid_types(&signature.type_signature, &data_types)?,
             vec![vec![
                 DataType::new_fixed_size_list(DataType::Int64, 3, true),
                 DataType::new_fixed_size_list(DataType::Int64, 5, true),
@@ -1066,7 +1067,7 @@ mod tests {
             DataType::new_list(DataType::Int32, true),
         ];
         assert_eq!(
-            get_valid_types(&signature, &data_types)?,
+            get_valid_types(&signature.type_signature, &data_types)?,
             vec![vec![
                 DataType::new_list(DataType::Int64, true),
                 DataType::new_list(DataType::Int64, true),
@@ -1077,7 +1078,10 @@ mod tests {
             DataType::new_fixed_size_list(DataType::Utf8, 3, true),
             DataType::new_list(DataType::new_list(DataType::Int32, true), true),
         ];
-        assert_eq!(get_valid_types(&signature, &data_types)?, vec![vec![]]);
+        assert_eq!(
+            get_valid_types(&signature.type_signature, &data_types)?,
+            vec![vec![]]
+        );
 
         Ok(())
     }

@@ -24,12 +24,14 @@ use arrow::array::{
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::compute;
+use arrow::datatypes::DataType::{LargeList, List, Null};
 use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::row::{RowConverter, SortField};
-use arrow_schema::DataType::{FixedSizeList, LargeList, List, Null};
 use datafusion_common::cast::{as_large_list_array, as_list_array};
-use datafusion_common::utils::take_function_args;
-use datafusion_common::{exec_err, internal_err, Result};
+use datafusion_common::utils::ListCoercion;
+use datafusion_common::{
+    exec_err, internal_err, plan_err, utils::take_function_args, Result,
+};
 use datafusion_expr::scalar_doc_sections::DOC_SECTION_ARRAY;
 use datafusion_expr::{
     ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
@@ -74,7 +76,11 @@ pub(super) struct ArrayUnion {
 impl ArrayUnion {
     pub fn new() -> Self {
         Self {
-            signature: Signature::arrays(2, Volatility::Immutable),
+            signature: Signature::arrays(
+                2,
+                Some(ListCoercion::FixedSizedListToList),
+                Volatility::Immutable,
+            ),
             aliases: vec![String::from("list_union")],
         }
     }
@@ -164,7 +170,11 @@ pub(super) struct ArrayIntersect {
 impl ArrayIntersect {
     pub fn new() -> Self {
         Self {
-            signature: Signature::arrays(2, Volatility::Immutable),
+            signature: Signature::arrays(
+                2,
+                Some(ListCoercion::FixedSizedListToList),
+                Volatility::Immutable,
+            ),
             aliases: vec![String::from("list_intersect")],
         }
     }
@@ -273,19 +283,11 @@ impl ScalarUDFImpl for ArrayDistinct {
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         match &arg_types[0] {
-            List(field) | FixedSizeList(field, _) => Ok(List(Arc::new(Field::new(
-                "item",
-                field.data_type().clone(),
-                true,
-            )))),
-            LargeList(field) => Ok(LargeList(Arc::new(Field::new(
-                "item",
-                field.data_type().clone(),
-                true,
-            )))),
-            _ => exec_err!(
-                "Not reachable, data_type should be List, LargeList or FixedSizeList"
-            ),
+            List(field) => Ok(DataType::new_list(field.data_type().clone(), true)),
+            LargeList(field) => {
+                Ok(DataType::new_large_list(field.data_type().clone(), true))
+            }
+            arg_type => plan_err!("{} does not support type {arg_type}", self.name()),
         }
     }
 
@@ -332,26 +334,18 @@ fn get_array_distinct_doc() -> &'static Documentation {
 /// array_distinct SQL function
 /// example: from list [1, 3, 2, 3, 1, 2, 4] to [1, 2, 3, 4]
 fn array_distinct_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
-    if args.len() != 1 {
-        return exec_err!("array_distinct needs one argument");
-    }
-
-    // handle null
-    if args[0].data_type() == &Null {
-        return Ok(Arc::clone(&args[0]));
-    }
-
-    // handle for list & largelist
-    match args[0].data_type() {
+    let [array] = take_function_args("array_distinct", args)?;
+    match array.data_type() {
+        Null => Ok(Arc::clone(array)),
         List(field) => {
-            let array = as_list_array(&args[0])?;
+            let array = as_list_array(&array)?;
             general_array_distinct(array, field)
         }
         LargeList(field) => {
-            let array = as_large_list_array(&args[0])?;
+            let array = as_large_list_array(&array)?;
             general_array_distinct(array, field)
         }
-        array_type => exec_err!("array_distinct does not support type '{array_type:?}'"),
+        arg_type => exec_err!("array_distinct does not support type {arg_type}"),
     }
 }
 
