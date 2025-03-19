@@ -39,6 +39,7 @@ name = "datafusion_functions_nested"
 
 [dependencies]
 arrow = { workspace = true }
+arrow-array = { workspace = true }
 arrow-ord = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-doc = { workspace = true }
