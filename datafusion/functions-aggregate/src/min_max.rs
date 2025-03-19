@@ -15,22 +15,6 @@
 // under the License.
 
 //! [`Max`] and [`MaxAccumulator`] accumulator for the `max` function
-//! [`Min`] and [`MinAccumulator`] accumulator for the `max` function
-
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
 
 use arrow::array::{
     ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array,
@@ -41,6 +25,8 @@ use arrow::array::{
     Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
     TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
+    DurationSecondArray,
 };
 use arrow::compute;
 use arrow::datatypes::{
@@ -431,6 +417,33 @@ macro_rules! min_max_batch {
                     $VALUES,
                     IntervalMonthDayNanoArray,
                     IntervalMonthDayNano,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Second) => {
+                typed_min_max_batch!($VALUES, DurationSecondArray, DurationSecond, $OP)
+            }
+            DataType::Duration(TimeUnit::Millisecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMillisecondArray,
+                    DurationMillisecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Microsecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMicrosecondArray,
+                    DurationMicrosecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Nanosecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationNanosecondArray,
+                    DurationNanosecond,
                     $OP
                 )
             }
