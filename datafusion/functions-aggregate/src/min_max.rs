@@ -1648,7 +1648,7 @@ mod tests {
         assert_eq!(
             min_res,
             ScalarValue::IntervalYearMonth(Some(IntervalYearMonthType::make_value(
-                -2, 4
+                -2, 4,
             )))
         );
 
@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(
             max_res,
             ScalarValue::IntervalYearMonth(Some(IntervalYearMonthType::make_value(
-                5, 34
+                5, 34,
             )))
         );
 
