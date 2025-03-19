@@ -16,14 +16,14 @@
 // under the License.
 
 //! [`Max`] and [`MaxAccumulator`] accumulator for the `max` function
-//! [`Min`] and [`MinAccumulator`] accumulator for the `min` function
 
 mod min_max_bytes;
 
 use arrow::array::{
     ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array,
-    Decimal128Array, Decimal256Array, Float16Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, IntervalDayTimeArray,
+    Decimal128Array, Decimal256Array, DurationMicrosecondArray, DurationMillisecondArray,
+    DurationNanosecondArray, DurationSecondArray, Float16Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, IntervalDayTimeArray,
     IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray,
     LargeStringArray, StringArray, StringViewArray, Time32MillisecondArray,
     Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
@@ -510,6 +510,33 @@ macro_rules! min_max_batch {
                     $VALUES,
                     IntervalMonthDayNanoArray,
                     IntervalMonthDayNano,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Second) => {
+                typed_min_max_batch!($VALUES, DurationSecondArray, DurationSecond, $OP)
+            }
+            DataType::Duration(TimeUnit::Millisecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMillisecondArray,
+                    DurationMillisecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Microsecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMicrosecondArray,
+                    DurationMicrosecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Nanosecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationNanosecondArray,
+                    DurationNanosecond,
                     $OP
                 )
             }
