@@ -24,7 +24,8 @@ use crate::aggregate::groups_accumulator::prim_op::PrimitiveGroupsAccumulator;
 use crate::{AggregateExpr, PhysicalExpr};
 use arrow::compute;
 use arrow::datatypes::{
-    DataType, Date32Type, Date64Type, Time32MillisecondType, Time32SecondType,
+    DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationMillisecondType,
+    DurationNanosecondType, DurationSecondType, Time32MillisecondType, Time32SecondType,
     Time64MicrosecondType, Time64NanosecondType, TimeUnit, TimestampMicrosecondType,
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
 };
@@ -193,6 +194,7 @@ impl AggregateExpr for Max {
                 | Time32(_)
                 | Time64(_)
                 | Timestamp(_, _)
+                | Duration(_)
         )
     }
 
@@ -240,6 +242,18 @@ impl AggregateExpr for Max {
             }
             Timestamp(Nanosecond, _) => {
                 instantiate_max_accumulator!(self, i64, TimestampNanosecondType)
+            }
+            Duration(Second) => {
+                instantiate_max_accumulator!(self, i64, DurationSecondType)
+            }
+            Duration(Millisecond) => {
+                instantiate_max_accumulator!(self, i64, DurationMillisecondType)
+            }
+            Duration(Microsecond) => {
+                instantiate_max_accumulator!(self, i64, DurationMicrosecondType)
+            }
+            Duration(Nanosecond) => {
+                instantiate_max_accumulator!(self, i64, DurationNanosecondType)
             }
             Decimal128(_, _) => {
                 instantiate_max_accumulator!(self, i128, Decimal128Type)
@@ -945,6 +959,7 @@ impl AggregateExpr for Min {
                 | Time32(_)
                 | Time64(_)
                 | Timestamp(_, _)
+                | Duration(_)
         )
     }
 
@@ -991,6 +1006,18 @@ impl AggregateExpr for Min {
             }
             Timestamp(Nanosecond, _) => {
                 instantiate_min_accumulator!(self, i64, TimestampNanosecondType)
+            }
+            Duration(Second) => {
+                instantiate_min_accumulator!(self, i64, DurationSecondType)
+            }
+            Duration(Millisecond) => {
+                instantiate_min_accumulator!(self, i64, DurationMillisecondType)
+            }
+            Duration(Microsecond) => {
+                instantiate_min_accumulator!(self, i64, DurationMicrosecondType)
+            }
+            Duration(Nanosecond) => {
+                instantiate_min_accumulator!(self, i64, DurationNanosecondType)
             }
             Decimal128(_, _) => {
                 instantiate_min_accumulator!(self, i128, Decimal128Type)
