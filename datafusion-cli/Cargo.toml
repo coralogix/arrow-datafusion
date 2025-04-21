@@ -29,7 +29,7 @@ rust-version = "1.86.0"
 readme = "README.md"
 
 [dependencies]
-arrow = { version = "54.1.0" }
+arrow = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "511ca21b13ca0d7e9f4d3a579ec2e19a6f5e66e0" }
 async-trait = "0.1.0"
 aws-config = "1.5.0"
 aws-credential-types = "1.2.0"
@@ -57,7 +57,7 @@ home = "=0.5.11"
 mimalloc = { version = "0.1", default-features = false }
 object_store = { version = "0.11.0", features = ["aws", "gcp", "http"] }
 parking_lot = { version = "0.12" }
-parquet = { version = "54.1.0", default-features = false }
+parquet = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "511ca21b13ca0d7e9f4d3a579ec2e19a6f5e66e0", default-features = false }
 regex = "1.8"
 rustyline = "15.0"
 tokio = { version = "1.24", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot", "signal"] }
