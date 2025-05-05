@@ -79,6 +79,26 @@ impl BinaryExpr {
     pub fn op(&self) -> &Operator {
         &self.op
     }
+
+    /// Indicates whether interval arithmetic is supported for the given operator.
+    fn is_operator_supported(&self) -> bool {
+        matches!(
+            &self.op,
+            &Operator::Plus
+                | &Operator::Minus
+                | &Operator::And
+                | &Operator::Gt
+                | &Operator::GtEq
+                | &Operator::Lt
+                | &Operator::LtEq
+                | &Operator::Eq
+                | &Operator::NotEq
+                | &Operator::Multiply
+                | &Operator::Divide
+                | &Operator::IsDistinctFrom
+                | &Operator::IsNotDistinctFrom
+        )
+    }
 }
 
 impl std::fmt::Display for BinaryExpr {
@@ -325,6 +345,22 @@ impl PhysicalExpr for BinaryExpr {
             self.op,
             children[1].clone(),
         )))
+    }
+
+    fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
+        // Interval data types must be compatible for the given operation
+        if let (Ok(lhs), Ok(rhs)) = (
+            self.left.data_type(schema.as_ref()),
+            self.right.data_type(schema.as_ref()),
+        ) {
+            if get_result_type(&lhs, &self.op, &rhs).is_err() {
+                return false;
+            }
+        }
+
+        self.is_operator_supported()
+            && self.left.supports_bounds_evaluation(schema)
+            && self.right.supports_bounds_evaluation(schema)
     }
 
     fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {

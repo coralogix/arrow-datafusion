@@ -1578,7 +1578,6 @@ mod util_tests {
     use arrow_schema::{DataType, Field, Schema};
     use datafusion_expr::Operator;
     use datafusion_physical_expr::expressions::{BinaryExpr, Column, NegativeExpr};
-    use datafusion_physical_expr::intervals::utils::check_support;
     use datafusion_physical_expr::PhysicalExpr;
 
     #[test]
@@ -1592,21 +1591,24 @@ mod util_tests {
             Operator::Plus,
             Arc::new(Column::new("a", 0)),
         )) as Arc<dyn PhysicalExpr>;
-        assert!(check_support(&supported_expr, &schema));
+        assert!(supported_expr.supports_bounds_evaluation(&schema));
+
         let supported_expr_2 = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
-        assert!(check_support(&supported_expr_2, &schema));
+        assert!(supported_expr_2.supports_bounds_evaluation(&schema));
+
         let unsupported_expr = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("a", 0)),
             Operator::Or,
             Arc::new(Column::new("a", 0)),
         )) as Arc<dyn PhysicalExpr>;
-        assert!(!check_support(&unsupported_expr, &schema));
+        assert!(!unsupported_expr.supports_bounds_evaluation(&schema));
+
         let unsupported_expr_2 = Arc::new(BinaryExpr::new(
             Arc::new(Column::new("a", 0)),
             Operator::Or,
             Arc::new(NegativeExpr::new(Arc::new(Column::new("a", 0)))),
         )) as Arc<dyn PhysicalExpr>;
-        assert!(!check_support(&unsupported_expr_2, &schema));
+        assert!(!unsupported_expr_2.supports_bounds_evaluation(&schema));
     }
 }
 

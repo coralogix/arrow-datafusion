@@ -21,6 +21,7 @@ use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use arrow::datatypes::SchemaRef;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
@@ -29,6 +30,7 @@ use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
 
 use crate::physical_expr::{down_cast_any_ref, PhysicalExpr};
+use crate::utils::is_supported_datatype_for_bounds_eval;
 
 /// Represents the column at a given index in a RecordBatch
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
@@ -101,6 +103,14 @@ impl PhysicalExpr for Column {
         _children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(self)
+    }
+
+    fn supports_bounds_evaluation(&self, schema: &SchemaRef) -> bool {
+        if let Ok(field) = schema.field_with_name(self.name()) {
+            is_supported_datatype_for_bounds_eval(field.data_type())
+        } else {
+            false
+        }
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
