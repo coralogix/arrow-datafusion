@@ -223,7 +223,7 @@ where
 
             assert!(
                 self.buffer.len() <= self.max_buffer_size,
-                "offset overflow, buffer length is greater that {}",
+                "offset overflow, buffer length is greater than {}",
                 self.max_buffer_size
             );
 
