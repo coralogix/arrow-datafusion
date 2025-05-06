@@ -237,7 +237,12 @@ where
         let l = self.offsets[row].as_usize();
         let r = self.offsets[row + 1].as_usize();
 
-        assert!(self.buffer.as_slice().len() >= r, "ERROR: ByteGroupValueBuilder buffer is too small: buffer length={}, l={l}, r={r}", self.buffer.as_slice().len());
+        assert!(
+            self.buffer.as_slice().len() >= r, 
+            "ERROR: ByteGroupValueBuilder buffer is too small: buffer={:?}, buffer_length={}, l={l}, r={r}", 
+            self.buffer.as_slice().as_ptr(), 
+            self.buffer.as_slice().len()
+        );
 
         // Safety: the offsets are constructed correctly and never decrease
         // unsafe { self.buffer.as_slice().get_unchecked(l..r) }
