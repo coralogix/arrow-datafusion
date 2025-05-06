@@ -209,12 +209,23 @@ where
             self.nulls.append(true);
             // nulls need a zero length in the offset buffer
             let offset = self.buffer.len();
+
+            if offset > 2 * 1024 * 1024 * 1024 {
+                println!("ERROR: Suspiciously large offset {offset}");
+            }
+
             self.offsets.push(O::usize_as(offset));
         } else {
             self.nulls.append(false);
             let value: &[u8] = arr.value(row).as_ref();
             self.buffer.append_slice(value);
-            self.offsets.push(O::usize_as(self.buffer.len()));
+
+            let offset = self.buffer.len();
+            if offset > 2 * 1024 * 1024 * 1024 {
+                println!("ERROR: Suspiciously large offset {offset}");
+            }
+
+            self.offsets.push(O::usize_as(offset));
         }
     }
 
@@ -238,10 +249,11 @@ where
         let r = self.offsets[row + 1].as_usize();
 
         assert!(
-            self.buffer.as_slice().len() >= r, 
-            "ERROR: ByteGroupValueBuilder buffer is too small: buffer={:?}, buffer_length={}, l={l}, r={r}", 
-            self.buffer.as_slice().as_ptr(), 
-            self.buffer.as_slice().len()
+            self.buffer.as_slice().len() >= r,
+            "ERROR: ByteGroupValueBuilder buffer is too small at row {row}: buffer_ptr={:?}, buffer_length={}, l={l}, r={r}, offset_count={}",
+            self.buffer.as_slice().as_ptr(),
+            self.buffer.as_slice().len(),
+            self.offsets.len(),
         );
 
         // Safety: the offsets are constructed correctly and never decrease
