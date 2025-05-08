@@ -127,7 +127,7 @@ log = "^0.4"
 num_cpus = "1.13.0"
 object_store = { version = "0.11.0", default-features = false }
 parking_lot = "0.12"
-parquet = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v53.4.1-cx.0", default-features = false, features = [
+parquet = { git = "https://github.com/Coralogix/arrow-rs.git", branch = "more-logs", default-features = false, features = [
     "arrow",
     "async",
     "object_store",
