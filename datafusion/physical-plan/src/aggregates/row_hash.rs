@@ -62,7 +62,7 @@ pub(crate) enum ExecutionState {
     ReadingInput,
     /// When producing output, the remaining rows to output are stored
     /// here and are sliced off as needed in batch_size chunks
-    ProducingOutput(RecordBatch),
+    ProducingOutput(Vec<RecordBatch>),
     /// Produce intermediate aggregate state for each input row without
     /// aggregation.
     ///
@@ -627,7 +627,7 @@ impl Stream for GroupedHashAggregateStream {
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
 
         loop {
-            match &self.exec_state {
+            match &mut self.exec_state {
                 ExecutionState::ReadingInput => 'reading_input: {
                     match ready!(self.input.poll_next_unpin(cx)) {
                         // New batch to aggregate in partial aggregation operator
@@ -654,8 +654,8 @@ impl Stream for GroupedHashAggregateStream {
                             }
 
                             if let Some(to_emit) = self.group_ordering.emit_to() {
-                                let batch = extract_ok!(self.emit(to_emit, false));
-                                self.exec_state = ExecutionState::ProducingOutput(batch);
+                                self.exec_state =
+                                    extract_ok!(self.producing_output(to_emit, false));
                                 timer.done();
                                 // make sure the exec_state just set is not overwritten below
                                 break 'reading_input;
@@ -693,8 +693,8 @@ impl Stream for GroupedHashAggregateStream {
                             }
 
                             if let Some(to_emit) = self.group_ordering.emit_to() {
-                                let batch = extract_ok!(self.emit(to_emit, false));
-                                self.exec_state = ExecutionState::ProducingOutput(batch);
+                                self.exec_state =
+                                    extract_ok!(self.producing_output(to_emit, false));
                                 timer.done();
                                 // make sure the exec_state just set is not overwritten below
                                 break 'reading_input;
@@ -740,38 +740,26 @@ impl Stream for GroupedHashAggregateStream {
                     }
                 }
 
-                ExecutionState::ProducingOutput(batch) => {
-                    // slice off a part of the batch, if needed
-                    let output_batch;
-                    let size = self.batch_size;
-                    (self.exec_state, output_batch) = if batch.num_rows() <= size {
-                        (
-                            if self.input_done {
-                                ExecutionState::Done
-                            }
+                ExecutionState::ProducingOutput(batches) => match batches.pop() {
+                    Some(batch) => {
+                        return Poll::Ready(Some(Ok(
+                            batch.record_output(&self.baseline_metrics)
+                        )));
+                    }
+                    None => {
+                        self.exec_state = if self.input_done {
+                            ExecutionState::Done
+                        } else if self.mode == AggregateMode::Partial
+                            && self.should_skip_aggregation()
+                        {
                             // In Partial aggregation, we also need to check
                             // if we should trigger partial skipping
-                            else if self.mode == AggregateMode::Partial
-                                && self.should_skip_aggregation()
-                            {
-                                ExecutionState::SkippingAggregation
-                            } else {
-                                ExecutionState::ReadingInput
-                            },
-                            batch.clone(),
-                        )
-                    } else {
-                        // output first batch_size rows
-                        let size = self.batch_size;
-                        let num_remaining = batch.num_rows() - size;
-                        let remaining = batch.slice(size, num_remaining);
-                        let output = batch.slice(0, size);
-                        (ExecutionState::ProducingOutput(remaining), output)
-                    };
-                    return Poll::Ready(Some(Ok(
-                        output_batch.record_output(&self.baseline_metrics)
-                    )));
-                }
+                            ExecutionState::SkippingAggregation
+                        } else {
+                            ExecutionState::ReadingInput
+                        }
+                    }
+                },
 
                 ExecutionState::Done => {
                     // release the memory reservation since sending back output batch itself needs
@@ -901,6 +889,34 @@ impl GroupedHashAggregateStream {
         reservation_result
     }
 
+    /// Switch to the [ExecutionState::ProducingOutput] state
+    fn producing_output(
+        &mut self,
+        emit_to: EmitTo,
+        spilling: bool,
+    ) -> Result<ExecutionState> {
+        let (mut total, remove_groups) = match emit_to {
+            EmitTo::All => (self.group_values.len(), false),
+            EmitTo::First(total) => (total, true),
+        };
+
+        let mut batches = Vec::with_capacity(
+            total / self.batch_size + (total % self.batch_size > 0) as usize,
+        );
+
+        while total > 0 {
+            let emit = self.batch_size.min(total);
+            total -= emit;
+            batches.push(self.emit(EmitTo::First(emit), spilling)?);
+            if remove_groups {
+                self.group_ordering.remove_groups(emit)
+            }
+        }
+
+        batches.reverse();
+        Ok(ExecutionState::ProducingOutput(batches))
+    }
+
     /// Create an output RecordBatch with the group keys and
     /// accumulator states/values specified in emit_to
     fn emit(&mut self, emit_to: EmitTo, spilling: bool) -> Result<RecordBatch> {
@@ -914,10 +930,6 @@ impl GroupedHashAggregateStream {
         }
 
         let mut output = self.group_values.emit(emit_to)?;
-        if let EmitTo::First(n) = emit_to {
-            self.group_ordering.remove_groups(n);
-        }
-
         // Next output each aggregate value
         for acc in self.accumulators.iter_mut() {
             match self.mode {
@@ -1009,8 +1021,7 @@ impl GroupedHashAggregateStream {
         {
             assert_eq!(self.mode, AggregateMode::Partial);
             let n = self.group_values.len() / self.batch_size * self.batch_size;
-            let batch = self.emit(EmitTo::First(n), false)?;
-            self.exec_state = ExecutionState::ProducingOutput(batch);
+            self.exec_state = self.producing_output(EmitTo::First(n), false)?;
         }
         Ok(())
     }
@@ -1067,8 +1078,7 @@ impl GroupedHashAggregateStream {
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
         let timer = elapsed_compute.timer();
         self.exec_state = if self.spill_state.spills.is_empty() {
-            let batch = self.emit(EmitTo::All, false)?;
-            ExecutionState::ProducingOutput(batch)
+            self.producing_output(EmitTo::All, false)?
         } else {
             // If spill files exist, stream-merge them.
             self.update_merged_stream()?;
@@ -1097,8 +1107,7 @@ impl GroupedHashAggregateStream {
     fn switch_to_skip_aggregation(&mut self) -> Result<()> {
         if let Some(probe) = self.skip_aggregation_probe.as_mut() {
             if probe.should_skip() {
-                let batch = self.emit(EmitTo::All, false)?;
-                self.exec_state = ExecutionState::ProducingOutput(batch);
+                self.exec_state = self.producing_output(EmitTo::All, false)?
             }
         }
 

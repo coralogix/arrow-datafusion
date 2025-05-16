@@ -297,7 +297,7 @@ impl Accumulator for DistinctArrayAggAccumulator {
             return internal_err!("expects single batch");
         }
 
-        let mut array = values[0].clone();
+        let mut array = Arc::clone(&values[0]);
 
         if self.ignore_nulls {
             array = filter(&array, &is_not_null(&array)?)?;
