@@ -80,8 +80,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion::physical_plan::windows::{
-    BoundedWindowAggExec, PlainAggregateWindowExpr,
-    WindowAggExec,
+    BoundedWindowAggExec, PlainAggregateWindowExpr, WindowAggExec,
 };
 use datafusion::physical_plan::{
     ExecutionPlan, InputOrderMode, Partitioning, PhysicalExpr, Statistics,

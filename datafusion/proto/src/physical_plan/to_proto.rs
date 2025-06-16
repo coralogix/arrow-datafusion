@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "parquet")]
 use datafusion::datasource::file_format::parquet::ParquetSink;
-use datafusion::physical_expr::window::{BuiltInWindowExpr, NthValueKind, SlidingAggregateWindowExpr};
+use datafusion::physical_expr::window::{
+    BuiltInWindowExpr, NthValueKind, SlidingAggregateWindowExpr,
+};
 use datafusion::physical_expr::{PhysicalSortExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::expressions::{
     BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
@@ -117,6 +119,25 @@ pub fn serialize_physical_window_expr(
             window_frame,
             codec,
         )?
+    } else if let Some(built_in_window_expr) = expr.downcast_ref::<BuiltInWindowExpr>() {
+        if let Some(expr) = built_in_window_expr
+            .get_built_in_func_expr()
+            .as_any()
+            .downcast_ref::<WindowUDFExpr>()
+        {
+            let mut buf = Vec::new();
+            codec.try_encode_udwf(expr.fun(), &mut buf)?;
+            (
+                physical_window_expr_node::WindowFunction::UserDefinedWindowFunction(
+                    expr.fun().name().to_string(),
+                ),
+                (!buf.is_empty()).then_some(buf),
+            )
+        } else {
+            return not_impl_err!(
+                "User-defined window function not supported: {window_expr:?}"
+            );
+        }
     } else {
         return not_impl_err!("WindowExpr not supported: {window_expr:?}");
     };
@@ -139,8 +160,6 @@ pub fn serialize_physical_window_expr(
     })
 }
 
-
-    
 pub fn serialize_physical_sort_exprs<I>(
     sort_exprs: I,
     codec: &dyn PhysicalExtensionCodec,
