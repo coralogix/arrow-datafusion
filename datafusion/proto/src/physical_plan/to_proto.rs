@@ -99,39 +99,9 @@ pub fn serialize_physical_window_expr(
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<protobuf::PhysicalWindowExprNode> {
     let expr = window_expr.as_any();
-    let mut args = window_expr.expressions().to_vec();
+    let args = window_expr.expressions().to_vec();
     let window_frame = window_expr.get_window_frame();
-
-    let (window_function, fun_definition) = if let Some(built_in_window_expr) =
-        expr.downcast_ref::<BuiltInWindowExpr>()
-    {
-        let expr = built_in_window_expr.get_built_in_func_expr();
-        let built_in_fn_expr = expr.as_any();
-
-        let builtin_fn =
-            if let Some(nth_value_expr) = built_in_fn_expr.downcast_ref::<NthValue>() {
-                match nth_value_expr.get_kind() {
-                    NthValueKind::First => protobuf::BuiltInWindowFunction::FirstValue,
-                    NthValueKind::Last => protobuf::BuiltInWindowFunction::LastValue,
-                    NthValueKind::Nth(n) => {
-                        args.insert(
-                            1,
-                            Arc::new(Literal::new(
-                                datafusion_common::ScalarValue::Int64(Some(n)),
-                            )),
-                        );
-                        protobuf::BuiltInWindowFunction::NthValue
-                    }
-                }
-            } else {
-                return not_impl_err!("BuiltIn function not supported: {expr:?}");
-            };
-
-        (
-            physical_window_expr_node::WindowFunction::BuiltInFunction(builtin_fn as i32),
-            None,
-        )
-    } else if let Some(plain_aggr_window_expr) =
+    let (window_function, fun_definition) = if let Some(plain_aggr_window_expr) =
         expr.downcast_ref::<PlainAggregateWindowExpr>()
     {
         serialize_physical_window_aggr_expr(
@@ -147,25 +117,6 @@ pub fn serialize_physical_window_expr(
             window_frame,
             codec,
         )?
-    } else if let Some(built_in_window_expr) = expr.downcast_ref::<BuiltInWindowExpr>() {
-        if let Some(expr) = built_in_window_expr
-            .get_built_in_func_expr()
-            .as_any()
-            .downcast_ref::<WindowUDFExpr>()
-        {
-            let mut buf = Vec::new();
-            codec.try_encode_udwf(expr.fun(), &mut buf)?;
-            (
-                physical_window_expr_node::WindowFunction::UserDefinedWindowFunction(
-                    expr.fun().name().to_string(),
-                ),
-                (!buf.is_empty()).then_some(buf),
-            )
-        } else {
-            return not_impl_err!(
-                "User-defined window function not supported: {window_expr:?}"
-            );
-        }
     } else {
         return not_impl_err!("WindowExpr not supported: {window_expr:?}");
     };
@@ -177,7 +128,6 @@ pub fn serialize_physical_window_expr(
         .as_ref()
         .try_into()
         .map_err(|e| DataFusionError::Internal(format!("{e}")))?;
-
     Ok(protobuf::PhysicalWindowExprNode {
         args,
         partition_by,
@@ -189,6 +139,8 @@ pub fn serialize_physical_window_expr(
     })
 }
 
+
+    
 pub fn serialize_physical_sort_exprs<I>(
     sort_exprs: I,
     codec: &dyn PhysicalExtensionCodec,
