@@ -34,7 +34,7 @@ use datafusion_expr::expr::{Alias, ScalarFunction};
 use datafusion_expr::logical_plan::{
     Aggregate, Filter, LogicalPlan, Projection, Sort, Window,
 };
-use datafusion_expr::{col, BinaryExpr, Case, Expr, GroupingSet, Operator, SortExpr};
+use datafusion_expr::{col, BinaryExpr, Case, Expr, Operator, SortExpr};
 
 const CSE_PREFIX: &str = "__common_expr";
 
