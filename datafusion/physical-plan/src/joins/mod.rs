@@ -19,7 +19,8 @@
 
 pub use cross_join::CrossJoinExec;
 pub use hash_join::{
-    HashJoinExec, SharedJoinState, SharedJoinStateImpl, SharedProbeState,
+    HashJoinExec, JoinContext, JoinLeftData, SharedJoinState, SharedJoinStateImpl,
+    SharedProbeState,
 };
 pub use nested_loop_join::NestedLoopJoinExec;
 // Note: SortMergeJoin is not used in plans yet
