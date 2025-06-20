@@ -79,6 +79,8 @@ use datafusion_physical_expr_common::datum::compare_op_for_nested;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 
+pub const RANDOM_STATE: RandomState = RandomState::with_seeds(0, 0, 0, 0);
+
 pub struct JoinContext {
     build_state: Mutex<Option<Arc<JoinLeftData>>>,
 }
@@ -1421,7 +1423,7 @@ impl HashJoinStream {
         build_timer.done();
 
         if let Some(ctx) = self.join_context.as_ref() {
-            ctx.set_build_state(left_data.clone());
+            ctx.set_build_state(Arc::clone(&left_data));
         }
 
         self.state = HashJoinStreamState::FetchProbeBatch;
