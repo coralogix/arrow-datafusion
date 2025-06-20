@@ -81,6 +81,7 @@ use parking_lot::Mutex;
 
 pub const RANDOM_STATE: RandomState = RandomState::with_seeds(0, 0, 0, 0);
 
+#[derive(Default)]
 pub struct JoinContext {
     build_state: Mutex<Option<Arc<JoinLeftData>>>,
 }
