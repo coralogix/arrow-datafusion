@@ -77,6 +77,7 @@ use arrow_buffer::BooleanBuffer;
 use datafusion_expr::Operator;
 use datafusion_physical_expr_common::datum::compare_op_for_nested;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use log::debug;
 use parking_lot::Mutex;
 
 pub const RANDOM_STATE: RandomState = RandomState::with_seeds(0, 0, 0, 0);
@@ -1424,6 +1425,7 @@ impl HashJoinStream {
         build_timer.done();
 
         if let Some(ctx) = self.join_context.as_ref() {
+            debug!("setting join left data in join context");
             ctx.set_build_state(Arc::clone(&left_data));
         }
 
