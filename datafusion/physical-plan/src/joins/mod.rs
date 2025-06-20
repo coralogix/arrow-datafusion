@@ -34,6 +34,8 @@ mod stream_join_utils;
 mod symmetric_hash_join;
 pub mod utils;
 
+pub type RandomState = ahash::RandomState;
+
 #[cfg(test)]
 pub mod test_utils;
 
