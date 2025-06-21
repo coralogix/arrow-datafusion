@@ -20,7 +20,8 @@
 use arrow_buffer::BooleanBufferBuilder;
 pub use cross_join::CrossJoinExec;
 pub use hash_join::{
-    HashJoinExec, SharedJoinState, SharedJoinStateImpl, SharedProbeState,
+    HashJoinExec, JoinContext, JoinLeftData, SharedJoinState, SharedJoinStateImpl,
+    SharedProbeState, RANDOM_STATE,
 };
 pub use nested_loop_join::NestedLoopJoinExec;
 use parking_lot::Mutex;
@@ -36,6 +37,8 @@ mod symmetric_hash_join;
 pub mod utils;
 
 mod join_filter;
+pub type RandomState = ahash::RandomState;
+
 #[cfg(test)]
 pub mod test_utils;
 
