@@ -18,7 +18,7 @@
 //! [`MemoryPool`] for memory management during query execution, [`proxy]` for
 //! help with allocation accounting.
 
-use arrow::array::Array;
+use arrow::array::{Array, ArrayRef, RecordBatch};
 use datafusion_common::{internal_err, Result};
 use std::hash::Hash;
 use std::vec;
@@ -129,11 +129,7 @@ pub trait MemoryPool: Send + Sync + std::fmt::Debug {
     ///
     /// This defaults to summing the memory size of all arrays, but can be
     /// overridden by implementations that track the memory size of Array usages
-    fn grow_with_arrays(
-        &self,
-        reservation: &MemoryReservation,
-        arrays: &[Arc<dyn Array>],
-    ) {
+    fn grow_with_arrays(&self, reservation: &MemoryReservation, arrays: &[ArrayRef]) {
         let additional = arrays
             .iter()
             .map(|array| array.get_array_memory_size())
@@ -144,11 +140,7 @@ pub trait MemoryPool: Send + Sync + std::fmt::Debug {
     /// Infallibly shrink the provided `reservation` by `shrink` bytes
     fn shrink(&self, reservation: &MemoryReservation, shrink: usize);
 
-    fn shrink_with_arrays(
-        &self,
-        reservation: &MemoryReservation,
-        arrays: &[Arc<dyn Array>],
-    ) {
+    fn shrink_with_arrays(&self, reservation: &MemoryReservation, arrays: &[ArrayRef]) {
         let shrink = arrays
             .iter()
             .map(|array| array.get_array_memory_size())
@@ -168,7 +160,7 @@ pub trait MemoryPool: Send + Sync + std::fmt::Debug {
     fn try_grow_with_arrays(
         &self,
         reservation: &MemoryReservation,
-        arrays: &[Arc<dyn Array>],
+        arrays: &[ArrayRef],
     ) -> Result<()> {
         let additional = arrays
             .iter()
@@ -262,7 +254,7 @@ pub struct MemoryReservation {
     registration: Arc<SharedRegistration>,
     size: usize,
     // arrays tracked by this reservation
-    arrays: Vec<Arc<dyn Array>>,
+    arrays: Vec<ArrayRef>,
 }
 
 impl MemoryReservation {
@@ -355,13 +347,11 @@ impl MemoryReservation {
 
     /// Increase the size of this reservation by bytes held in
     /// the provided `arrays`.
-    pub fn try_grow_with_arrays(&mut self, arrays: &[Arc<dyn Array>]) -> Result<()> {
-        self.registration.pool.try_grow_with_arrays(self, arrays)?;
+    pub fn try_grow_with_batch(&mut self, batch: &RecordBatch) -> Result<()> {
+        let columns = batch.columns();
+        self.registration.pool.try_grow_with_arrays(self, columns)?;
         // don't increase size of this pool
-        arrays
-            .iter()
-            .for_each(|array| self.arrays.push(Arc::clone(array)));
-
+        self.arrays.extend_from_slice(columns);
         Ok(())
     }
 

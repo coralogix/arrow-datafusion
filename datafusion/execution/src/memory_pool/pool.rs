@@ -16,11 +16,11 @@
 // under the License.
 
 use crate::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
+use arrow::array::ArrayRef;
 use datafusion_common::{resources_datafusion_err, DataFusionError, Result};
 use hashbrown::HashMap;
 use log::debug;
 use parking_lot::Mutex;
-use std::sync::Arc;
 use std::{
     num::NonZeroUsize,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -141,11 +141,7 @@ impl MemoryPool for GreedyMemoryPoolWithTracking {
         self.used.fetch_add(additional, Ordering::Relaxed);
     }
 
-    fn grow_with_arrays(
-        &self,
-        reservation: &MemoryReservation,
-        arrays: &[Arc<dyn arrow::array::Array>],
-    ) {
+    fn grow_with_arrays(&self, reservation: &MemoryReservation, arrays: &[ArrayRef]) {
         for array in arrays {
             let array_data = array.to_data();
             for buffer in array_data.buffers() {
@@ -170,27 +166,28 @@ impl MemoryPool for GreedyMemoryPoolWithTracking {
         self.used.fetch_sub(shrink, Ordering::Relaxed);
     }
 
-    fn shrink_with_arrays(
-        &self,
-        reservation: &MemoryReservation,
-        arrays: &[Arc<dyn arrow::array::Array>],
-    ) {
+    fn shrink_with_arrays(&self, reservation: &MemoryReservation, arrays: &[ArrayRef]) {
         for array in arrays {
             let array_data = array.to_data();
             for buffer in array_data.buffers() {
                 // We need to track the memory usage of the buffers
                 let addr = buffer.data_ptr().as_ptr() as usize;
-                let ref_count = *self
-                    .references
-                    .lock()
-                    .entry(addr)
-                    .and_modify(|ref_count| *ref_count -= buffer.len())
-                    .or_insert(1);
+                let mut last_ref = false;
+                self.references.lock().entry(addr).and_replace_entry_with(
+                    |_, ref_count| {
+                        if ref_count > 1 {
+                            Some(ref_count - 1)
+                        } else {
+                            last_ref = true;
+                            None
+                        }
+                    },
+                );
 
                 // If this is the last reference to this buffer, we need to shrink the pool
-                if ref_count == 0 {
-                    let additional = buffer.capacity();
-                    self.shrink(reservation, additional);
+                if last_ref {
+                    let shrink = buffer.capacity();
+                    self.shrink(reservation, shrink);
                 }
             }
         }
@@ -215,7 +212,7 @@ impl MemoryPool for GreedyMemoryPoolWithTracking {
     fn try_grow_with_arrays(
         &self,
         reservation: &MemoryReservation,
-        arrays: &[Arc<dyn arrow::array::Array>],
+        arrays: &[ArrayRef],
     ) -> Result<()> {
         for array in arrays.iter() {
             // also take into account overhead
