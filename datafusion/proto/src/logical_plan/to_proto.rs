@@ -300,6 +300,7 @@ pub fn serialize_expr(
             ref window_frame,
             // TODO: support null treatment in proto
             null_treatment: _,
+            distinct: _,
         }) => {
             let (window_function, fun_definition) = match fun {
                 WindowFunctionDefinition::AggregateUDF(aggr_udf) => {

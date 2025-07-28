@@ -821,6 +821,7 @@ impl ExprFuncBuilder {
                 udwf.window_frame =
                     window_frame.unwrap_or(WindowFrame::new(has_order_by));
                 udwf.null_treatment = null_treatment;
+                udwf.distinct = distinct;
                 Expr::WindowFunction(udwf)
             }
         };

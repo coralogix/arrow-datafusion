@@ -310,6 +310,19 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             };
 
             if let Ok(fun) = self.find_window_func(&name) {
+                if distinct {
+                    return Expr::WindowFunction(expr::WindowFunction::new(
+                        fun,
+                        self.function_args_to_expr(args, schema, planner_context)?,
+                    ))
+                    .partition_by(partition_by)
+                    .order_by(order_by)
+                    .window_frame(window_frame)
+                    .null_treatment(null_treatment)
+                    .distinct()
+                    .build();
+                }
+
                 return Expr::WindowFunction(expr::WindowFunction::new(
                     fun,
                     self.function_args_to_expr(args, schema, planner_context)?,
