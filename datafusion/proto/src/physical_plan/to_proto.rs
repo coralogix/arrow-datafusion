@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "parquet")]
 use datafusion::datasource::file_format::parquet::ParquetSink;
-use datafusion::physical_expr::window::{BuiltInWindowExpr, SlidingAggregateWindowExpr};
+use datafusion::physical_expr::window::{BuiltInWindowExpr, NthValueKind, SlidingAggregateWindowExpr};
 use datafusion::physical_expr::{PhysicalSortExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::expressions::{
     BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
@@ -134,16 +134,29 @@ pub fn serialize_physical_window_expr(
         }
         // Note: newer version of DataFusion encodes everthing is UDF
         // NOTE FirstValue / LastValue also compile to NthValue
-        else if built_in_window_expr
+        else if let Some(nth_value) = built_in_window_expr
             .get_built_in_func_expr()
             .as_any()
             .downcast_ref::<NthValue>()
-            .is_some()
         {
             (
-                physical_window_expr_node::WindowFunction::BuiltInFunction(
-                    BuiltInWindowFunction::NthValue.into(),
-                ),
+                match nth_value.get_kind() {
+                    NthValueKind::First => {
+                        physical_window_expr_node::WindowFunction::BuiltInFunction(
+                            BuiltInWindowFunction::FirstValue.into(),
+                        )
+                    }
+                    NthValueKind::Last => {
+                        physical_window_expr_node::WindowFunction::BuiltInFunction(
+                            BuiltInWindowFunction::LastValue.into(),
+                        )
+                    }
+                    NthValueKind::Nth(_n) => {
+                        physical_window_expr_node::WindowFunction::BuiltInFunction(
+                            BuiltInWindowFunction::NthValue.into(),
+                        )
+                    }
+                },
                 None,
             )
         } else {
