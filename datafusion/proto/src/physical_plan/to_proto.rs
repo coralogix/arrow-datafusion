@@ -37,7 +37,7 @@ use datafusion::{
     },
     physical_plan::expressions::LikeExpr,
 };
-use datafusion_common::{internal_err, not_impl_err, DataFusionError, Result};
+use datafusion_common::{DataFusionError, Result, ScalarValue, internal_err, not_impl_err};
 use datafusion_expr::WindowFrame;
 
 use crate::protobuf::{
@@ -99,7 +99,7 @@ pub fn serialize_physical_window_expr(
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<protobuf::PhysicalWindowExprNode> {
     let expr = window_expr.as_any();
-    let args = window_expr.expressions().to_vec();
+    let mut args = window_expr.expressions().to_vec();
     let window_frame = window_expr.get_window_frame();
     let (window_function, fun_definition) = if let Some(plain_aggr_window_expr) =
         expr.downcast_ref::<PlainAggregateWindowExpr>()
@@ -151,7 +151,8 @@ pub fn serialize_physical_window_expr(
                             BuiltInWindowFunction::LastValue.into(),
                         )
                     }
-                    NthValueKind::Nth(_n) => {
+                    NthValueKind::Nth(n) => {
+                        args.push(Arc::new(Literal::new(ScalarValue::UInt64(Some(n as u64)))) );
                         physical_window_expr_node::WindowFunction::BuiltInFunction(
                             BuiltInWindowFunction::NthValue.into(),
                         )
