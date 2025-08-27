@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "parquet")]
 use datafusion::datasource::file_format::parquet::ParquetSink;
-use datafusion::physical_expr::window::{BuiltInWindowExpr, NthValueKind, SlidingAggregateWindowExpr};
+use datafusion::physical_expr::window::{
+    BuiltInWindowExpr, NthValueKind, SlidingAggregateWindowExpr,
+};
 use datafusion::physical_expr::{PhysicalSortExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::expressions::{
     BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
@@ -37,7 +39,9 @@ use datafusion::{
     },
     physical_plan::expressions::LikeExpr,
 };
-use datafusion_common::{DataFusionError, Result, ScalarValue, internal_err, not_impl_err};
+use datafusion_common::{
+    internal_err, not_impl_err, DataFusionError, Result, ScalarValue,
+};
 use datafusion_expr::WindowFrame;
 
 use crate::protobuf::{
@@ -152,7 +156,9 @@ pub fn serialize_physical_window_expr(
                         )
                     }
                     NthValueKind::Nth(n) => {
-                        args.push(Arc::new(Literal::new(ScalarValue::UInt64(Some(n as u64)))) );
+                        args.push(Arc::new(Literal::new(ScalarValue::UInt64(Some(
+                            n as u64,
+                        )))));
                         physical_window_expr_node::WindowFunction::BuiltInFunction(
                             BuiltInWindowFunction::NthValue.into(),
                         )
