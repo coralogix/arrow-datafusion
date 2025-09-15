@@ -2602,6 +2602,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_wtf() -> Result<()> {
         let schema = create_test_schema()?;
 

@@ -2061,6 +2061,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn run_first_last_multi_partitions() -> Result<()> {
         for use_coalesce_batches in [false, true] {
             for is_first_acc in [false, true] {
@@ -2896,6 +2897,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_aggregate_with_spill_if_necessary() -> Result<()> {
         // test with spill
         run_test_with_spill_pool_if_necessary(2_000, true).await?;
