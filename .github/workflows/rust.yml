@@ -269,20 +269,6 @@ jobs:
         env:
           POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
 
-  macos:
-    name: cargo test (macos)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-macos-builder
-      - name: Run tests (excluding doctests)
-        shell: bash
-        run: |
-          cargo test --lib --tests --bins --features avro,json,backtrace
-
   macos-aarch64:
     name: cargo test (macos-aarch64)
     runs-on: macos-14
