@@ -80,7 +80,7 @@ pub trait FileFormatFactory: Sync + Send + GetExt + Debug {
 /// [`TableProvider`]: crate::catalog::TableProvider
 #[async_trait]
 pub trait FileFormat: Send + Sync + fmt::Debug {
-    /// Returns the table provider as [`Any`](std::any::Any) so that it can be
+    /// Returns the table provider as [`Any`] so that it can be
     /// downcast to a specific implementation.
     fn as_any(&self) -> &dyn Any;
 

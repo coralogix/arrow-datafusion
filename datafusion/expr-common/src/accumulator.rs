@@ -30,25 +30,25 @@ use std::fmt::Debug;
 /// that manages state for multiple groups at once.
 ///
 /// An accumulator knows how to:
-/// * update its state from inputs via [`update_batch`]
+/// * update its state from inputs via `update_batch`
 ///
-/// * compute the final value from its internal state via [`evaluate`]
+/// * compute the final value from its internal state via `evaluate`
 ///
 /// * retract an update to its state from given inputs via
-///   [`retract_batch`] (when used as a window aggregate [window
+///   `retract_batch` (when used as a window aggregate [window
 ///   function])
 ///
 /// * convert its internal state to a vector of aggregate values via
-///   [`state`] and combine the state from multiple accumulators
-///   via [`merge_batch`], as part of efficient multi-phase grouping.
+///   `state` and combine the state from multiple accumulators
+///   via `merge_batch`, as part of efficient multi-phase grouping.
 ///
-/// [`GroupsAccumulator`]: crate::GroupsAccumulator
-/// [`update_batch`]: Self::update_batch
-/// [`retract_batch`]: Self::retract_batch
-/// [`state`]: Self::state
-/// [`evaluate`]: Self::evaluate
-/// [`merge_batch`]: Self::merge_batch
-/// [window function]: https://en.wikipedia.org/wiki/Window_function_(SQL)
+/// `GroupsAccumulator`
+/// `update_batch`
+/// `retract_batch`
+/// `state`
+/// `evaluate`
+/// `merge_batch`
+/// `window function`
 pub trait Accumulator: Send + Sync + Debug {
     /// Updates the accumulator's state from its input.
     ///
