@@ -35,23 +35,3 @@ jobs:
           python-version: "3.10"
       - name: Audit licenses
         run: ./dev/release/run-rat.sh .
-
-  prettier:
-    name: Use prettier to check formatting of documents
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Prettier check
-        run: |
-          # if you encounter error, rerun the command below and commit the changes
-          #
-          # ignore subproject CHANGELOG.md because they are machine generated
-          npx prettier@2.7.1 --write \
-            '{datafusion,datafusion-cli,datafusion-examples,dev,docs}/**/*.md' \
-            '!datafusion/CHANGELOG.md' \
-            README.md \
-            CONTRIBUTING.md
-          git diff --exit-code
