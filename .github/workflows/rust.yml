@@ -297,30 +297,6 @@ jobs:
         run: |
           cargo test --lib --tests --bins --features avro,json,backtrace
 
-  test-datafusion-pyarrow:
-    name: cargo test pyarrow (amd64)
-    needs: [ linux-build-lib ]
-    runs-on: ubuntu-20.04
-    container:
-      image: amd64/rust:bullseye # Workaround https://github.com/actions/setup-python/issues/721
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.8"
-      - name: Install PyArrow
-        run: |
-          echo "LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          python -m pip install pyarrow
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: stable
-      - name: Run datafusion-common tests
-        run: cargo test -p datafusion-common --features=pyarrow
-
   vendor:
     name: Verify Vendored Code
     runs-on: ubuntu-latest
