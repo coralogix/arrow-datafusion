@@ -1401,10 +1401,7 @@ impl SessionContext {
     /// provided reference.
     ///
     /// [`register_table`]: SessionContext::register_table
-    pub async fn table(
-        &self,
-        table_ref: impl Into<TableReference>,
-    ) -> Result<DataFrame> {
+    pub async fn table(&self, table_ref: impl Into<TableReference>) -> Result<DataFrame> {
         let table_ref: TableReference = table_ref.into();
         let provider = self.table_provider(table_ref.clone()).await?;
         let plan = LogicalPlanBuilder::scan(

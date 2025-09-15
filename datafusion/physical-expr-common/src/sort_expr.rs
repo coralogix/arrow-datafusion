@@ -313,9 +313,9 @@ impl PhysicalSortRequirement {
     /// Returns whether this requirement is equal or more specific than `other`.
     pub fn compatible(&self, other: &PhysicalSortRequirement) -> bool {
         self.expr.eq(&other.expr)
-            && other.options.map_or(true, |other_opts| {
-                self.options == Some(other_opts)
-            })
+            && other
+                .options
+                .map_or(true, |other_opts| self.options == Some(other_opts))
     }
 
     /// Returns [`PhysicalSortRequirement`] that requires the exact
