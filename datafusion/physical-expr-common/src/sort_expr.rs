@@ -187,7 +187,7 @@ impl PhysicalSortExpr {
     /// Returns a [`Display`]able list of `PhysicalSortExpr`.
     pub fn format_list(input: &[PhysicalSortExpr]) -> impl Display + '_ {
         struct DisplayableList<'a>(&'a [PhysicalSortExpr]);
-        impl<'a> Display for DisplayableList<'a> {
+        impl Display for DisplayableList<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 let mut first = true;
                 for sort_expr in self.0 {
@@ -273,7 +273,7 @@ pub fn format_physical_sort_requirement_list(
     exprs: &[PhysicalSortRequirement],
 ) -> impl Display + '_ {
     struct DisplayWrapper<'a>(&'a [PhysicalSortRequirement]);
-    impl<'a> Display for DisplayWrapper<'a> {
+    impl Display for DisplayWrapper<'_> {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             let mut iter = self.0.iter();
             write!(f, "[")?;

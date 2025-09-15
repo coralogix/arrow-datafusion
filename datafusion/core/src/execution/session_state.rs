@@ -1574,7 +1574,7 @@ struct SessionContextProvider<'a> {
     tables: HashMap<String, Arc<dyn TableSource>>,
 }
 
-impl<'a> ContextProvider for SessionContextProvider<'a> {
+impl ContextProvider for SessionContextProvider<'_> {
     fn get_expr_planners(&self) -> &[Arc<dyn ExprPlanner>] {
         &self.state.expr_planners
     }
@@ -1858,7 +1858,7 @@ impl<'a> SessionSimplifyProvider<'a> {
     }
 }
 
-impl<'a> SimplifyInfo for SessionSimplifyProvider<'a> {
+impl SimplifyInfo for SessionSimplifyProvider<'_> {
     fn is_boolean_type(&self, expr: &Expr) -> datafusion_common::Result<bool> {
         Ok(expr.get_type(self.df_schema)? == DataType::Boolean)
     }

@@ -319,7 +319,7 @@ pub fn longest_consecutive_prefix<T: Borrow<usize>>(
     count
 }
 
-/// Array Utils
+// Array Utils
 
 /// Wrap an array into a single element `ListArray`.
 /// For example `[1, 2, 3]` would be converted into `[[1, 2, 3]]`
@@ -328,7 +328,7 @@ pub fn array_into_list_array_nullable(arr: ArrayRef) -> ListArray {
     array_into_list_array(arr, true)
 }
 
-/// Array Utils
+// Array Utils
 
 /// Wrap an array into a single element `ListArray`.
 /// For example `[1, 2, 3]` would be converted into `[[1, 2, 3]]`
