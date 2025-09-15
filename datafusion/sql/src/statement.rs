@@ -780,7 +780,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                         TransactionMode::AccessMode(_) => None,
                         TransactionMode::IsolationLevel(level) => Some(level),
                     })
-                    .last()
+                    .next_back()
                     .copied()
                     .unwrap_or(ast::TransactionIsolationLevel::Serializable);
                 let access_mode: ast::TransactionAccessMode = modes
@@ -789,7 +789,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                         TransactionMode::AccessMode(mode) => Some(mode),
                         TransactionMode::IsolationLevel(_) => None,
                     })
-                    .last()
+                    .next_back()
                     .copied()
                     .unwrap_or(ast::TransactionAccessMode::ReadWrite);
                 let isolation_level = match isolation_level {
@@ -1088,11 +1088,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         let options_map = self.parse_options_map(statement.options, true)?;
 
         let maybe_file_type = if let Some(stored_as) = &statement.stored_as {
-            if let Ok(ext_file_type) = self.context_provider.get_file_type(stored_as) {
-                Some(ext_file_type)
-            } else {
-                None
-            }
+            self.context_provider.get_file_type(stored_as).ok()
         } else {
             None
         };

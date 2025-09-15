@@ -91,7 +91,7 @@ impl GroupOrderingFull {
                     Some(EmitTo::First(*current))
                 }
             }
-            State::Complete { .. } => Some(EmitTo::All),
+            State::Complete => Some(EmitTo::All),
         }
     }
 
@@ -105,7 +105,7 @@ impl GroupOrderingFull {
                 assert!(*current >= n);
                 *current -= n;
             }
-            State::Complete { .. } => panic!("invalid state: complete"),
+            State::Complete => panic!("invalid state: complete"),
         }
     }
 
@@ -132,7 +132,7 @@ impl GroupOrderingFull {
                     current: max_group_index,
                 }
             }
-            State::Complete { .. } => {
+            State::Complete => {
                 panic!("Saw new group after input was complete");
             }
         };

@@ -215,7 +215,7 @@ impl Accumulator for ArrayAggAccumulator {
         if self.ignore_nulls {
             val = filter(&val, &is_not_null(&val)?)?;
         }
-        if val.len() > 0 {
+        if !val.is_empty() {
             self.values.push(val);
         }
         Ok(())

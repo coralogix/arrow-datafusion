@@ -110,7 +110,7 @@ impl Column {
     pub fn from_qualified_name(flat_name: impl Into<String>) -> Self {
         let flat_name = flat_name.into();
         Self::from_idents(&mut parse_identifiers_normalized(&flat_name, false))
-            .unwrap_or_else(|| Self {
+            .unwrap_or(Self {
                 relation: None,
                 name: flat_name,
             })
@@ -120,7 +120,7 @@ impl Column {
     pub fn from_qualified_name_ignore_case(flat_name: impl Into<String>) -> Self {
         let flat_name = flat_name.into();
         Self::from_idents(&mut parse_identifiers_normalized(&flat_name, true))
-            .unwrap_or_else(|| Self {
+            .unwrap_or(Self {
                 relation: None,
                 name: flat_name,
             })

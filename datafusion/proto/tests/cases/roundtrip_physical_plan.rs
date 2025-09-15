@@ -290,9 +290,7 @@ fn roundtrip_udwf() -> Result<()> {
         &[
             col("a", &schema)?
         ],
-        &vec![
-            PhysicalSortExpr::new(col("b", &schema)?, SortOptions::new(true, true)),
-        ],
+        &[PhysicalSortExpr::new(col("b", &schema)?, SortOptions::new(true, true))],
         Arc::new(WindowFrame::new(None)),
     ));
 
@@ -1140,7 +1138,7 @@ fn roundtrip_udwf_extension_codec() -> Result<()> {
     let udwf_expr = Arc::new(BuiltInWindowExpr::new(
         udwf,
         &[col("b", &schema)?],
-        &vec![PhysicalSortExpr {
+        &[PhysicalSortExpr {
             expr: col("a", &schema)?,
             options: SortOptions {
                 descending: false,

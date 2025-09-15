@@ -27,7 +27,7 @@ use crate::{
 };
 
 use crate::cache::cache_manager::{CacheManager, CacheManagerConfig};
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::Result;
 use object_store::ObjectStore;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,9 +144,7 @@ impl RuntimeEnv {
     /// details.
     pub fn object_store(&self, url: impl AsRef<Url>) -> Result<Arc<dyn ObjectStore>> {
         self.object_store_registry
-            .get_store(url.as_ref())
-            .map_err(DataFusionError::from)
-    }
+            .get_store(url.as_ref())}
 }
 
 impl Default for RuntimeEnv {

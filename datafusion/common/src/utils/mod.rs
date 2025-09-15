@@ -528,7 +528,7 @@ pub mod datafusion_strsim {
 
     struct StringWrapper<'a>(&'a str);
 
-    impl<'a, 'b> IntoIterator for &'a StringWrapper<'b> {
+    impl<'b> IntoIterator for &StringWrapper<'b> {
         type Item = char;
         type IntoIter = Chars<'b>;
 

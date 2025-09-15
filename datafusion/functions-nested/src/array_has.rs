@@ -229,7 +229,7 @@ fn array_has_dispatch_for_scalar<O: OffsetSizeTrait>(
     let offsets = haystack.value_offsets();
     // If first argument is empty list (second argument is non-null), return false
     // i.e. array_has([], non-null element) -> false
-    if values.len() == 0 {
+    if values.is_empty() {
         return Ok(Arc::new(BooleanArray::new(
             BooleanBuffer::new_unset(haystack.len()),
             None,
