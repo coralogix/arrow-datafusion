@@ -55,7 +55,9 @@ use datafusion::functions_window::row_number::row_number_udwf;
 use datafusion::logical_expr::{create_udf, JoinType, Operator, Volatility};
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::window::{BuiltInWindowExpr, SlidingAggregateWindowExpr};
-use datafusion::physical_expr::{LexOrdering, LexRequirement, PhysicalSortRequirement, ScalarFunctionExpr};
+use datafusion::physical_expr::{
+    LexOrdering, LexRequirement, PhysicalSortRequirement, ScalarFunctionExpr,
+};
 use datafusion::physical_plan::aggregates::{
     AggregateExec, AggregateMode, PhysicalGroupBy,
 };
@@ -78,7 +80,10 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
-use datafusion::physical_plan::windows::{create_udwf_window_expr, BoundedWindowAggExec, PlainAggregateWindowExpr, WindowAggExec};
+use datafusion::physical_plan::windows::{
+    create_udwf_window_expr, BoundedWindowAggExec, PlainAggregateWindowExpr,
+    WindowAggExec,
+};
 use datafusion::physical_plan::{
     ExecutionPlan, InputOrderMode, Partitioning, PhysicalExpr, Statistics,
 };
@@ -1138,12 +1143,12 @@ fn roundtrip_udwf_extension_codec() -> Result<()> {
         udwf,
         &[col("b", &schema)?],
         &vec![PhysicalSortExpr {
-                expr: col("a", &schema)?,
-                options: SortOptions {
-                    descending: false,
-                    nulls_first: false,
-                },
-            }],
+            expr: col("a", &schema)?,
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        }],
         Arc::new(window_frame),
     ));
 
