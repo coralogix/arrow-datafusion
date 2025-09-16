@@ -60,7 +60,7 @@ pub struct AvroArrowArrayReader<'a, R: Read> {
     schema_lookup: BTreeMap<String, usize>,
 }
 
-impl<'a, R: Read> AvroArrowArrayReader<'a, R> {
+impl<R: Read> AvroArrowArrayReader<'_, R> {
     pub fn try_new(
         reader: R,
         schema: SchemaRef,
@@ -1080,7 +1080,7 @@ mod test {
     use std::fs::File;
     use std::sync::Arc;
 
-    fn build_reader(name: &str, batch_size: usize) -> Reader<File> {
+    fn build_reader(name: &str, batch_size: usize) -> Reader<'_, File> {
         let testdata = crate::test_util::arrow_test_data();
         let filename = format!("{testdata}/avro/{name}");
         let builder = ReaderBuilder::new()

@@ -244,7 +244,7 @@ pub fn evaluate_partition_ranges(
 /// the identifier by replacing it with two double quotes
 ///
 /// e.g. identifier `tab.le"name` becomes `"tab.le""name"`
-pub fn quote_identifier(s: &str) -> Cow<str> {
+pub fn quote_identifier(s: &str) -> Cow<'_, str> {
     if needs_quotes(s) {
         Cow::Owned(format!("\"{}\"", s.replace('"', "\"\"")))
     } else {
@@ -319,7 +319,7 @@ pub fn longest_consecutive_prefix<T: Borrow<usize>>(
     count
 }
 
-/// Array Utils
+// Array Utils
 
 /// Wrap an array into a single element `ListArray`.
 /// For example `[1, 2, 3]` would be converted into `[[1, 2, 3]]`
@@ -328,7 +328,7 @@ pub fn array_into_list_array_nullable(arr: ArrayRef) -> ListArray {
     array_into_list_array(arr, true)
 }
 
-/// Array Utils
+// Array Utils
 
 /// Wrap an array into a single element `ListArray`.
 /// For example `[1, 2, 3]` would be converted into `[[1, 2, 3]]`
@@ -528,7 +528,7 @@ pub mod datafusion_strsim {
 
     struct StringWrapper<'a>(&'a str);
 
-    impl<'a, 'b> IntoIterator for &'a StringWrapper<'b> {
+    impl<'b> IntoIterator for &StringWrapper<'b> {
         type Item = char;
         type IntoIter = Chars<'b>;
 

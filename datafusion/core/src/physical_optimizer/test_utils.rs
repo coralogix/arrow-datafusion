@@ -84,15 +84,22 @@ async fn register_current_csv(
     Ok(())
 }
 
+#[allow(missing_docs)]
 #[derive(Eq, PartialEq, Debug)]
 pub enum SourceType {
+    #[allow(missing_docs)]
     Unbounded,
+    #[allow(missing_docs)]
     Bounded,
 }
 
+#[allow(missing_docs)]
 #[async_trait]
 pub trait SqlTestCase {
+    #[allow(missing_docs)]
     async fn register_table(&self, ctx: &SessionContext) -> Result<()>;
+
+    #[allow(missing_docs)]
     fn expect_fail(&self) -> bool;
 }
 
@@ -135,6 +142,7 @@ impl SqlTestCase for BinaryTestCase {
     }
 }
 
+#[allow(missing_docs)]
 pub struct QueryCase {
     pub(crate) sql: String,
     pub(crate) cases: Vec<Arc<dyn SqlTestCase>>,
@@ -174,6 +182,7 @@ impl QueryCase {
     }
 }
 
+#[allow(missing_docs)]
 pub fn sort_merge_join_exec(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
@@ -211,6 +220,7 @@ pub fn sort_expr_options(
     }
 }
 
+#[allow(missing_docs)]
 pub fn coalesce_partitions_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(CoalescePartitionsExec::new(input))
 }
@@ -219,6 +229,7 @@ pub(crate) fn memory_exec(schema: &SchemaRef) -> Arc<dyn ExecutionPlan> {
     Arc::new(MemoryExec::try_new(&[vec![]], schema.clone(), None).unwrap())
 }
 
+#[allow(missing_docs)]
 pub fn hash_join_exec(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
@@ -238,6 +249,7 @@ pub fn hash_join_exec(
     )?))
 }
 
+#[allow(missing_docs)]
 pub fn bounded_window_exec(
     col_name: &str,
     sort_exprs: impl IntoIterator<Item = PhysicalSortExpr>,
@@ -267,6 +279,7 @@ pub fn bounded_window_exec(
     )
 }
 
+#[allow(missing_docs)]
 pub fn filter_exec(
     predicate: Arc<dyn PhysicalExpr>,
     input: Arc<dyn ExecutionPlan>,
@@ -274,6 +287,7 @@ pub fn filter_exec(
     Arc::new(FilterExec::try_new(predicate, input).unwrap())
 }
 
+#[allow(missing_docs)]
 pub fn sort_preserving_merge_exec(
     sort_exprs: impl IntoIterator<Item = PhysicalSortExpr>,
     input: Arc<dyn ExecutionPlan>,
@@ -292,6 +306,7 @@ pub fn parquet_exec(schema: &SchemaRef) -> Arc<ParquetExec> {
 }
 
 // Created a sorted parquet exec
+#[allow(missing_docs)]
 pub fn parquet_exec_sorted(
     schema: &SchemaRef,
     sort_exprs: impl IntoIterator<Item = PhysicalSortExpr>,
@@ -306,26 +321,32 @@ pub fn parquet_exec_sorted(
     .build_arc()
 }
 
+#[allow(missing_docs)]
 pub fn union_exec(input: Vec<Arc<dyn ExecutionPlan>>) -> Arc<dyn ExecutionPlan> {
     Arc::new(UnionExec::new(input))
 }
 
+#[allow(missing_docs)]
 pub fn limit_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     global_limit_exec(local_limit_exec(input))
 }
 
+#[allow(missing_docs)]
 pub fn local_limit_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(LocalLimitExec::new(input, 100))
 }
 
+#[allow(missing_docs)]
 pub fn global_limit_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(GlobalLimitExec::new(input, 0, Some(100)))
 }
 
+#[allow(missing_docs)]
 pub fn repartition_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(RepartitionExec::try_new(input, Partitioning::RoundRobinBatch(10)).unwrap())
 }
 
+#[allow(missing_docs)]
 pub fn spr_repartition_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(
         RepartitionExec::try_new(input, Partitioning::RoundRobinBatch(10))
@@ -334,6 +355,7 @@ pub fn spr_repartition_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionP
     )
 }
 
+#[allow(missing_docs)]
 pub fn aggregate_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let schema = input.schema();
     Arc::new(
@@ -349,10 +371,12 @@ pub fn aggregate_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     )
 }
 
+#[allow(missing_docs)]
 pub fn coalesce_batches_exec(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     Arc::new(CoalesceBatchesExec::new(input, 128))
 }
 
+#[allow(missing_docs)]
 pub fn sort_exec(
     sort_exprs: impl IntoIterator<Item = PhysicalSortExpr>,
     input: Arc<dyn ExecutionPlan>,
@@ -370,6 +394,7 @@ pub struct RequirementsTestExec {
 }
 
 impl RequirementsTestExec {
+    #[allow(missing_docs)]
     pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             required_input_ordering: vec![],

@@ -32,7 +32,7 @@ use sqlparser::ast::{BinaryOperator, Expr as SQLExpr, Interval, UnaryOperator, V
 use sqlparser::parser::ParserError::ParserError;
 use std::borrow::Cow;
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
     pub(crate) fn parse_value(
         &self,
         value: Value,
@@ -288,7 +288,7 @@ fn interval_literal(interval_value: SQLExpr, negative: bool) -> Result<String> {
 fn try_decode_hex_literal(s: &str) -> Option<Vec<u8>> {
     let hex_bytes = s.as_bytes();
 
-    let mut decoded_bytes = Vec::with_capacity((hex_bytes.len() + 1) / 2);
+    let mut decoded_bytes = Vec::with_capacity(hex_bytes.len().div_ceil(2));
 
     let start_idx = hex_bytes.len() % 2;
     if start_idx > 0 {
@@ -299,7 +299,7 @@ fn try_decode_hex_literal(s: &str) -> Option<Vec<u8>> {
     for i in (start_idx..hex_bytes.len()).step_by(2) {
         let high = try_decode_hex_char(hex_bytes[i])?;
         let low = try_decode_hex_char(hex_bytes[i + 1])?;
-        decoded_bytes.push(high << 4 | low);
+        decoded_bytes.push((high << 4) | low);
     }
 
     Some(decoded_bytes)

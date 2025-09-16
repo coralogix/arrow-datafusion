@@ -127,7 +127,7 @@ impl ConstExpr {
     /// Returns a [`Display`]able list of `ConstExpr`.
     pub fn format_list(input: &[ConstExpr]) -> impl Display + '_ {
         struct DisplayableList<'a>(&'a [ConstExpr]);
-        impl<'a> Display for DisplayableList<'a> {
+        impl Display for DisplayableList<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 let mut first = true;
                 for const_expr in self.0 {
@@ -520,7 +520,7 @@ impl EquivalenceGroup {
                 // and the equivalence class `(a, b)`, expression `b` projects to `a1`.
                 if self
                     .get_equivalence_class(source)
-                    .map_or(false, |group| group.contains(expr))
+                    .is_some_and(|group| group.contains(expr))
                 {
                     return Some(Arc::clone(target));
                 }

@@ -170,7 +170,7 @@ mod tests {
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]))
         }
 
-        fn get_logical_plan(&self) -> Option<Cow<LogicalPlan>> {
+        fn get_logical_plan(&self) -> Option<Cow<'_, LogicalPlan>> {
             Some(Cow::Borrowed(&self.plan))
         }
     }

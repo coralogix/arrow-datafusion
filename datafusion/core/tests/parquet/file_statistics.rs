@@ -118,7 +118,7 @@ async fn list_files_with_session_level_cache() {
 
     let temp_path1 = tempdir()
         .unwrap()
-        .into_path()
+        .keep()
         .into_os_string()
         .into_string()
         .unwrap();
@@ -126,7 +126,7 @@ async fn list_files_with_session_level_cache() {
 
     let temp_path2 = tempdir()
         .unwrap()
-        .into_path()
+        .keep()
         .into_os_string()
         .into_string()
         .unwrap();

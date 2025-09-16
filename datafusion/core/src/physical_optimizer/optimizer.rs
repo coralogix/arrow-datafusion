@@ -17,9 +17,6 @@
 
 //! Physical optimizer traits
 
-use datafusion_physical_optimizer::PhysicalOptimizerRule;
-use std::sync::Arc;
-use datafusion_physical_optimizer::limit_pushdown_past_window::LimitPushPastWindows;
 use super::projection_pushdown::ProjectionPushdown;
 use super::update_aggr_exprs::OptimizeAggregateOrder;
 use crate::physical_optimizer::aggregate_statistics::AggregateStatistics;
@@ -33,6 +30,9 @@ use crate::physical_optimizer::limited_distinct_aggregation::LimitedDistinctAggr
 use crate::physical_optimizer::output_requirements::OutputRequirements;
 use crate::physical_optimizer::sanity_checker::SanityCheckPlan;
 use crate::physical_optimizer::topk_aggregation::TopKAggregation;
+use datafusion_physical_optimizer::limit_pushdown_past_window::LimitPushPastWindows;
+use datafusion_physical_optimizer::PhysicalOptimizerRule;
+use std::sync::Arc;
 
 /// A rule-based physical optimizer.
 #[derive(Clone, Debug)]

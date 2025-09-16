@@ -340,7 +340,7 @@ async fn oom_recursive_cte() {
 #[tokio::test]
 async fn oom_parquet_sink() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.into_path().join("test.parquet");
+    let path = dir.keep().join("test.parquet");
     let _ = File::create(path.clone()).await.unwrap();
 
     TestCase::new()
@@ -364,7 +364,7 @@ async fn oom_parquet_sink() {
 #[tokio::test]
 async fn oom_with_tracked_consumer_pool() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.into_path().join("test.parquet");
+    let path = dir.keep().join("test.parquet");
     let _ = File::create(path.clone()).await.unwrap();
 
     TestCase::new()

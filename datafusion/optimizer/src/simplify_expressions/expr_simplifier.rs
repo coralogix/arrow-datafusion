@@ -487,7 +487,7 @@ enum ConstSimplifyResult {
     SimplifyRuntimeError(DataFusionError, Expr),
 }
 
-impl<'a> TreeNodeRewriter for ConstEvaluator<'a> {
+impl TreeNodeRewriter for ConstEvaluator<'_> {
     type Node = Expr;
 
     fn f_down(&mut self, expr: Expr) -> Result<Transformed<Expr>> {
@@ -704,7 +704,7 @@ impl<'a, S> Simplifier<'a, S> {
     }
 }
 
-impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
+impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
     type Node = Expr;
 
     /// rewrite the expression simplifying any constant expressions
@@ -1712,7 +1712,7 @@ fn are_inlist_and_eq(left: &Expr, right: &Expr) -> bool {
 }
 
 /// Try to convert an expression to an in-list expression
-fn as_inlist(expr: &Expr) -> Option<Cow<InList>> {
+fn as_inlist(expr: &Expr) -> Option<Cow<'_, InList>> {
     match expr {
         Expr::InList(inlist) => Some(Cow::Borrowed(inlist)),
         Expr::BinaryExpr(BinaryExpr { left, op, right }) if *op == Operator::Eq => {

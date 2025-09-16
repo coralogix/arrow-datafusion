@@ -1124,8 +1124,8 @@ impl ListingTable {
     /// This method first checks if the statistics for the given file are already cached.
     /// If they are, it returns the cached statistics.
     /// If they are not, it infers the statistics from the file and stores them in the cache.
-    async fn do_collect_statistics<'a>(
-        &'a self,
+    async fn do_collect_statistics(
+        &self,
         ctx: &SessionState,
         store: &Arc<dyn ObjectStore>,
         part_file: &PartitionedFile,
@@ -2148,7 +2148,7 @@ mod tests {
 
         // create table
         let tmp_dir = TempDir::new()?;
-        let tmp_path = tmp_dir.into_path();
+        let tmp_path = tmp_dir.keep();
         let str_path = tmp_path.to_str().expect("Temp path should convert to &str");
         session_ctx
             .sql(&format!(
