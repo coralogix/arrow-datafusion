@@ -747,8 +747,10 @@ impl TryFrom<&protobuf::FileSinkConfig> for FileSinkConfig {
                 Ok((name.clone(), data_type))
             })
             .collect::<Result<Vec<_>>>()?;
+        let object_store_url = url::Url::parse(&conf.object_store_url)
+            .map_err(|e| DataFusionError::Internal(format!("{e}")))?;
         Ok(Self {
-            object_store_url: ObjectStoreUrl::parse(&conf.object_store_url)?,
+            object_store_url,
             file_groups,
             table_paths,
             output_schema: Arc::new(convert_required!(conf.output_schema)?),
@@ -810,6 +812,7 @@ impl TryFrom<&protobuf::CsvOptions> for CsvOptions {
             delimiter: proto_opts.delimiter[0],
             quote: proto_opts.quote[0],
             escape: proto_opts.escape.first().copied(),
+            double_quote: proto_opts.double_quote,
             compression: proto_opts.compression().into(),
             schema_infer_max_rec: proto_opts.schema_infer_max_rec as usize,
             date_format: (!proto_opts.date_format.is_empty())

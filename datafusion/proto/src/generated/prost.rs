@@ -1139,6 +1139,19 @@ pub struct ScalarNestedValue {
     pub arrow_data: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "3")]
     pub schema: ::core::option::Option<Schema>,
+    #[prost(message, repeated, tag = "4")]
+    pub dictionaries: ::prost::alloc::vec::Vec<scalar_nested_value::Dictionary>,
+}
+/// Nested message and enum types in `ScalarNestedValue`.
+pub mod scalar_nested_value {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Dictionary {
+        #[prost(bytes = "vec", tag = "1")]
+        pub ipc_message: ::prost::alloc::vec::Vec<u8>,
+        #[prost(bytes = "vec", tag = "2")]
+        pub arrow_data: ::prost::alloc::vec::Vec<u8>,
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1678,6 +1691,15 @@ pub struct CsvWriterOptions {
     /// Optional value to represent null
     #[prost(string, tag = "8")]
     pub null_value: ::prost::alloc::string::String,
+    /// Optional quote. Defaults to `b'"'`
+    #[prost(string, tag = "9")]
+    pub quote: ::prost::alloc::string::String,
+    /// Optional escape. Defaults to `'\\'`
+    #[prost(string, tag = "10")]
+    pub escape: ::prost::alloc::string::String,
+    /// Optional flag whether to double quote instead of escaping. Defaults to `true`
+    #[prost(bool, tag = "11")]
+    pub double_quote: bool,
 }
 /// Options controlling CSV format
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1719,6 +1741,9 @@ pub struct CsvOptions {
     /// Optional representation of null value
     #[prost(string, tag = "12")]
     pub null_value: ::prost::alloc::string::String,
+    /// Indicates whether to use double quotes instead of escaping
+    #[prost(bool, tag = "13")]
+    pub double_quote: bool,
 }
 /// Options controlling CSV format
 #[allow(clippy::derive_partial_eq_without_eq)]
