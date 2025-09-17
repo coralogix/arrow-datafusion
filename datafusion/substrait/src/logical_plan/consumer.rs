@@ -164,32 +164,24 @@ fn split_eq_and_noneq_join_predicate_with_nulls_equality(
 
     for expr in exprs {
         match expr {
-            Expr::BinaryExpr(binary_expr) => match binary_expr {
-                x @ (BinaryExpr {
-                    left,
-                    op: Operator::Eq,
-                    right,
-                }
-                | BinaryExpr {
-                    left,
-                    op: Operator::IsNotDistinctFrom,
-                    right,
-                }) => {
-                    nulls_equal_nulls = match x.op {
-                        Operator::Eq => false,
-                        Operator::IsNotDistinctFrom => true,
-                        _ => unreachable!(),
-                    };
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: op @ (Operator::Eq | Operator::IsNotDistinctFrom),
+                right,
+            }) => {
+                nulls_equal_nulls = match op {
+                    Operator::Eq => false,
+                    Operator::IsNotDistinctFrom => true,
+                    _ => unreachable!(),
+                };
 
-                    match (left.as_ref(), right.as_ref()) {
-                        (Expr::Column(l), Expr::Column(r)) => {
-                            accum_join_keys.push((l.clone(), r.clone()));
-                        }
-                        _ => accum_filters.push(expr.clone()),
+                match (left.as_ref(), right.as_ref()) {
+                    (Expr::Column(l), Expr::Column(r)) => {
+                        accum_join_keys.push((l.clone(), r.clone()));
                     }
+                    _ => accum_filters.push(expr.clone()),
                 }
-                _ => accum_filters.push(expr.clone()),
-            },
+            }
             _ => accum_filters.push(expr.clone()),
         }
     }

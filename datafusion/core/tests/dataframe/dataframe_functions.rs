@@ -361,11 +361,11 @@ async fn test_fn_approx_percentile_cont() -> Result<()> {
     let expr = approx_percentile_cont(col("b"), lit(0.5));
 
     let expected = [
-        "+---------------------------------------------+",
-        "| APPROX_PERCENTILE_CONT(test.b,Float64(0.5)) |",
-        "+---------------------------------------------+",
-        "| 10                                          |",
-        "+---------------------------------------------+",
+        "+----------------------------------------------+",
+        "| APPROX_PERCENTILE_CONT(test.b, Float64(0.5)) |",
+        "+----------------------------------------------+",
+        "| 10                                           |",
+        "+----------------------------------------------+",
     ];
 
     let df = create_test_table().await?;
@@ -382,11 +382,11 @@ async fn test_fn_approx_percentile_cont() -> Result<()> {
     let expr = approx_percentile_cont(col("b"), alias_expr);
     let df = create_test_table().await?;
     let expected = [
-        "+--------------------------------------+",
-        "| APPROX_PERCENTILE_CONT(test.b,arg_2) |",
-        "+--------------------------------------+",
-        "| 10                                   |",
-        "+--------------------------------------+",
+        "+---------------------------------------+",
+        "| APPROX_PERCENTILE_CONT(test.b, arg_2) |",
+        "+---------------------------------------+",
+        "| 10                                    |",
+        "+---------------------------------------+",
     ];
     let batches = df.aggregate(vec![], vec![expr]).unwrap().collect().await?;
 

@@ -1338,7 +1338,10 @@ impl ScalarValue {
             ScalarValue::DurationMillisecond(v) => v.is_none(),
             ScalarValue::DurationMicrosecond(v) => v.is_none(),
             ScalarValue::DurationNanosecond(v) => v.is_none(),
-            ScalarValue::Union(v, _, _) => v.is_none(),
+            ScalarValue::Union(v, _, _) => match v {
+                Some((_, v)) => v.is_null(),
+                None => true,
+            },
             ScalarValue::Dictionary(_, v) => v.is_null(),
         }
     }
@@ -2500,7 +2503,13 @@ impl ScalarValue {
             DataType::Duration(TimeUnit::Nanosecond) => {
                 typed_cast!(array, index, DurationNanosecondArray, DurationNanosecond)?
             }
-
+            DataType::Union(fields, mode) => {
+                let array = as_union_array(array);
+                let ti = array.type_id(index);
+                let index = array.value_offset(index);
+                let value = ScalarValue::try_from_array(array.child(ti), index)?;
+                ScalarValue::Union(Some((ti, Box::new(value))), fields.clone(), *mode)
+            }
             other => {
                 return _not_impl_err!(
                     "Can't create a scalar from array of type \"{other:?}\""
@@ -2727,8 +2736,15 @@ impl ScalarValue {
             ScalarValue::DurationNanosecond(val) => {
                 eq_array_primitive!(array, index, DurationNanosecondArray, val)?
             }
-            ScalarValue::Union(_, _, _) => {
-                return _not_impl_err!("Union is not supported yet")
+            ScalarValue::Union(value, _, _) => {
+                let array = as_union_array(array);
+                let ti = array.type_id(index);
+                let index = array.value_offset(index);
+                if let Some((ti_v, value)) = value {
+                    ti_v == &ti && value.eq_array(array.child(ti), index)?
+                } else {
+                    array.child(ti).is_null(index)
+                }
             }
             ScalarValue::Dictionary(key_type, v) => {
                 let (values_array, values_index) = match key_type.as_ref() {
@@ -3248,9 +3264,8 @@ impl fmt::Display for ScalarValue {
                     columns
                         .iter()
                         .zip(fields.iter())
-                        .enumerate()
-                        .map(|(index, (column, field))| {
-                            if nulls.is_some_and(|b| b.is_null(index)) {
+                        .map(|(column, field)| {
+                            if nulls.is_some_and(|b| b.is_null(0)) {
                                 format!("{}:NULL", field.name())
                             } else if let DataType::Struct(_) = field.data_type() {
                                 let sv = ScalarValue::Struct(Arc::new(
@@ -3450,7 +3465,7 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::{is_null, kernels};
     use arrow::util::pretty::pretty_format_columns;
-    use arrow_buffer::Buffer;
+    use arrow_buffer::{Buffer, NullBuffer};
     use arrow_schema::Fields;
     use chrono::NaiveDate;
     use rand::Rng;
@@ -5093,6 +5108,112 @@ mod tests {
     }
 
     #[test]
+    fn test_scalar_union_sparse() {
+        let field_a = Arc::new(Field::new("A", DataType::Int32, true));
+        let field_b = Arc::new(Field::new("B", DataType::Boolean, true));
+        let field_c = Arc::new(Field::new("C", DataType::Utf8, true));
+        let fields = UnionFields::from_iter([(0, field_a), (1, field_b), (2, field_c)]);
+
+        let mut values_a = vec![None; 6];
+        values_a[0] = Some(42);
+        let mut values_b = vec![None; 6];
+        values_b[1] = Some(true);
+        let mut values_c = vec![None; 6];
+        values_c[2] = Some("foo");
+        let children: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(values_a)),
+            Arc::new(BooleanArray::from(values_b)),
+            Arc::new(StringArray::from(values_c)),
+        ];
+
+        let type_ids = ScalarBuffer::from(vec![0, 1, 2, 0, 1, 2]);
+        let array: ArrayRef = Arc::new(
+            UnionArray::try_new(fields.clone(), type_ids, None, children)
+                .expect("UnionArray"),
+        );
+
+        let expected = [
+            (0, ScalarValue::from(42)),
+            (1, ScalarValue::from(true)),
+            (2, ScalarValue::from("foo")),
+            (0, ScalarValue::Int32(None)),
+            (1, ScalarValue::Boolean(None)),
+            (2, ScalarValue::Utf8(None)),
+        ];
+
+        for (i, (ti, value)) in expected.into_iter().enumerate() {
+            let is_null = value.is_null();
+            let value = Some((ti, Box::new(value)));
+            let expected = ScalarValue::Union(value, fields.clone(), UnionMode::Sparse);
+            let actual = ScalarValue::try_from_array(&array, i).expect("try_from_array");
+
+            assert_eq!(
+                actual, expected,
+                "[{i}] {actual} was not equal to {expected}"
+            );
+
+            assert!(
+                expected.eq_array(&array, i).expect("eq_array"),
+                "[{i}] {expected}.eq_array was false"
+            );
+
+            if is_null {
+                assert!(actual.is_null(), "[{i}] {actual} was not null")
+            }
+        }
+    }
+
+    #[test]
+    fn test_scalar_union_dense() {
+        let field_a = Arc::new(Field::new("A", DataType::Int32, true));
+        let field_b = Arc::new(Field::new("B", DataType::Boolean, true));
+        let field_c = Arc::new(Field::new("C", DataType::Utf8, true));
+        let fields = UnionFields::from_iter([(0, field_a), (1, field_b), (2, field_c)]);
+        let children: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![Some(42), None])),
+            Arc::new(BooleanArray::from(vec![Some(true), None])),
+            Arc::new(StringArray::from(vec![Some("foo"), None])),
+        ];
+
+        let type_ids = ScalarBuffer::from(vec![0, 1, 2, 0, 1, 2]);
+        let offsets = ScalarBuffer::from(vec![0, 0, 0, 1, 1, 1]);
+        let array: ArrayRef = Arc::new(
+            UnionArray::try_new(fields.clone(), type_ids, Some(offsets), children)
+                .expect("UnionArray"),
+        );
+
+        let expected = [
+            (0, ScalarValue::from(42)),
+            (1, ScalarValue::from(true)),
+            (2, ScalarValue::from("foo")),
+            (0, ScalarValue::Int32(None)),
+            (1, ScalarValue::Boolean(None)),
+            (2, ScalarValue::Utf8(None)),
+        ];
+
+        for (i, (ti, value)) in expected.into_iter().enumerate() {
+            let is_null = value.is_null();
+            let value = Some((ti, Box::new(value)));
+            let expected = ScalarValue::Union(value, fields.clone(), UnionMode::Dense);
+            let actual = ScalarValue::try_from_array(&array, i).expect("try_from_array");
+
+            assert_eq!(
+                actual, expected,
+                "[{i}] {actual} was not equal to {expected}"
+            );
+
+            assert!(
+                expected.eq_array(&array, i).expect("eq_array"),
+                "[{i}] {expected}.eq_array was false"
+            );
+
+            if is_null {
+                assert!(actual.is_null(), "[{i}] {actual} was not null")
+            }
+        }
+    }
+
+    #[test]
     fn test_lists_in_struct() {
         let field_a = Arc::new(Field::new("A", DataType::Utf8, false));
         let field_primitive_list = Arc::new(Field::new(
@@ -5919,6 +6040,43 @@ mod tests {
     }
 
     #[test]
+    fn test_null_bug() {
+        let field_a = Field::new("a", DataType::Int32, true);
+        let field_b = Field::new("b", DataType::Int32, true);
+        let fields = Fields::from(vec![field_a, field_b]);
+
+        let array_a = Arc::new(Int32Array::from_iter_values([1]));
+        let array_b = Arc::new(Int32Array::from_iter_values([2]));
+        let arrays: Vec<ArrayRef> = vec![array_a, array_b];
+
+        let mut not_nulls = BooleanBufferBuilder::new(1);
+        not_nulls.append(true);
+        let not_nulls = not_nulls.finish();
+        let not_nulls = Some(NullBuffer::new(not_nulls));
+
+        let ar = unsafe { StructArray::new_unchecked(fields, arrays, not_nulls) };
+        let s = ScalarValue::Struct(Arc::new(ar));
+
+        assert_eq!(s.to_string(), "{a:1,b:2}");
+        assert_eq!(format!("{s:?}"), r#"Struct({a:1,b:2})"#);
+
+        let ScalarValue::Struct(arr) = s else {
+            panic!("Expected struct");
+        };
+
+        //verify compared to arrow display
+        let batch = RecordBatch::try_from_iter(vec![("s", arr as _)]).unwrap();
+        let expected = [
+            "+--------------+",
+            "| s            |",
+            "+--------------+",
+            "| {a: 1, b: 2} |",
+            "+--------------+",
+        ];
+        assert_batches_eq!(&expected, &[batch]);
+    }
+
+    #[test]
     fn test_struct_display_null() {
         let fields = vec![Field::new("a", DataType::Int32, false)];
         let s = ScalarStructBuilder::new_null(fields);
@@ -6070,5 +6228,34 @@ mod tests {
             }
         }
         intervals
+    }
+
+    fn union_fields() -> UnionFields {
+        [
+            (0, Arc::new(Field::new("A", DataType::Int32, true))),
+            (1, Arc::new(Field::new("B", DataType::Float64, true))),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn sparse_scalar_union_is_null() {
+        let sparse_scalar = ScalarValue::Union(
+            Some((0_i8, Box::new(ScalarValue::Int32(None)))),
+            union_fields(),
+            UnionMode::Sparse,
+        );
+        assert!(sparse_scalar.is_null());
+    }
+
+    #[test]
+    fn dense_scalar_union_is_null() {
+        let dense_scalar = ScalarValue::Union(
+            Some((0_i8, Box::new(ScalarValue::Int32(None)))),
+            union_fields(),
+            UnionMode::Dense,
+        );
+        assert!(dense_scalar.is_null());
     }
 }

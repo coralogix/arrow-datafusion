@@ -166,8 +166,10 @@ pub fn parse_physical_window_expr(
                 WindowFunctionDefinition::BuiltInWindowFunction(f.into())
             }
             protobuf::physical_window_expr_node::WindowFunction::UserDefinedAggrFunction(udaf_name) => {
-                let agg_udf = registry.udaf(udaf_name)?;
-                WindowFunctionDefinition::AggregateUDF(agg_udf)
+                WindowFunctionDefinition::AggregateUDF(match &proto.fun_definition {
+                    Some(buf) => codec.try_decode_udaf(udaf_name, buf)?,
+                    None => registry.udaf(udaf_name)?
+                })
             }
         }
     } else {
@@ -641,8 +643,11 @@ impl TryFrom<&protobuf::FileSinkConfig> for FileSinkConfig {
                 Ok((name.clone(), data_type))
             })
             .collect::<Result<Vec<_>>>()?;
+
+        let object_store_url = url::Url::parse(&conf.object_store_url)
+            .map_err(|e| DataFusionError::Internal(format!("{e}")))?;
         Ok(Self {
-            object_store_url: ObjectStoreUrl::parse(&conf.object_store_url)?,
+            object_store_url,
             file_groups,
             table_paths,
             output_schema: Arc::new(convert_required!(conf.output_schema)?),

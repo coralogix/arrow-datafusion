@@ -246,7 +246,7 @@ async fn test_parameter_invalid_types() -> Result<()> {
         .await;
     assert_eq!(
         results.unwrap_err().strip_backtrace(),
-        "Arrow error: Invalid argument error: Invalid comparison operation: List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }) == List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })"
+        "Arrow error: Invalid argument error: Nested comparison: List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }) == List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }) (hint: use make_comparator instead)"
 );
     Ok(())
 }

@@ -18,6 +18,7 @@
 use arrow_schema::{Field, Schema};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use datafusion_physical_expr::NullState;
+use std::mem::{size_of, size_of_val};
 use std::{any::Any, sync::Arc};
 
 use arrow::{
@@ -92,7 +93,7 @@ impl AggregateUDFImpl for GeoMeanUdaf {
     }
 
     /// This is the description of the state. accumulator's state() must match the types here.
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<arrow_schema::Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new("prod", args.return_type.clone(), true),
             Field::new("n", DataType::UInt32, true),
@@ -193,7 +194,7 @@ impl Accumulator for GeometricMean {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
@@ -288,10 +289,10 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             values,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, new_value| {
                 let prod = &mut self.prods[group_index];
-                *prod = prod.mul_wrapping(new_value);
-
+                *prod = prod.mul_wrapping(new_value.unwrap());
                 self.counts[group_index] += 1;
             },
         );
@@ -318,8 +319,9 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             partial_counts,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, partial_count| {
-                self.counts[group_index] += partial_count;
+                self.counts[group_index] += partial_count.unwrap();
             },
         );
 
@@ -330,9 +332,10 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
             partial_prods,
             opt_filter,
             total_num_groups,
-            |group_index, new_value: <Float64Type as ArrowPrimitiveType>::Native| {
+            true,
+            |group_index, new_value| {
                 let prod = &mut self.prods[group_index];
-                *prod = prod.mul_wrapping(new_value);
+                *prod = prod.mul_wrapping(new_value.unwrap());
             },
         );
 
@@ -394,8 +397,8 @@ impl GroupsAccumulator for GeometricMeanGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.counts.capacity() * std::mem::size_of::<u32>()
-            + self.prods.capacity() * std::mem::size_of::<Float64Type>()
+        self.counts.capacity() * size_of::<u32>()
+            + self.prods.capacity() * size_of::<Float64Type>()
     }
 }
 

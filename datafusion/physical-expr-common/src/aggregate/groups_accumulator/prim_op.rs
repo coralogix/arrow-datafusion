@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::mem::size_of;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, AsArray, BooleanArray, PrimitiveArray};
@@ -102,9 +103,10 @@ where
             values,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, new_value| {
                 let value = &mut self.values[group_index];
-                (self.prim_fn)(value, new_value);
+                (self.prim_fn)(value, new_value.unwrap());
             },
         );
 
@@ -135,6 +137,6 @@ where
     }
 
     fn size(&self) -> usize {
-        self.values.capacity() * std::mem::size_of::<T::Native>() + self.null_state.size()
+        self.values.capacity() * size_of::<T::Native>() + self.null_state.size()
     }
 }

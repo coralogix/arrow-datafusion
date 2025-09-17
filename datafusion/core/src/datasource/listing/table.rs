@@ -63,6 +63,7 @@ use async_trait::async_trait;
 use futures::{future, stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::ObjectStore;
+use url::Url;
 
 /// Configuration for creating a [`ListingTable`]
 #[derive(Debug, Clone)]
@@ -890,8 +891,9 @@ impl TableProvider for ListingTable {
         let file_groups = file_list_stream.try_collect::<Vec<_>>().await?;
 
         // Sink related option, apart from format
+        let object_store_url: &Url = self.table_paths()[0].as_ref();
         let config = FileSinkConfig {
-            object_store_url: self.table_paths()[0].object_store(),
+            object_store_url: object_store_url.clone(),
             table_paths: self.table_paths().clone(),
             file_groups,
             output_schema: self.schema(),

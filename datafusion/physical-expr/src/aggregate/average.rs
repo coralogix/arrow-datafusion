@@ -22,6 +22,7 @@ use log::debug;
 
 use std::any::Any;
 use std::fmt::Debug;
+use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 use crate::aggregate::groups_accumulator::accumulate::NullState;
@@ -35,9 +36,7 @@ use arrow::{
     datatypes::Field,
 };
 use arrow_array::types::{Decimal256Type, DecimalType};
-use arrow_array::{
-    Array, ArrowNativeTypeOp, ArrowNumericType, ArrowPrimitiveType, PrimitiveArray,
-};
+use arrow_array::{Array, ArrowNativeTypeOp, ArrowNumericType, PrimitiveArray};
 use arrow_buffer::{i256, ArrowNativeType};
 use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_expr::type_coercion::aggregates::avg_return_type;
@@ -286,7 +285,7 @@ impl Accumulator for AvgAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
@@ -379,7 +378,7 @@ impl<T: DecimalType + ArrowNumericType> Accumulator for DecimalAvgAccumulator<T>
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
@@ -458,10 +457,10 @@ where
             values,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, new_value| {
                 let sum = &mut self.sums[group_index];
-                *sum = sum.add_wrapping(new_value);
-
+                *sum = sum.add_wrapping(new_value.unwrap());
                 self.counts[group_index] += 1;
             },
         );
@@ -487,8 +486,9 @@ where
             partial_counts,
             opt_filter,
             total_num_groups,
+            true,
             |group_index, partial_count| {
-                self.counts[group_index] += partial_count;
+                self.counts[group_index] += partial_count.unwrap();
             },
         );
 
@@ -499,9 +499,10 @@ where
             partial_sums,
             opt_filter,
             total_num_groups,
-            |group_index, new_value: <T as ArrowPrimitiveType>::Native| {
+            true,
+            |group_index, new_value| {
                 let sum = &mut self.sums[group_index];
-                *sum = sum.add_wrapping(new_value);
+                *sum = sum.add_wrapping(new_value.unwrap());
             },
         );
 
@@ -563,7 +564,6 @@ where
     }
 
     fn size(&self) -> usize {
-        self.counts.capacity() * std::mem::size_of::<u64>()
-            + self.sums.capacity() * std::mem::size_of::<T>()
+        self.counts.capacity() * size_of::<u64>() + self.sums.capacity() * size_of::<T>()
     }
 }
