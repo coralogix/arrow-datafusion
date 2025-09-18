@@ -15,27 +15,12 @@
 // under the License.
 
 //! [`Max`] and [`MaxAccumulator`] accumulator for the `max` function
-//! [`Min`] and [`MinAccumulator`] accumulator for the `max` function
-
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
 
 use arrow::array::{
     ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array,
-    Decimal128Array, Decimal256Array, Float16Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, IntervalDayTimeArray,
+    Decimal128Array, Decimal256Array, DurationMicrosecondArray, DurationMillisecondArray,
+    DurationNanosecondArray, DurationSecondArray, Float16Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, IntervalDayTimeArray,
     IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray,
     LargeStringArray, StringArray, StringViewArray, Time32MillisecondArray,
     Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
@@ -44,9 +29,10 @@ use arrow::array::{
 };
 use arrow::compute;
 use arrow::datatypes::{
-    DataType, Decimal128Type, Decimal256Type, Float16Type, Float32Type, Float64Type,
-    Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type,
-    UInt8Type,
+    DataType, Decimal128Type, Decimal256Type, DurationMicrosecondType,
+    DurationMillisecondType, DurationNanosecondType, DurationSecondType, Float16Type,
+    Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
+    UInt32Type, UInt64Type, UInt8Type,
 };
 use arrow_schema::IntervalUnit;
 use datafusion_common::{
@@ -193,6 +179,7 @@ impl AggregateUDFImpl for Max {
                 | Time32(_)
                 | Time64(_)
                 | Timestamp(_, _)
+                | Duration(_)
         )
     }
 
@@ -246,6 +233,18 @@ impl AggregateUDFImpl for Max {
             }
             Timestamp(Nanosecond, _) => {
                 instantiate_max_accumulator!(data_type, i64, TimestampNanosecondType)
+            }
+            Duration(Second) => {
+                instantiate_max_accumulator!(data_type, i64, DurationSecondType)
+            }
+            Duration(Millisecond) => {
+                instantiate_max_accumulator!(data_type, i64, DurationMillisecondType)
+            }
+            Duration(Microsecond) => {
+                instantiate_max_accumulator!(data_type, i64, DurationMicrosecondType)
+            }
+            Duration(Nanosecond) => {
+                instantiate_max_accumulator!(data_type, i64, DurationNanosecondType)
             }
             Decimal128(_, _) => {
                 instantiate_max_accumulator!(data_type, i128, Decimal128Type)
@@ -431,6 +430,33 @@ macro_rules! min_max_batch {
                     $VALUES,
                     IntervalMonthDayNanoArray,
                     IntervalMonthDayNano,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Second) => {
+                typed_min_max_batch!($VALUES, DurationSecondArray, DurationSecond, $OP)
+            }
+            DataType::Duration(TimeUnit::Millisecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMillisecondArray,
+                    DurationMillisecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Microsecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationMicrosecondArray,
+                    DurationMicrosecond,
+                    $OP
+                )
+            }
+            DataType::Duration(TimeUnit::Nanosecond) => {
+                typed_min_max_batch!(
+                    $VALUES,
+                    DurationNanosecondArray,
+                    DurationNanosecond,
                     $OP
                 )
             }
@@ -972,6 +998,7 @@ impl AggregateUDFImpl for Min {
                 | Time32(_)
                 | Time64(_)
                 | Timestamp(_, _)
+                | Duration(_)
         )
     }
 
@@ -1025,6 +1052,18 @@ impl AggregateUDFImpl for Min {
             }
             Timestamp(Nanosecond, _) => {
                 instantiate_min_accumulator!(data_type, i64, TimestampNanosecondType)
+            }
+            Duration(Second) => {
+                instantiate_min_accumulator!(data_type, i64, DurationSecondType)
+            }
+            Duration(Millisecond) => {
+                instantiate_min_accumulator!(data_type, i64, DurationMillisecondType)
+            }
+            Duration(Microsecond) => {
+                instantiate_min_accumulator!(data_type, i64, DurationMicrosecondType)
+            }
+            Duration(Nanosecond) => {
+                instantiate_min_accumulator!(data_type, i64, DurationNanosecondType)
             }
             Decimal128(_, _) => {
                 instantiate_min_accumulator!(data_type, i128, Decimal128Type)
