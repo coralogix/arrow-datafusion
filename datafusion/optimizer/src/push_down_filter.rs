@@ -882,7 +882,10 @@ impl OptimizerRule for PushDownFilter {
                 let extract_partition_keys = |func: &WindowFunction| {
                     func.partition_by
                         .iter()
-                        .map(|c| Column::from_qualified_name(c.schema_name().to_string()))
+                        .map(|c| {
+                            let (relation, name) = c.qualified_name();
+                            Column::new(relation, name)
+                        })
                         .collect::<HashSet<_>>()
                 };
                 let potential_partition_keys = window
