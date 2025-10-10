@@ -2178,7 +2178,7 @@ impl Display for Expr {
                 null_treatment,
                 distinct,
             }) => {
-                fmt_function(f, &fun.to_string(), distinct, args, true)?;
+                fmt_function(f, &fun.to_string(), *distinct, args, true)?;
 
                 if let Some(nt) = null_treatment {
                     write!(f, "{}", nt)?;

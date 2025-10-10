@@ -18,8 +18,8 @@
 use datafusion_expr::expr::Unnest;
 use sqlparser::ast::Value::SingleQuotedString;
 use sqlparser::ast::{
-    self, BinaryOperator, Expr as AstExpr, Function, Ident, Interval, ObjectName,
-    TimezoneInfo, UnaryOperator,
+    self, BinaryOperator, DuplicateTreatment, Expr as AstExpr, Function, Ident, Interval,
+    ObjectName, TimezoneInfo, UnaryOperator,
 };
 use std::sync::Arc;
 use std::vec;
@@ -208,7 +208,8 @@ impl Unparser<'_> {
                 partition_by,
                 order_by,
                 window_frame,
-                distinct, ..
+                distinct,
+                ..
             }) => {
                 let func_name = fun.name();
 
@@ -300,7 +301,7 @@ impl Unparser<'_> {
                     args: ast::FunctionArguments::List(ast::FunctionArgumentList {
                         duplicate_treatment: agg
                             .distinct
-                            .then_some(ast::DuplicateTreatment::Distinct),
+                            .then_some(DuplicateTreatment::Distinct),
                         args,
                         clauses: vec![],
                     }),
