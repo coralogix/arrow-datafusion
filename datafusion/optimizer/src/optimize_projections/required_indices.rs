@@ -35,7 +35,7 @@ use datafusion_expr::{Expr, LogicalPlan};
 /// indices were added `[3, 2, 4, 3, 6, 1]`,  the instance would be represented
 /// by  `[1, 2, 3, 6]`.
 #[derive(Debug, Clone, Default)]
-pub(super) struct RequiredIndicies {
+pub struct RequiredIndicies {
     /// The indices of the required columns in the
     indices: Vec<usize>,
     /// If putting a projection above children is beneficial for the parent.
