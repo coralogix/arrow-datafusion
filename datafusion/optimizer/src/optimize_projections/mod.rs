@@ -17,7 +17,7 @@
 
 //! [`OptimizeProjections`] identifies and eliminates unused columns
 
-mod required_indices;
+pub mod required_indices;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
