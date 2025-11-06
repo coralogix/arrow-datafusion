@@ -199,7 +199,7 @@ impl PhysicalExpr for ScalarFunctionExpr {
         self.name.hash(&mut s);
         self.args.hash(&mut s);
         self.return_type.hash(&mut s);
-        // Add `self.fun` when hash is available
+        self.fun.hash(&mut s)
     }
 
     fn get_properties(&self, children: &[ExprProperties]) -> Result<ExprProperties> {
