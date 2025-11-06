@@ -222,12 +222,12 @@ impl PartialEq<dyn Any> for ScalarFunctionExpr {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| {
+            .is_some_and(|x| {
                 self.name == x.name
                     && physical_exprs_equal(&self.args, &x.args)
                     && self.return_type == x.return_type
+                    && self.fun == x.fun
             })
-            .unwrap_or(false)
     }
 }
 
