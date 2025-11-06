@@ -185,6 +185,7 @@ pub trait PhysicalExpr: Send + Sync + Display + Debug + PartialEq<dyn Any> {
 
 impl Hash for dyn PhysicalExpr {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_any().type_id().hash(state);
         self.dyn_hash(state);
     }
 }
