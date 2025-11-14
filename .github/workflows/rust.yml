@@ -148,7 +148,21 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
+      volumes:
+        - /usr/local:/host/usr/local
     steps:
+      - name: Remove unnecessary preinstalled software
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          # remove tool cache: about 8.5GB (github has host /opt/hostedtoolcache mounted as /__t)
+          rm -rf /__t/* || true
+          # remove Haskell runtime: about 6.3GB (host /usr/local/.ghcup)
+          rm -rf /host/usr/local/.ghcup || true
+          # remove Android library: about 7.8GB (host /usr/local/lib/android)
+          rm -rf /host/usr/local/lib/android || true
+          echo "Disk space after cleanup:"
+          df -h
       - uses: actions/checkout@v4
         with:
           submodules: true
@@ -157,8 +171,6 @@ jobs:
         with:
           rust-version: stable
       - name: Run tests (excluding doctests)
-        env:
-          RUST_BACKTRACE: 1
         run: cargo test --lib --tests --bins --features avro,json,backtrace
       - name: Verify Working Directory Clean
         run: git diff --exit-code
