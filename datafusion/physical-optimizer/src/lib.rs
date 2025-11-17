@@ -22,6 +22,7 @@ pub mod aggregate_statistics;
 pub mod coalesce_batches;
 pub mod combine_partial_final_agg;
 pub mod limit_pushdown;
+pub mod limit_pushdown_past_window;
 pub mod limited_distinct_aggregation;
 mod optimizer;
 pub mod output_requirements;

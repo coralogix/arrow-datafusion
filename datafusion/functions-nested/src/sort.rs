@@ -70,6 +70,7 @@ impl ScalarUDFImpl for ArraySort {
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         match &arg_types[0] {
+            DataType::Null => Ok(DataType::Null),
             List(field) | FixedSizeList(field, _) => Ok(List(Arc::new(
                 Field::new_list_field(field.data_type().clone(), true),
             ))),
@@ -141,6 +142,16 @@ pub fn array_sort_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
         return exec_err!("array_sort expects one to three arguments");
     }
 
+    if args[0].data_type().is_null() {
+        return Ok(Arc::clone(&args[0]));
+    }
+
+    let list_array = as_list_array(&args[0])?;
+    let row_count = list_array.len();
+    if row_count == 0 || list_array.value_type().is_null() {
+        return Ok(Arc::clone(&args[0]));
+    }
+
     let sort_option = match args.len() {
         1 => None,
         2 => {
@@ -160,12 +171,6 @@ pub fn array_sort_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
         }
         _ => return exec_err!("array_sort expects 1 to 3 arguments"),
     };
-
-    let list_array = as_list_array(&args[0])?;
-    let row_count = list_array.len();
-    if row_count == 0 {
-        return Ok(Arc::clone(&args[0]));
-    }
 
     let mut array_lengths = vec![];
     let mut arrays = vec![];

@@ -3751,6 +3751,26 @@ SELECT MIN(value), MAX(value) FROM timestampmicrosecond
 statement ok
 DROP TABLE timestampmicrosecond;
 
+# min_duration, max_duration
+statement ok
+create table d
+as values
+  (arrow_cast(1, 'Duration(Second)'), arrow_cast(2, 'Duration(Millisecond)'),  arrow_cast(3, 'Duration(Microsecond)'),  arrow_cast(4, 'Duration(Nanosecond)')),
+  (arrow_cast(11, 'Duration(Second)'),arrow_cast(22, 'Duration(Millisecond)'), arrow_cast(33, 'Duration(Microsecond)'), arrow_cast(44, 'Duration(Nanosecond)'));
+
+query ????
+SELECT min(column1), min(column2), min(column3), min(column4) FROM d;
+----
+0 days 0 hours 0 mins 1 secs 0 days 0 hours 0 mins 0.002 secs 0 days 0 hours 0 mins 0.000003 secs 0 days 0 hours 0 mins 0.000000004 secs
+
+query ????
+SELECT max(column1), max(column2), max(column3), max(column4) FROM d;
+----
+0 days 0 hours 0 mins 11 secs 0 days 0 hours 0 mins 0.022 secs 0 days 0 hours 0 mins 0.000033 secs 0 days 0 hours 0 mins 0.000000044 secs
+
+statement ok
+drop table d;
+
 # max_bool
 statement ok
 CREATE TABLE max_bool (value BOOLEAN);
@@ -4279,6 +4299,51 @@ select * from t;
 NULL NULL Row 2 Y
 2021-01-01 2021-01-01T00:00:00 Row 3 Y
 
+# aggregate_duration_min_max
+statement ok
+create table d
+as values
+  (arrow_cast(1, 'Duration(Second)'), arrow_cast(2, 'Duration(Millisecond)'),  arrow_cast(3, 'Duration(Microsecond)'),  arrow_cast(4, 'Duration(Nanosecond)'), 1),
+  (arrow_cast(11, 'Duration(Second)'),arrow_cast(22, 'Duration(Millisecond)'), arrow_cast(33, 'Duration(Microsecond)'), arrow_cast(44, 'Duration(Nanosecond)'), 1);
+
+query ????
+SELECT min(column1), min(column2), min(column3), min(column4) FROM d;
+----
+0 days 0 hours 0 mins 1 secs 0 days 0 hours 0 mins 0.002 secs 0 days 0 hours 0 mins 0.000003 secs 0 days 0 hours 0 mins 0.000000004 secs
+
+query ????
+SELECT max(column1), max(column2), max(column3), max(column4) FROM d;
+----
+0 days 0 hours 0 mins 11 secs 0 days 0 hours 0 mins 0.022 secs 0 days 0 hours 0 mins 0.000033 secs 0 days 0 hours 0 mins 0.000000044 secs
+
+# GROUP BY follows a different code path
+query ????I
+SELECT min(column1), min(column2), min(column3), min(column4), column5 FROM d GROUP BY column5;
+----
+0 days 0 hours 0 mins 1 secs 0 days 0 hours 0 mins 0.002 secs 0 days 0 hours 0 mins 0.000003 secs 0 days 0 hours 0 mins 0.000000004 secs 1
+
+query ????I
+SELECT max(column1), max(column2), max(column3), max(column4), column5 FROM d GROUP BY column5;
+----
+0 days 0 hours 0 mins 11 secs 0 days 0 hours 0 mins 0.022 secs 0 days 0 hours 0 mins 0.000033 secs 0 days 0 hours 0 mins 0.000000044 secs 1
+
+statement ok
+INSERT INTO d VALUES
+  (arrow_cast(3, 'Duration(Second)'), arrow_cast(1, 'Duration(Millisecond)'), arrow_cast(7, 'Duration(Microsecond)'), arrow_cast(2, 'Duration(Nanosecond)'), 1),
+  (arrow_cast(0, 'Duration(Second)'), arrow_cast(9, 'Duration(Millisecond)'), arrow_cast(5, 'Duration(Microsecond)'), arrow_cast(8, 'Duration(Nanosecond)'), 1);
+
+query ????I
+SELECT max(column1), max(column2), max(column3), max(column4), column5 FROM d GROUP BY column5 ORDER BY column5;
+----
+0 days 0 hours 0 mins 11 secs 0 days 0 hours 0 mins 0.022 secs 0 days 0 hours 0 mins 0.000033 secs 0 days 0 hours 0 mins 0.000000044 secs 1
+
+query ????I
+SELECT min(column1), min(column2), min(column3), min(column4), column5 FROM d GROUP BY column5 ORDER BY column5;
+----
+0 days 0 hours 0 mins 0 secs 0 days 0 hours 0 mins 0.001 secs 0 days 0 hours 0 mins 0.000003 secs 0 days 0 hours 0 mins 0.000000002 secs 1
+
+statement ok
+drop table d;
 
 # aggregate_timestamps_sum
 query error
@@ -4976,18 +5041,17 @@ logical_plan
 03)----Aggregate: groupBy=[[aggregate_test_100.c3]], aggr=[[min(aggregate_test_100.c1)]]
 04)------TableScan: aggregate_test_100 projection=[c1, c3]
 physical_plan
-01)GlobalLimitExec: skip=0, fetch=5
-02)--CoalescePartitionsExec
-03)----AggregateExec: mode=FinalPartitioned, gby=[c3@0 as c3, min(aggregate_test_100.c1)@1 as min(aggregate_test_100.c1)], aggr=[], lim=[5]
-04)------CoalesceBatchesExec: target_batch_size=8192
-05)--------RepartitionExec: partitioning=Hash([c3@0, min(aggregate_test_100.c1)@1], 4), input_partitions=4
-06)----------AggregateExec: mode=Partial, gby=[c3@0 as c3, min(aggregate_test_100.c1)@1 as min(aggregate_test_100.c1)], aggr=[], lim=[5]
-07)------------AggregateExec: mode=FinalPartitioned, gby=[c3@0 as c3], aggr=[min(aggregate_test_100.c1)]
-08)--------------CoalesceBatchesExec: target_batch_size=8192
-09)----------------RepartitionExec: partitioning=Hash([c3@0], 4), input_partitions=4
-10)------------------AggregateExec: mode=Partial, gby=[c3@1 as c3], aggr=[min(aggregate_test_100.c1)]
-11)--------------------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-12)----------------------CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100.csv]]}, projection=[c1, c3], has_header=true
+01)CoalescePartitionsExec: fetch=5
+02)--AggregateExec: mode=FinalPartitioned, gby=[c3@0 as c3, min(aggregate_test_100.c1)@1 as min(aggregate_test_100.c1)], aggr=[], lim=[5]
+03)----CoalesceBatchesExec: target_batch_size=8192
+04)------RepartitionExec: partitioning=Hash([c3@0, min(aggregate_test_100.c1)@1], 4), input_partitions=4
+05)--------AggregateExec: mode=Partial, gby=[c3@0 as c3, min(aggregate_test_100.c1)@1 as min(aggregate_test_100.c1)], aggr=[], lim=[5]
+06)----------AggregateExec: mode=FinalPartitioned, gby=[c3@0 as c3], aggr=[min(aggregate_test_100.c1)]
+07)------------CoalesceBatchesExec: target_batch_size=8192
+08)--------------RepartitionExec: partitioning=Hash([c3@0], 4), input_partitions=4
+09)----------------AggregateExec: mode=Partial, gby=[c3@1 as c3], aggr=[min(aggregate_test_100.c1)]
+10)------------------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+11)--------------------CsvExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100.csv]]}, projection=[c1, c3], has_header=true
 
 
 #

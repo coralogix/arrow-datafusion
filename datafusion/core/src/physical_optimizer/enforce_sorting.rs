@@ -186,13 +186,11 @@ impl PhysicalOptimizerRule for EnforceSorting {
                 )
             })
             .data()?;
-
         // Execute a top-down traversal to exploit sort push-down opportunities
         // missed by the bottom-up traversal:
         let mut sort_pushdown = SortPushDown::new_default(updated_plan.plan);
         assign_initial_requirements(&mut sort_pushdown);
         let adjusted = pushdown_sorts(sort_pushdown)?;
-
         adjusted
             .plan
             .transform_up(|plan| Ok(Transformed::yes(replace_with_partial_sort(plan)?)))
@@ -377,7 +375,13 @@ fn ensure_sorting(
     {
         // This `SortPreservingMergeExec` is unnecessary, input already has a
         // single partition.
-        let child_node = requirements.children.swap_remove(0);
+        // single partition and no fetch is required.
+        let mut child_node = requirements.children.swap_remove(0);
+        if let Some(fetch) = plan.fetch() {
+            // Add the limit exec if the spm has a fetch
+            child_node.plan =
+                Arc::new(LocalLimitExec::new(Arc::clone(&child_node.plan), fetch));
+        }
         return Ok(Transformed::yes(child_node));
     }
 
@@ -403,7 +407,10 @@ fn analyze_immediate_sort_removal(
             {
                 // Replace the sort with a sort-preserving merge:
                 let expr = LexOrdering::new(sort_exec.expr().to_vec());
-                Arc::new(SortPreservingMergeExec::new(expr, Arc::clone(sort_input))) as _
+                Arc::new(
+                    SortPreservingMergeExec::new(expr, Arc::clone(sort_input))
+                        .with_fetch(sort_exec.fetch()),
+                ) as _
             } else {
                 // Remove the sort:
                 node.children = node.children.swap_remove(0).children;
@@ -626,11 +633,12 @@ fn remove_corresponding_sort_from_sub_plan(
         // If there is existing ordering, to preserve ordering use
         // `SortPreservingMergeExec` instead of a `CoalescePartitionsExec`.
         let plan = Arc::clone(&node.plan);
+        let fetch = plan.fetch();
         let plan = if let Some(ordering) = plan.output_ordering() {
-            Arc::new(SortPreservingMergeExec::new(
-                LexOrdering::new(ordering.to_vec()),
-                plan,
-            )) as _
+            Arc::new(
+                SortPreservingMergeExec::new(LexOrdering::new(ordering.to_vec()), plan)
+                    .with_fetch(fetch),
+            ) as _
         } else {
             Arc::new(CoalescePartitionsExec::new(plan)) as _
         };
@@ -666,6 +674,7 @@ mod tests {
         sort_preserving_merge_exec, spr_repartition_exec, union_exec,
         RequirementsTestExec,
     };
+    use crate::physical_optimizer::utils::sort_preserving_merge_exec_with_fetch;
     use crate::physical_plan::{displayable, get_plan_string, Partitioning};
     use crate::prelude::{SessionConfig, SessionContext};
     use crate::test::{csv_exec_ordered, csv_exec_sorted, stream_exec_ordered};
@@ -1401,6 +1410,30 @@ mod tests {
         // should not add a sort at the output of the union, input plan should not be changed
         let expected_optimized = expected_input.clone();
         assert_optimized!(expected_input, expected_optimized, physical_plan, true);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_remove_unnecessary_spm2() -> Result<()> {
+        let schema = create_test_schema()?;
+        let source = memory_exec(&schema);
+        let input = sort_preserving_merge_exec_with_fetch(
+            vec![sort_expr("non_nullable_col", &schema)],
+            source,
+            100,
+        );
+
+        let expected_input = [
+            "SortPreservingMergeExec: [non_nullable_col@1 ASC], fetch=100",
+            "  MemoryExec: partitions=1, partition_sizes=[0]",
+        ];
+        let expected_optimized = [
+            "LocalLimitExec: fetch=100",
+            "  SortExec: expr=[non_nullable_col@1 ASC], preserve_partitioning=[false]",
+            "    MemoryExec: partitions=1, partition_sizes=[0]",
+        ];
+        assert_optimized!(expected_input, expected_optimized, input, true);
 
         Ok(())
     }
