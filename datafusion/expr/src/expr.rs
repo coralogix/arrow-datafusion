@@ -780,6 +780,8 @@ pub struct WindowFunction {
     pub window_frame: WindowFrame,
     /// Specifies how NULL value is treated: ignore or respect
     pub null_treatment: Option<NullTreatment>,
+    /// Distinct flag
+    pub distinct: bool,
 }
 
 impl WindowFunction {
@@ -793,6 +795,7 @@ impl WindowFunction {
             order_by: Vec::default(),
             window_frame: WindowFrame::new(None),
             null_treatment: None,
+            distinct: false,
         }
     }
 }
@@ -1718,10 +1721,12 @@ impl HashNode for Expr {
                 order_by: _order_by,
                 window_frame,
                 null_treatment,
+                distinct,
             }) => {
                 fun.hash(state);
                 window_frame.hash(state);
                 null_treatment.hash(state);
+                distinct.hash(state);
             }
             Expr::InList(InList {
                 expr: _expr,
@@ -2021,6 +2026,7 @@ impl<'a> Display for SchemaDisplay<'a> {
                 order_by,
                 window_frame,
                 null_treatment,
+                distinct,
             }) => {
                 write!(
                     f,
@@ -2170,8 +2176,9 @@ impl Display for Expr {
                 order_by,
                 window_frame,
                 null_treatment,
+                distinct,
             }) => {
-                fmt_function(f, &fun.to_string(), false, args, true)?;
+                fmt_function(f, &fun.to_string(), *distinct, args, true)?;
 
                 if let Some(nt) = null_treatment {
                     write!(f, "{}", nt)?;

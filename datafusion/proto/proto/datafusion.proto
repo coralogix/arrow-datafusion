@@ -505,6 +505,12 @@ message ScalarUDFExprNode {
   optional bytes fun_definition = 3;
 }
 
+enum NullTreatment {
+  UNSPECIFIED = 0;
+  RESPECT_NULLS = 1;
+  IGNORE_NULLS = 2;
+}
+
 message WindowExprNode {
   oneof window_function {
     // BuiltInWindowFunction built_in_function = 2;
@@ -517,6 +523,8 @@ message WindowExprNode {
   // repeated LogicalExprNode filter = 7;
   WindowFrame window_frame = 8;
   optional bytes fun_definition = 10;
+  bool distinct = 11;
+  NullTreatment null_treatment = 12;
 }
 
 message BetweenNode {

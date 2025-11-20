@@ -291,6 +291,7 @@ impl TreeNode for Expr {
                 order_by,
                 window_frame,
                 null_treatment,
+                distinct,
             }) => map_until_stop_and_collect!(
                 transform_vec(args, &mut f),
                 partition_by,
@@ -299,6 +300,17 @@ impl TreeNode for Expr {
                 transform_sort_vec(order_by, &mut f)
             )?
             .update_data(|(new_args, new_partition_by, new_order_by)| {
+                if distinct {
+                    return Expr::WindowFunction(WindowFunction::new(fun, new_args))
+                        .partition_by(new_partition_by)
+                        .order_by(new_order_by)
+                        .window_frame(window_frame)
+                        .null_treatment(null_treatment)
+                        .distinct()
+                        .build()
+                        .unwrap();
+                }
+
                 Expr::WindowFunction(WindowFunction::new(fun, new_args))
                     .partition_by(new_partition_by)
                     .order_by(new_order_by)

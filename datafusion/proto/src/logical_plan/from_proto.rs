@@ -24,6 +24,7 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::{Alias, Placeholder, Sort};
 use datafusion_expr::expr::{Unnest, WildcardOptions};
+use datafusion_expr::sqlparser::ast::NullTreatment;
 use datafusion_expr::ExprFunctionExt;
 use datafusion_expr::{
     expr::{self, InList, WindowFunction},
@@ -273,6 +274,16 @@ pub fn parse_expr(
                 .ok_or_else(|| {
                     exec_datafusion_err!("missing window frame during deserialization")
                 })?;
+            let distinct = expr.distinct;
+            let null_treatment: Option<NullTreatment> =
+                protobuf::NullTreatment::try_from(expr.null_treatment)
+                    .map_err(|_| {
+                        proto_error(format!(
+                        "Received a WindowExprNode message with unknown NullTreatment {}",
+                        expr.null_treatment
+                    ))
+                    })?
+                    .into();
 
             // TODO: support proto for null treatment
             match window_function {
@@ -283,15 +294,31 @@ pub fn parse_expr(
                     };
 
                     let args = parse_exprs(&expr.exprs, registry, codec)?;
-                    Expr::WindowFunction(WindowFunction::new(
-                        expr::WindowFunctionDefinition::AggregateUDF(udaf_function),
-                        args,
-                    ))
-                    .partition_by(partition_by)
-                    .order_by(order_by)
-                    .window_frame(window_frame)
-                    .build()
-                    .map_err(Error::DataFusionError)
+
+                    if distinct {
+                        Expr::WindowFunction(WindowFunction::new(
+                            expr::WindowFunctionDefinition::AggregateUDF(udaf_function),
+                            args,
+                        ))
+                        .partition_by(partition_by)
+                        .order_by(order_by)
+                        .window_frame(window_frame)
+                        .null_treatment(null_treatment)
+                        .distinct()
+                        .build()
+                        .map_err(Error::DataFusionError)
+                    } else {
+                        Expr::WindowFunction(WindowFunction::new(
+                            expr::WindowFunctionDefinition::AggregateUDF(udaf_function),
+                            args,
+                        ))
+                        .partition_by(partition_by)
+                        .order_by(order_by)
+                        .window_frame(window_frame)
+                        .null_treatment(null_treatment)
+                        .build()
+                        .map_err(Error::DataFusionError)
+                    }
                 }
                 window_expr_node::WindowFunction::Udwf(udwf_name) => {
                     let udwf_function = match &expr.fun_definition {
@@ -300,15 +327,28 @@ pub fn parse_expr(
                     };
 
                     let args = parse_exprs(&expr.exprs, registry, codec)?;
-                    Expr::WindowFunction(WindowFunction::new(
-                        expr::WindowFunctionDefinition::WindowUDF(udwf_function),
-                        args,
-                    ))
-                    .partition_by(partition_by)
-                    .order_by(order_by)
-                    .window_frame(window_frame)
-                    .build()
-                    .map_err(Error::DataFusionError)
+                    if distinct {
+                        Expr::WindowFunction(WindowFunction::new(
+                            expr::WindowFunctionDefinition::WindowUDF(udwf_function),
+                            args,
+                        ))
+                        .partition_by(partition_by)
+                        .order_by(order_by)
+                        .window_frame(window_frame)
+                        .distinct()
+                        .build()
+                        .map_err(Error::DataFusionError)
+                    } else {
+                        Expr::WindowFunction(WindowFunction::new(
+                            expr::WindowFunctionDefinition::WindowUDF(udwf_function),
+                            args,
+                        ))
+                        .partition_by(partition_by)
+                        .order_by(order_by)
+                        .window_frame(window_frame)
+                        .build()
+                        .map_err(Error::DataFusionError)
+                    }
                 }
             }
         }
@@ -684,4 +724,14 @@ fn parse_required_expr(
 
 fn proto_error<S: Into<String>>(message: S) -> Error {
     Error::General(message.into())
+}
+
+impl From<protobuf::NullTreatment> for Option<NullTreatment> {
+    fn from(t: protobuf::NullTreatment) -> Self {
+        match t {
+            protobuf::NullTreatment::Unspecified => None,
+            protobuf::NullTreatment::RespectNulls => Some(NullTreatment::RespectNulls),
+            protobuf::NullTreatment::IgnoreNulls => Some(NullTreatment::IgnoreNulls),
+        }
+    }
 }

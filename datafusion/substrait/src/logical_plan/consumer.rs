@@ -1735,6 +1735,7 @@ pub async fn from_substrait_rex(
                     from_substrait_bound(&window.upper_bound, false)?,
                 ),
                 null_treatment: None,
+                distinct: false,
             }))
         }
         Some(RexType::Subquery(subquery)) => match &subquery.as_ref().subquery_type {

@@ -524,6 +524,7 @@ impl<'a> TreeNodeRewriter for TypeCoercionRewriter<'a> {
                 order_by,
                 window_frame,
                 null_treatment,
+                distinct,
             }) => {
                 let window_frame =
                     coerce_window_frame(window_frame, self.schema, &order_by)?;
@@ -539,14 +540,26 @@ impl<'a> TreeNodeRewriter for TypeCoercionRewriter<'a> {
                     _ => args,
                 };
 
-                Ok(Transformed::yes(
-                    Expr::WindowFunction(WindowFunction::new(fun, args))
-                        .partition_by(partition_by)
-                        .order_by(order_by)
-                        .window_frame(window_frame)
-                        .null_treatment(null_treatment)
-                        .build()?,
-                ))
+                if distinct {
+                    Ok(Transformed::yes(
+                        Expr::WindowFunction(WindowFunction::new(fun, args))
+                            .partition_by(partition_by)
+                            .order_by(order_by)
+                            .window_frame(window_frame)
+                            .null_treatment(null_treatment)
+                            .distinct()
+                            .build()?,
+                    ))
+                } else {
+                    Ok(Transformed::yes(
+                        Expr::WindowFunction(WindowFunction::new(fun, args))
+                            .partition_by(partition_by)
+                            .order_by(order_by)
+                            .window_frame(window_frame)
+                            .null_treatment(null_treatment)
+                            .build()?,
+                    ))
+                }
             }
             Expr::Alias(_)
             | Expr::Column(_)

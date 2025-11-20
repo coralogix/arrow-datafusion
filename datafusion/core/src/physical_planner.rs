@@ -1498,6 +1498,7 @@ pub fn create_window_expr_with_name(
             order_by,
             window_frame,
             null_treatment,
+            distinct,
         }) => {
             let physical_args =
                 create_physical_exprs(args, logical_schema, execution_props)?;
@@ -1525,6 +1526,7 @@ pub fn create_window_expr_with_name(
                 window_frame,
                 physical_schema,
                 ignore_nulls,
+                *distinct,
             )
         }
         other => plan_err!("Invalid window expression '{other:?}'"),

@@ -18,8 +18,8 @@
 use datafusion_expr::expr::Unnest;
 use sqlparser::ast::Value::SingleQuotedString;
 use sqlparser::ast::{
-    self, BinaryOperator, Expr as AstExpr, Function, Ident, Interval, ObjectName,
-    TimezoneInfo, UnaryOperator,
+    self, BinaryOperator, DuplicateTreatment, Expr as AstExpr, Function, Ident, Interval,
+    ObjectName, TimezoneInfo, UnaryOperator,
 };
 use std::sync::Arc;
 use std::vec;
@@ -208,7 +208,8 @@ impl Unparser<'_> {
                 partition_by,
                 order_by,
                 window_frame,
-                null_treatment: _,
+                distinct,
+                ..
             }) => {
                 let func_name = fun.name();
 
@@ -253,7 +254,8 @@ impl Unparser<'_> {
                         quote_style: None,
                     }]),
                     args: ast::FunctionArguments::List(ast::FunctionArgumentList {
-                        duplicate_treatment: None,
+                        duplicate_treatment: distinct
+                            .then_some(DuplicateTreatment::Distinct),
                         args,
                         clauses: vec![],
                     }),
@@ -299,7 +301,7 @@ impl Unparser<'_> {
                     args: ast::FunctionArguments::List(ast::FunctionArgumentList {
                         duplicate_treatment: agg
                             .distinct
-                            .then_some(ast::DuplicateTreatment::Distinct),
+                            .then_some(DuplicateTreatment::Distinct),
                         args,
                         clauses: vec![],
                     }),
@@ -1752,6 +1754,7 @@ mod tests {
                     order_by: vec![],
                     window_frame: WindowFrame::new(None),
                     null_treatment: None,
+                    distinct: false,
                 }),
                 r#"row_number(col) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"#,
             ),
@@ -1771,6 +1774,7 @@ mod tests {
                         ),
                     ),
                     null_treatment: None,
+                    distinct: false,
                 }),
                 r#"count(*) OVER (ORDER BY a DESC NULLS FIRST RANGE BETWEEN 6 PRECEDING AND 2 FOLLOWING)"#,
             ),

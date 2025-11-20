@@ -24,6 +24,7 @@ use datafusion_expr::expr::{
     self, Alias, Between, BinaryExpr, Cast, GroupingSet, InList, Like, Placeholder,
     ScalarFunction, Unnest,
 };
+use datafusion_expr::sqlparser::ast::NullTreatment;
 use datafusion_expr::{
     logical_plan::PlanType, logical_plan::StringifiedPlan, Expr, JoinConstraint,
     JoinType, SortExpr, TryCast, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -299,7 +300,8 @@ pub fn serialize_expr(
             ref order_by,
             ref window_frame,
             // TODO: support null treatment in proto
-            null_treatment: _,
+            null_treatment,
+            distinct,
         }) => {
             let (window_function, fun_definition) = match fun {
                 WindowFunctionDefinition::AggregateUDF(aggr_udf) => {
@@ -328,13 +330,15 @@ pub fn serialize_expr(
 
             let window_frame: Option<protobuf::WindowFrame> =
                 Some(window_frame.try_into()?);
-            let window_expr = protobuf::WindowExprNode {
+            let window_expr: protobuf::WindowExprNode = protobuf::WindowExprNode {
                 exprs: serialize_exprs(args, codec)?,
                 window_function: Some(window_function),
                 partition_by,
                 order_by,
                 window_frame,
                 fun_definition,
+                distinct: *distinct,
+                null_treatment: protobuf::NullTreatment::from(null_treatment).into(),
             };
             protobuf::LogicalExprNode {
                 expr_type: Some(ExprType::WindowExpr(window_expr)),
@@ -679,6 +683,18 @@ impl From<JoinConstraint> for protobuf::JoinConstraint {
         match t {
             JoinConstraint::On => protobuf::JoinConstraint::On,
             JoinConstraint::Using => protobuf::JoinConstraint::Using,
+        }
+    }
+}
+
+impl From<&Option<NullTreatment>> for protobuf::NullTreatment {
+    fn from(t: &Option<NullTreatment>) -> Self {
+        match t {
+            Some(null_treatment) => match null_treatment {
+                NullTreatment::RespectNulls => protobuf::NullTreatment::RespectNulls,
+                NullTreatment::IgnoreNulls => protobuf::NullTreatment::IgnoreNulls,
+            },
+            None => protobuf::NullTreatment::Unspecified,
         }
     }
 }
