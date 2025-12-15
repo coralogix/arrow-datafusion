@@ -125,10 +125,11 @@ async fn run_query(
     let task_ctx = Arc::new(df.task_ctx());
     let plan = df.create_physical_plan().await?;
 
+    let schema = plan.schema();
     let stream = execute_stream(plan, task_ctx)?;
     let types = normalize::convert_schema_to_types(stream.schema().fields());
     let results: Vec<RecordBatch> = collect(stream).await?;
-    let rows = normalize::convert_batches(results, is_spark_path)?;
+    let rows = normalize::convert_batches(&schema, results, is_spark_path)?;
 
     if rows.is_empty() && types.is_empty() {
         Ok(DBOutput::StatementComplete(0))
