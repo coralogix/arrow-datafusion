@@ -21,18 +21,40 @@ use std::sync::Arc;
 use arrow::array::ArrayRef;
 use arrow::datatypes::DataType;
 use datafusion_expr::simplify::{ExprSimplifyResult, SimplifyInfo};
+use datafusion_expr::type_coercion::binary::{
+    binary_to_string_coercion, string_coercion,
+};
 
 use crate::utils::make_scalar_function;
 use datafusion_common::{internal_err, Result, ScalarValue};
+use datafusion_expr::cast;
 use datafusion_expr::{ColumnarValue, Documentation, Expr, Like};
 use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
 use datafusion_macros::user_doc;
 
 /// Returns true if string starts with prefix.
 /// starts_with('alphabet', 'alph') = 't'
-pub fn starts_with(args: &[ArrayRef]) -> Result<ArrayRef> {
-    let result = arrow::compute::kernels::comparison::starts_with(&args[0], &args[1])?;
-    Ok(Arc::new(result) as ArrayRef)
+fn starts_with(args: &[ArrayRef]) -> Result<ArrayRef> {
+    if let Some(coercion_data_type) =
+        string_coercion(args[0].data_type(), args[1].data_type()).or_else(|| {
+            binary_to_string_coercion(args[0].data_type(), args[1].data_type())
+        })
+    {
+        let arg0 = if args[0].data_type() == &coercion_data_type {
+            Arc::clone(&args[0])
+        } else {
+            arrow::compute::kernels::cast::cast(&args[0], &coercion_data_type)?
+        };
+        let arg1 = if args[1].data_type() == &coercion_data_type {
+            Arc::clone(&args[1])
+        } else {
+            arrow::compute::kernels::cast::cast(&args[1], &coercion_data_type)?
+        };
+        let result = arrow::compute::kernels::comparison::starts_with(&arg0, &arg1)?;
+        Ok(Arc::new(result) as ArrayRef)
+    } else {
+        internal_err!("Unsupported data types for starts_with. Expected Utf8, LargeUtf8 or Utf8View")
+    }
 }
 
 #[user_doc(
@@ -102,40 +124,56 @@ impl ScalarUDFImpl for StartsWithFunc {
     fn simplify(
         &self,
         args: Vec<Expr>,
-        _info: &dyn SimplifyInfo,
+        info: &dyn SimplifyInfo,
     ) -> Result<ExprSimplifyResult> {
         if let Expr::Literal(scalar_value) = &args[1] {
             // Convert starts_with(col, 'prefix') to col LIKE 'prefix%' with proper escaping
-            // Example: starts_with(col, 'ja%') -> col LIKE 'ja\%%'
-            //   1. 'ja%'         (input pattern)
-            //   2. 'ja\%'        (escape special char '%')
-            //   3. 'ja\%%'       (add suffix for starts_with)
+            // Escapes pattern characters: starts_with(col, 'j\_a%') -> col LIKE 'j\\\_a\%%'
+            //   1. 'j\_a%'         (input pattern)
+            //   2. 'j\\\_a\%'       (escape special chars '%', '_' and '\')
+            //   3. 'j\\\_a\%%'      (add unescaped % suffix for starts_with)
             let like_expr = match scalar_value {
-                ScalarValue::Utf8(Some(pattern)) => {
-                    let escaped_pattern = pattern.replace("%", "\\%");
+                ScalarValue::Utf8(Some(pattern))
+                | ScalarValue::LargeUtf8(Some(pattern))
+                | ScalarValue::Utf8View(Some(pattern)) => {
+                    let escaped_pattern = pattern
+                        .replace("\\", "\\\\")
+                        .replace("%", "\\%")
+                        .replace("_", "\\_");
                     let like_pattern = format!("{}%", escaped_pattern);
                     Expr::Literal(ScalarValue::Utf8(Some(like_pattern)))
-                }
-                ScalarValue::LargeUtf8(Some(pattern)) => {
-                    let escaped_pattern = pattern.replace("%", "\\%");
-                    let like_pattern = format!("{}%", escaped_pattern);
-                    Expr::Literal(ScalarValue::LargeUtf8(Some(like_pattern)))
-                }
-                ScalarValue::Utf8View(Some(pattern)) => {
-                    let escaped_pattern = pattern.replace("%", "\\%");
-                    let like_pattern = format!("{}%", escaped_pattern);
-                    Expr::Literal(ScalarValue::Utf8View(Some(like_pattern)))
                 }
                 _ => return Ok(ExprSimplifyResult::Original(args)),
             };
 
-            return Ok(ExprSimplifyResult::Simplified(Expr::Like(Like {
-                negated: false,
-                expr: Box::new(args[0].clone()),
-                pattern: Box::new(like_expr),
-                escape_char: None,
-                case_insensitive: false,
-            })));
+            let expr_data_type = info.get_data_type(&args[0])?;
+            let pattern_data_type = info.get_data_type(&like_expr)?;
+
+            if let Some(coercion_data_type) =
+                string_coercion(&expr_data_type, &pattern_data_type).or_else(|| {
+                    binary_to_string_coercion(&expr_data_type, &pattern_data_type)
+                })
+            {
+                let expr = if expr_data_type == coercion_data_type {
+                    args[0].clone()
+                } else {
+                    cast(args[0].clone(), coercion_data_type.clone())
+                };
+
+                let pattern = if pattern_data_type == coercion_data_type {
+                    like_expr
+                } else {
+                    cast(like_expr, coercion_data_type)
+                };
+
+                return Ok(ExprSimplifyResult::Simplified(Expr::Like(Like {
+                    negated: false,
+                    expr: Box::new(expr),
+                    pattern: Box::new(pattern),
+                    escape_char: None,
+                    case_insensitive: false,
+                })));
+            }
         }
 
         Ok(ExprSimplifyResult::Original(args))
