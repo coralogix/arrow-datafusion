@@ -980,6 +980,14 @@ fn encode_scalar_nested_value(
 
     let gen = IpcDataGenerator {};
     let mut dict_tracker = DictionaryTracker::new(false);
+    // The IPC writer requires pre-allocated dictionary IDs (normally assigned when
+    // serializing the schema). Populate `dict_tracker` by encoding the schema first.
+    // See apache/datafusion#20011 / #20063.
+    let _ = gen.schema_to_bytes_with_dictionary_tracker(
+        batch.schema().as_ref(),
+        &mut dict_tracker,
+        &Default::default(),
+    );
     let (encoded_dictionaries, encoded_message) = gen
         .encoded_batch(&batch, &mut dict_tracker, &Default::default())
         .map_err(|e| {
