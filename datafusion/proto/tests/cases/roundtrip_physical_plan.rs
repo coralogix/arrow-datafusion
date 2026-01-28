@@ -1872,3 +1872,31 @@ async fn test_tpch_part_in_list_query_with_real_parquet_data() -> Result<()> {
         proto.try_into_physical_plan(&ctx, ctx.runtime_env().as_ref(), &codec)?;
     Ok(())
 }
+
+#[test]
+fn roundtrip_call_null_scalar_struct_dict() {
+    let data_type = DataType::Struct(Fields::from(vec![Field::new(
+        "item",
+        DataType::Dictionary(Box::new(DataType::UInt32), Box::new(DataType::Utf8)),
+        true,
+    )]));
+    let schema = Arc::new(Schema::new(Fields::from([Arc::new(Field::new(
+        "a",
+        data_type.clone(),
+        true,
+    ))])));
+    let scan = Arc::new(EmptyExec::new(schema.clone()));
+    let scalar = lit(ScalarValue::try_from(data_type.clone()).unwrap());
+    let filter = Arc::new(
+        FilterExec::try_new(
+            Arc::new(BinaryExpr::new(
+                scalar,
+                datafusion::logical_expr::Operator::Eq,
+                col("a", &schema).unwrap(),
+            )),
+            scan,
+        )
+        .unwrap(),
+    );
+    roundtrip_test(filter).expect("roundtrip");
+}
