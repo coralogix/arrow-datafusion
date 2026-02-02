@@ -19,14 +19,14 @@ use std::sync::Arc;
 
 use crate::physical_optimizer::test_utils::{
     coalesce_batches_exec, coalesce_partitions_exec, global_limit_exec, local_limit_exec,
-    sort_exec, sort_preserving_merge_exec, stream_exec,
+    sort_exec, sort_exec_with_fetch, sort_preserving_merge_exec, stream_exec,
 };
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::error::Result;
-use datafusion_expr::Operator;
+use datafusion_expr::{JoinType, Operator};
 use datafusion_physical_expr::expressions::{col, lit, BinaryExpr};
 use datafusion_physical_expr::Partitioning;
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
@@ -34,6 +34,7 @@ use datafusion_physical_optimizer::limit_pushdown::LimitPushdown;
 use datafusion_physical_optimizer::PhysicalOptimizerRule;
 use datafusion_physical_plan::empty::EmptyExec;
 use datafusion_physical_plan::filter::FilterExec;
+use datafusion_physical_plan::joins::NestedLoopJoinExec;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::{get_plan_string, ExecutionPlan};
@@ -85,6 +86,16 @@ fn repartition_exec(
 
 fn empty_exec(schema: SchemaRef) -> Arc<dyn ExecutionPlan> {
     Arc::new(EmptyExec::new(schema))
+}
+
+fn nested_loop_join_exec(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join_type: JoinType,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(Arc::new(NestedLoopJoinExec::try_new(
+        left, right, None, &join_type, None,
+    )?))
 }
 
 #[test]
@@ -414,6 +425,88 @@ fn merges_local_limit_with_global_limit() -> Result<()> {
         LimitPushdown::new().optimize(local_limit, &ConfigOptions::new())?;
 
     let expected = ["GlobalLimitExec: skip=20, fetch=20", "  EmptyExec"];
+    assert_eq!(get_plan_string(&after_optimize), expected);
+
+    Ok(())
+}
+
+#[test]
+fn preserves_nested_global_limit() -> Result<()> {
+    // If there are multiple limits in an execution plan, they all need to be
+    // preserved in the optimized plan.
+    let schema = create_schema();
+
+    let inner_left = empty_exec(Arc::clone(&schema));
+    let inner_right = empty_exec(Arc::clone(&schema));
+    let inner_join = nested_loop_join_exec(inner_left, inner_right, JoinType::Right)?;
+
+    let inner_limit = global_limit_exec(inner_join, 2, Some(1));
+
+    let outer_left = empty_exec(Arc::clone(&schema));
+    let outer_join = nested_loop_join_exec(outer_left, inner_limit, JoinType::Left)?;
+
+    let outer_limit = global_limit_exec(outer_join, 1, Some(1));
+
+    let initial = get_plan_string(&outer_limit);
+    let expected_initial = [
+        "GlobalLimitExec: skip=1, fetch=1",
+        "  NestedLoopJoinExec: join_type=Left",
+        "    EmptyExec",
+        "    GlobalLimitExec: skip=2, fetch=1",
+        "      NestedLoopJoinExec: join_type=Right",
+        "        EmptyExec",
+        "        EmptyExec",
+    ];
+    assert_eq!(initial, expected_initial);
+
+    let after_optimize =
+        LimitPushdown::new().optimize(outer_limit, &ConfigOptions::new())?;
+    let expected = [
+        "GlobalLimitExec: skip=1, fetch=1",
+        "  NestedLoopJoinExec: join_type=Left",
+        "    EmptyExec",
+        "    GlobalLimitExec: skip=2, fetch=1",
+        "      NestedLoopJoinExec: join_type=Right",
+        "        EmptyExec",
+        "        EmptyExec",
+    ];
+    assert_eq!(get_plan_string(&after_optimize), expected);
+
+    Ok(())
+}
+
+#[test]
+fn preserves_skip_before_sort() -> Result<()> {
+    // If there's a limit with skip before a node that supports fetch but
+    // does not support limit pushdown, that limit should not be removed.
+    let schema = create_schema();
+
+    let empty = empty_exec(Arc::clone(&schema));
+
+    let ordering: LexOrdering = [PhysicalSortExpr {
+        expr: col("c1", &schema)?,
+        options: SortOptions::default(),
+    }]
+    .into();
+    let sort = sort_exec_with_fetch(ordering, Some(4), empty);
+
+    let outer_limit = global_limit_exec(sort, 1, None);
+
+    let initial = get_plan_string(&outer_limit);
+    let expected_initial = [
+        "GlobalLimitExec: skip=1, fetch=None",
+        "  SortExec: TopK(fetch=4), expr=[c1@0 ASC], preserve_partitioning=[false]",
+        "    EmptyExec",
+    ];
+    assert_eq!(initial, expected_initial);
+
+    let after_optimize =
+        LimitPushdown::new().optimize(outer_limit, &ConfigOptions::new())?;
+    let expected = [
+        "GlobalLimitExec: skip=1, fetch=3",
+        "  SortExec: TopK(fetch=4), expr=[c1@0 ASC], preserve_partitioning=[false]",
+        "    EmptyExec",
+    ];
     assert_eq!(get_plan_string(&after_optimize), expected);
 
     Ok(())
