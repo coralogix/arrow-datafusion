@@ -102,7 +102,7 @@ pub fn serialize_physical_window_expr(
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<protobuf::PhysicalWindowExprNode> {
     let expr = window_expr.as_any();
-    let args = window_expr.expressions().to_vec();
+    let mut args = window_expr.expressions().to_vec();
     let window_frame = window_expr.get_window_frame();
 
     let (window_function, fun_definition, ignore_nulls, distinct) =
@@ -138,6 +138,7 @@ pub fn serialize_physical_window_expr(
             {
                 let mut buf = Vec::new();
                 codec.try_encode_udwf(expr.fun(), &mut buf)?;
+                args = expr.args().to_vec();
                 (
                     physical_window_expr_node::WindowFunction::UserDefinedWindowFunction(
                         expr.fun().name().to_string(),
