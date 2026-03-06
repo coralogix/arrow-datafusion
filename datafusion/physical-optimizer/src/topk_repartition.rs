@@ -45,9 +45,9 @@
 //! ```
 
 use crate::PhysicalOptimizerRule;
-use datafusion_common::Result;
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::Result;
 use std::sync::Arc;
 // CoalesceBatchesExec is deprecated on main (replaced by arrow-rs BatchCoalescer),
 // but older DataFusion versions may still insert it between SortExec and RepartitionExec.
@@ -233,12 +233,16 @@ mod tests {
         let optimized = TopKRepartition::new().optimize(sort, &config).unwrap();
 
         let display = plan_str(optimized.as_ref());
-        assert_eq!(display.trim(), r#"
+        assert_eq!(
+            display.trim(),
+            r#"
 SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
   RepartitionExec: partitioning=Hash([a@0], 4), input_partitions=1
     SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
       PlaceholderRowExec
-"#.trim());
+"#
+            .trim()
+        );
     }
 
     /// TopK with no fetch (unbounded sort) should NOT be pushed.
@@ -264,11 +268,15 @@ SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
         let optimized = TopKRepartition::new().optimize(sort, &config).unwrap();
 
         let display = plan_str(optimized.as_ref());
-        assert_eq!(display.trim(), r#"
+        assert_eq!(
+            display.trim(),
+            r#"
 SortExec: expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
   RepartitionExec: partitioning=Hash([a@0], 4), input_partitions=1
     PlaceholderRowExec
-"#.trim());
+"#
+            .trim()
+        );
     }
 
     /// Hash key NOT a prefix of sort key should NOT be pushed.
@@ -297,11 +305,15 @@ SortExec: expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
         let optimized = TopKRepartition::new().optimize(sort, &config).unwrap();
 
         let display = plan_str(optimized.as_ref());
-        assert_eq!(display.trim(), r#"
+        assert_eq!(
+            display.trim(),
+            r#"
 SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
   RepartitionExec: partitioning=Hash([b@1], 4), input_partitions=1
     PlaceholderRowExec
-"#.trim());
+"#
+            .trim()
+        );
     }
 
     /// TopK above CoalesceBatchesExec above Hash(a) repartition should
@@ -333,13 +345,17 @@ SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
         let optimized = TopKRepartition::new().optimize(sort, &config).unwrap();
 
         let display = plan_str(optimized.as_ref());
-        assert_eq!(display.trim(), r#"
+        assert_eq!(
+            display.trim(),
+            r#"
 SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
   CoalesceBatchesExec: target_batch_size=8192
     RepartitionExec: partitioning=Hash([a@0], 4), input_partitions=1
       SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
         PlaceholderRowExec
-"#.trim());
+"#
+            .trim()
+        );
     }
 
     /// RoundRobin repartition should NOT be pushed.
@@ -363,10 +379,14 @@ SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
         let optimized = TopKRepartition::new().optimize(sort, &config).unwrap();
 
         let display = plan_str(optimized.as_ref());
-        assert_eq!(display.trim(), r#"
+        assert_eq!(
+            display.trim(),
+            r#"
 SortExec: TopK(fetch=3), expr=[a@0 ASC, b@1 ASC], preserve_partitioning=[true]
   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
     PlaceholderRowExec
-"#.trim());
+"#
+            .trim()
+        );
     }
 }

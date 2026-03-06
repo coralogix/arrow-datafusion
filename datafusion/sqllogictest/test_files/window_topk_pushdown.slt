@@ -39,12 +39,10 @@ CREATE EXTERNAL TABLE employees (
   c10 VARCHAR NOT NULL,
   c11 FLOAT NOT NULL,
   c12 DOUBLE NOT NULL,
-  c13 VARCHAR NOT NULL,
-  hire_date DATE NOT NULL,
-  c15 TIMESTAMP NOT NULL
+  c13 VARCHAR NOT NULL
 )
 STORED AS CSV
-LOCATION '../../testing/data/csv/aggregate_test_100_with_dates.csv'
+LOCATION '../../testing/data/csv/aggregate_test_100.csv'
 OPTIONS ('format.has_header' 'true');
 
 # Use multiple partitions to trigger hash repartitioning for the window function
@@ -84,7 +82,11 @@ a 2
 a 3
 
 ###
-### Plan shape: disabled should have TopK only above repartition
+### Plan shape: on v46, LimitPushdown does not push fetch to the partitioned SortExec,
+### so TopKRepartition does not fire for window queries. The plans below are the same
+### with the rule enabled or disabled. The rule IS exercised by downstream consumers
+### (e.g. DQE) whose planning pipeline creates TopK SortExec above Hash RepartitionExec
+### directly; see the unit tests in topk_repartition.rs for rule-level coverage.
 ###
 
 statement ok
@@ -106,14 +108,12 @@ physical_plan
 01)ProjectionExec: expr=[depname@0 as depname, running_total@1 as running_total]
 02)--SortPreservingMergeExec: [depname@0 ASC NULLS LAST, empno@2 ASC NULLS LAST], fetch=3
 03)----ProjectionExec: expr=[depname@0 as depname, sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as running_total, empno@1 as empno]
-04)------BoundedWindowAggExec: wdw=[sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Int64 }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
-05)--------SortExec: TopK(fetch=3), expr=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST], preserve_partitioning=[true]
-06)----------RepartitionExec: partitioning=Hash([depname@0], 4), input_partitions=1
-07)------------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100_with_dates.csv]]}, projection=[depname, empno], file_type=csv, has_header=true
-
-###
-### Plan shape: enabled should have TopK on BOTH sides of the repartition
-###
+04)------BoundedWindowAggExec: wdw=[sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Ok(Field { name: "sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Rows, start_bound: Preceding(UInt64(NULL)), end_bound: CurrentRow, is_causal: true }], mode=[Sorted]
+05)--------SortExec: expr=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST], preserve_partitioning=[true]
+06)----------CoalesceBatchesExec: target_batch_size=8192
+07)------------RepartitionExec: partitioning=Hash([depname@0], 4), input_partitions=4
+08)--------------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+09)----------------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100.csv]]}, projection=[depname, empno], file_type=csv, has_header=true
 
 statement ok
 SET datafusion.optimizer.enable_topk_repartition = true;
@@ -134,8 +134,9 @@ physical_plan
 01)ProjectionExec: expr=[depname@0 as depname, running_total@1 as running_total]
 02)--SortPreservingMergeExec: [depname@0 ASC NULLS LAST, empno@2 ASC NULLS LAST], fetch=3
 03)----ProjectionExec: expr=[depname@0 as depname, sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as running_total, empno@1 as empno]
-04)------BoundedWindowAggExec: wdw=[sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Int64 }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
-05)--------SortExec: TopK(fetch=3), expr=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST], preserve_partitioning=[true], sort_prefix=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST]
-06)----------RepartitionExec: partitioning=Hash([depname@0], 4), input_partitions=1, maintains_sort_order=true
-07)------------SortExec: TopK(fetch=3), expr=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST], preserve_partitioning=[true]
-08)--------------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100_with_dates.csv]]}, projection=[depname, empno], file_type=csv, has_header=true
+04)------BoundedWindowAggExec: wdw=[sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Ok(Field { name: "sum(Int64(1)) PARTITION BY [employees.depname] ORDER BY [employees.empno ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Rows, start_bound: Preceding(UInt64(NULL)), end_bound: CurrentRow, is_causal: true }], mode=[Sorted]
+05)--------SortExec: expr=[depname@0 ASC NULLS LAST, empno@1 ASC NULLS LAST], preserve_partitioning=[true]
+06)----------CoalesceBatchesExec: target_batch_size=8192
+07)------------RepartitionExec: partitioning=Hash([depname@0], 4), input_partitions=4
+08)--------------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+09)----------------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/csv/aggregate_test_100.csv]]}, projection=[depname, empno], file_type=csv, has_header=true

@@ -22,7 +22,7 @@
 
 mod data_utils;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use data_utils::create_table_provider;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use parking_lot::Mutex;
