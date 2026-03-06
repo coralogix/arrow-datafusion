@@ -21,7 +21,7 @@ use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::ScalarValue;
 use datafusion_expr::{WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
-use datafusion_physical_plan::limit::GlobalLimitExec;
+use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort::SortExec;
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::windows::BoundedWindowAggExec;
@@ -73,6 +73,14 @@ impl PhysicalOptimizerRule for LimitPushPastWindows {
             // grab the latest limit we see
             if let Some(limit) = node.as_any().downcast_ref::<GlobalLimitExec>() {
                 latest_limit = limit.fetch().map(|fetch| fetch + limit.skip());
+                latest_max = 0;
+                return Ok(Transformed::no(node));
+            }
+
+            // In distributed execution, GlobalLimitExec becomes LocalLimitExec
+            // per partition. Handle it the same way (LocalLimitExec has no skip).
+            if let Some(limit) = node.as_any().downcast_ref::<LocalLimitExec>() {
+                latest_limit = Some(limit.fetch());
                 latest_max = 0;
                 return Ok(Transformed::no(node));
             }
