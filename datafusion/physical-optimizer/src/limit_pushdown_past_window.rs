@@ -171,15 +171,15 @@ mod tests {
     use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
     use datafusion_functions_window::row_number::row_number_udwf;
     use datafusion_physical_expr::expressions::col;
+    use datafusion_physical_expr::window::StandardWindowExpr;
     use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion_physical_plan::displayable;
     use datafusion_physical_plan::limit::LocalLimitExec;
     use datafusion_physical_plan::placeholder_row::PlaceholderRowExec;
-    use datafusion_physical_plan::InputOrderMode;
     use datafusion_physical_plan::windows::{
         create_udwf_window_expr, BoundedWindowAggExec,
     };
-    use datafusion_physical_expr::window::StandardWindowExpr;
+    use datafusion_physical_plan::InputOrderMode;
     use std::sync::Arc;
 
     fn plan_str(plan: &dyn ExecutionPlan) -> String {
@@ -187,9 +187,7 @@ mod tests {
     }
 
     fn schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int64, false),
-        ]))
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]))
     }
 
     /// Build: LocalLimitExec or GlobalLimitExec → BoundedWindowAggExec(row_number) → SortExec
@@ -200,9 +198,8 @@ mod tests {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(PlaceholderRowExec::new(Arc::clone(&s)));
 
-        let ordering = LexOrdering::new(vec![
-            PhysicalSortExpr::new_default(col("a", &s)?).asc(),
-        ]);
+        let ordering =
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(col("a", &s)?).asc()]);
 
         let sort: Arc<dyn ExecutionPlan> = Arc::new(
             SortExec::new(ordering.clone(), input).with_preserve_partitioning(true),
