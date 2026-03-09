@@ -25,6 +25,7 @@ use std::sync::Arc;
 use crate::url::ListingTableUrl;
 use crate::write::FileSinkConfig;
 use datafusion_common::error::Result;
+use datafusion_common::internal_datafusion_err;
 use datafusion_physical_plan::SendableRecordBatchStream;
 
 use arrow::array::{
@@ -170,7 +171,26 @@ async fn row_count_demuxer(
         max_rows_per_file
     };
 
+    if single_file_output {
+        // ensure we have one file open, even when the input stream is empty
+        open_file_streams.push(create_new_file_stream(
+            &base_output_path,
+            &write_id,
+            part_idx,
+            &file_extension,
+            single_file_output,
+            max_buffered_batches,
+            &mut tx,
+        )?);
+        row_counts.push(0);
+        part_idx += 1;
+    }
+
+    let schema = input.schema();
+    let mut is_batch_received = false;
+
     while let Some(rb) = input.next().await.transpose()? {
+        is_batch_received = true;
         // ensure we have at least minimum_parallel_files open
         if open_file_streams.len() < minimum_parallel_files {
             open_file_streams.push(create_new_file_stream(
@@ -209,6 +229,19 @@ async fn row_count_demuxer(
 
         next_send_steam = (next_send_steam + 1) % minimum_parallel_files;
     }
+
+    // if there is no batch send but with a single file, send an empty batch
+    if single_file_output && !is_batch_received {
+        open_file_streams
+            .first_mut()
+            .ok_or_else(|| internal_datafusion_err!("Expected a single output file"))?
+            .send(RecordBatch::new_empty(schema))
+            .await
+            .map_err(|_| {
+                exec_datafusion_err!("Error sending empty RecordBatch to file stream!")
+            })?;
+    }
+
     Ok(())
 }
 
