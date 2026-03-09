@@ -209,6 +209,28 @@ async fn row_count_demuxer(
 
         next_send_steam = (next_send_steam + 1) % minimum_parallel_files;
     }
+
+    // If no batches were observed, send an empty batch to trigger creation of an empty file (with correct schema, relevant for e.g. CSV written column names)
+    if part_idx == 0 {
+        let stream = create_new_file_stream(
+            &base_output_path,
+            &write_id,
+            part_idx,
+            &file_extension,
+            single_file_output,
+            max_buffered_batches,
+            &mut tx,
+        )?;
+        stream
+            .send(RecordBatch::new_empty(input.schema()))
+            .await
+            .map_err(|_| {
+                DataFusionError::Execution(
+                    "Error sending RecordBatch to file stream!".into(),
+                )
+            })?;
+    }
+
     Ok(())
 }
 

@@ -764,8 +764,13 @@ mod tests {
     use arrow::util::pretty::pretty_format_batches;
     use datafusion_common::cast::as_string_array;
     use datafusion_common::internal_err;
+    use datafusion_common::parsers::CompressionTypeVariant;
     use datafusion_common::stats::Precision;
+    use datafusion_datasource::ListingTableUrl;
+    use datafusion_execution::object_store::ObjectStoreUrl;
+    use datafusion_execution::runtime_env::RuntimeEnv;
     use datafusion_expr::{col, lit};
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 
     use chrono::DateTime;
     use object_store::local::LocalFileSystem;
@@ -1639,6 +1644,85 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_serialize_empty_batch() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::new_empty(schema);
+        let serializer = CsvSerializer::new();
+        let bytes = serializer.serialize(batch, true)?;
+        assert_eq!("a,b\n", String::from_utf8(bytes.into()).unwrap());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_file_when_no_input_batches() -> Result<()> {
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let table_path = ListingTableUrl::parse("test_write_file_when_no_input_batches")?;
+
+        let field_a = Field::new("a", DataType::Utf8, false);
+        let field_b = Field::new("b", DataType::Utf8, false);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+        let file_sink_config = FileSinkConfig {
+            object_store_url: object_store_url.clone(),
+            table_paths: vec![table_path.clone()],
+            file_groups: vec![],
+            output_schema: schema.clone(),
+            table_partition_cols: vec![],
+            insert_op: InsertOp::Append,
+            keep_partition_by_columns: true,
+            file_extension: "csv".into(),
+        };
+        let csv_sink = Arc::new(CsvSink::new(
+            file_sink_config,
+            CsvWriterOptions::new(
+                WriterBuilder::default(),
+                CompressionTypeVariant::UNCOMPRESSED,
+            ),
+        ));
+
+        let ctx = task_ctx(&object_store_url.as_ref());
+        let _ = FileSink::write_all(
+            csv_sink.as_ref(),
+            Box::pin(RecordBatchStreamAdapter::new(
+                schema.clone(),
+                futures::stream::iter(vec![]),
+            )),
+            &ctx,
+        )
+        .await?;
+
+        let object_store = ctx
+            .runtime_env()
+            .object_store_registry
+            .get_store(&object_store_url.as_ref())?;
+        let files = object_store.list(Some(table_path.prefix())).count().await;
+        assert_ne!(0, files, "Expected file to be written");
+
+        Ok(())
+    }
+
+    fn task_ctx(store_url: &url::Url) -> Arc<TaskContext> {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let local = Arc::new(
+            LocalFileSystem::new_with_prefix(&tmp_dir)
+                .expect("should create object store"),
+        );
+        let session = SessionConfig::default();
+        let runtime = RuntimeEnv::default();
+        runtime
+            .object_store_registry
+            .register_store(store_url, local);
+
+        Arc::new(
+            TaskContext::default()
+                .with_session_config(session)
+                .with_runtime(Arc::new(runtime)),
+        )
     }
 
     struct CsvBatchGenerator {
