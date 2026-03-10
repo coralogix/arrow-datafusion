@@ -47,6 +47,7 @@ use datafusion_execution::TaskContext;
 use datafusion_expr::{EmitTo, GroupsAccumulator};
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::{GroupsAccumulatorAdapter, PhysicalSortExpr};
+use tokio::task::coop;
 
 use super::order::GroupOrdering;
 use super::AggregateExec;
@@ -640,6 +641,7 @@ impl Stream for GroupedHashAggregateStream {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+        let coop = ready!(coop::poll_proceed(cx));
 
         loop {
             match &self.exec_state {
@@ -665,6 +667,7 @@ impl Stream for GroupedHashAggregateStream {
                                 timer.done();
                                 self.set_input_done_and_produce_output()?;
                                 // make sure the exec_state just set is not overwritten below
+                                coop.made_progress();
                                 break 'reading_input;
                             }
 
@@ -674,6 +677,7 @@ impl Stream for GroupedHashAggregateStream {
                                     self.exec_state =
                                         ExecutionState::ProducingOutput(batch);
                                 };
+                                coop.made_progress();
                                 // make sure the exec_state just set is not overwritten below
                                 break 'reading_input;
                             }
@@ -682,6 +686,7 @@ impl Stream for GroupedHashAggregateStream {
 
                             self.switch_to_skip_aggregation()?;
 
+                            coop.made_progress();
                             timer.done();
                         }
 
@@ -706,6 +711,7 @@ impl Stream for GroupedHashAggregateStream {
                                 timer.done();
                                 self.set_input_done_and_produce_output()?;
                                 // make sure the exec_state just set is not overwritten below
+                                coop.made_progress();
                                 break 'reading_input;
                             }
 
@@ -715,21 +721,25 @@ impl Stream for GroupedHashAggregateStream {
                                     self.exec_state =
                                         ExecutionState::ProducingOutput(batch);
                                 };
+                                coop.made_progress();
                                 // make sure the exec_state just set is not overwritten below
                                 break 'reading_input;
                             }
 
+                            coop.made_progress();
                             timer.done();
                         }
 
                         // Found error from input stream
                         Some(Err(e)) => {
                             // inner had error, return to caller
+                            coop.made_progress();
                             return Poll::Ready(Some(Err(e)));
                         }
 
                         // Found end from input stream
                         None => {
+                            coop.made_progress();
                             // inner is done, emit all rows and switch to producing output
                             self.set_input_done_and_produce_output()?;
                         }
@@ -744,16 +754,19 @@ impl Stream for GroupedHashAggregateStream {
                                 probe.record_skipped(&batch);
                             }
                             let states = self.transform_to_states(batch)?;
+                            coop.made_progress();
                             return Poll::Ready(Some(Ok(
                                 states.record_output(&self.baseline_metrics)
                             )));
                         }
                         Some(Err(e)) => {
                             // inner had error, return to caller
+                            coop.made_progress();
                             return Poll::Ready(Some(Err(e)));
                         }
                         None => {
                             // inner is done, switching to `Done` state
+                            coop.made_progress();
                             self.exec_state = ExecutionState::Done;
                         }
                     }
@@ -790,6 +803,7 @@ impl Stream for GroupedHashAggregateStream {
                     // Empty record batches should not be emitted.
                     // They need to be treated as  [`Option<RecordBatch>`]es and handled separately
                     debug_assert!(output_batch.num_rows() > 0);
+                    coop.made_progress();
                     return Poll::Ready(Some(Ok(
                         output_batch.record_output(&self.baseline_metrics)
                     )));
@@ -800,6 +814,7 @@ impl Stream for GroupedHashAggregateStream {
                     // some memory reservation, so make some room for it.
                     self.clear_all();
                     let _ = self.update_memory_reservation();
+                    coop.made_progress();
                     return Poll::Ready(None);
                 }
             }
