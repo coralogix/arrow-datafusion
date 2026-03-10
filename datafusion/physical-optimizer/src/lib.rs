@@ -42,6 +42,7 @@ pub use datafusion_pruning as pruning;
 mod limit_pushdown_past_window;
 pub mod sanity_checker;
 pub mod topk_aggregation;
+pub mod topk_repartition;
 pub mod update_aggr_exprs;
 pub mod utils;
 
