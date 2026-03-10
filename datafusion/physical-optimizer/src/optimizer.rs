@@ -34,6 +34,7 @@ use crate::output_requirements::OutputRequirements;
 use crate::projection_pushdown::ProjectionPushdown;
 use crate::sanity_checker::SanityCheckPlan;
 use crate::topk_aggregation::TopKAggregation;
+use crate::topk_repartition::TopKRepartition;
 use crate::update_aggr_exprs::OptimizeAggregateOrder;
 
 use crate::coalesce_async_exec_input::CoalesceAsyncExecInput;
@@ -147,6 +148,11 @@ impl PhysicalOptimizer {
             // are not present, the load of executors such as join or union will be
             // reduced by narrowing their input tables.
             Arc::new(ProjectionPushdown::new()),
+            // TopKRepartition pushes TopK (Sort with fetch) below Hash
+            // repartition when the partition key is a prefix of the sort key.
+            // This reduces data volume before a hash shuffle. It must run
+            // after LimitPushdown so that the TopK already exists on the SortExec.
+            Arc::new(TopKRepartition::new()),
             Arc::new(EnsureCooperative::new()),
             // This FilterPushdown handles dynamic filters that may have references to the source ExecutionPlan.
             // Therefore it should be run at the end of the optimization process since any changes to the plan may break the dynamic filter's references.

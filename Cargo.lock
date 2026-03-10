@@ -2517,6 +2517,7 @@ dependencies = [
  "datafusion-expr",
  "datafusion-expr-common",
  "datafusion-functions-nested",
+ "datafusion-functions-window",
  "datafusion-physical-expr",
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
