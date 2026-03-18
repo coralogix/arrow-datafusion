@@ -551,6 +551,9 @@ pub struct CsvWriterOptions {
     /// Optional flag whether to double quotes, instead of escaping. Defaults to `true`
     #[prost(bool, tag = "11")]
     pub double_quote: bool,
+    /// Optional terminator character as bytes. E.g. `\r\n`, `\n`, `\r`. Defaults to `\r\n`
+    #[prost(bytes = "vec", tag = "12")]
+    pub terminator: ::prost::alloc::vec::Vec<u8>,
 }
 /// Options controlling CSV format
 #[derive(Clone, PartialEq, ::prost::Message)]

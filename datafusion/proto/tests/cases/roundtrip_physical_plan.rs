@@ -27,6 +27,7 @@ use crate::cases::{
 };
 
 use arrow::array::RecordBatch;
+use arrow::csv::writer::Terminator;
 use arrow::csv::WriterBuilder;
 use arrow::datatypes::{Fields, TimeUnit};
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
@@ -1406,6 +1407,125 @@ fn roundtrip_csv_sink() -> Result<()> {
         CompressionTypeVariant::ZSTD,
         csv_sink.writer_options().compression
     );
+
+    Ok(())
+}
+
+#[test]
+fn roundtrip_csv_sink_with_crlf_terminator() -> Result<()> {
+    let field_a = Field::new("plan_type", DataType::Utf8, false);
+    let field_b = Field::new("plan", DataType::Utf8, false);
+    let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+    let input = Arc::new(PlaceholderRowExec::new(schema.clone()));
+
+    let file_sink_config = FileSinkConfig {
+        original_url: String::default(),
+        object_store_url: ObjectStoreUrl::local_filesystem(),
+        file_group: FileGroup::new(vec![PartitionedFile::new("/tmp".to_string(), 1)]),
+        table_paths: vec![ListingTableUrl::parse("file:///")?],
+        output_schema: schema.clone(),
+        table_partition_cols: vec![("plan_type".to_string(), DataType::Utf8)],
+        insert_op: InsertOp::Overwrite,
+        keep_partition_by_columns: true,
+        file_extension: "csv".into(),
+    };
+
+    let writer_builder = WriterBuilder::default().with_line_terminator(Terminator::CRLF);
+
+    let data_sink = Arc::new(CsvSink::new(
+        file_sink_config,
+        CsvWriterOptions::new(writer_builder, CompressionTypeVariant::UNCOMPRESSED),
+    ));
+    let sort_order = LexRequirement::new(vec![PhysicalSortRequirement::new(
+        Arc::new(Column::new("plan_type", 0)),
+        Some(SortOptions {
+            descending: true,
+            nulls_first: false,
+        }),
+    )]);
+
+    let ctx = SessionContext::new();
+    let codec = DefaultPhysicalExtensionCodec {};
+    let roundtrip_plan = roundtrip_test_and_return(
+        Arc::new(DataSinkExec::new(input, data_sink, Some(sort_order))),
+        &ctx,
+        &codec,
+    )
+    .unwrap();
+
+    let roundtrip_plan = roundtrip_plan
+        .as_any()
+        .downcast_ref::<DataSinkExec>()
+        .unwrap();
+    let csv_sink = roundtrip_plan
+        .sink()
+        .as_any()
+        .downcast_ref::<CsvSink>()
+        .unwrap();
+    match csv_sink.writer_options().writer_options.line_terminator() {
+        Terminator::CRLF => {}
+        other => panic!("Expected Terminator::CRLF, got {:?}", other),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn roundtrip_csv_sink_with_lf_terminator() -> Result<()> {
+    let field_a = Field::new("plan_type", DataType::Utf8, false);
+    let field_b = Field::new("plan", DataType::Utf8, false);
+    let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+    let input = Arc::new(PlaceholderRowExec::new(schema.clone()));
+
+    let file_sink_config = FileSinkConfig {
+        original_url: String::default(),
+        object_store_url: ObjectStoreUrl::local_filesystem(),
+        file_group: FileGroup::new(vec![PartitionedFile::new("/tmp".to_string(), 1)]),
+        table_paths: vec![ListingTableUrl::parse("file:///")?],
+        output_schema: schema.clone(),
+        table_partition_cols: vec![("plan_type".to_string(), DataType::Utf8)],
+        insert_op: InsertOp::Overwrite,
+        keep_partition_by_columns: true,
+        file_extension: "csv".into(),
+    };
+
+    let writer_builder =
+        WriterBuilder::default().with_line_terminator(Terminator::Any(b'\n'));
+
+    let data_sink = Arc::new(CsvSink::new(
+        file_sink_config,
+        CsvWriterOptions::new(writer_builder, CompressionTypeVariant::UNCOMPRESSED),
+    ));
+    let sort_order = LexRequirement::new(vec![PhysicalSortRequirement::new(
+        Arc::new(Column::new("plan_type", 0)),
+        Some(SortOptions {
+            descending: true,
+            nulls_first: false,
+        }),
+    )]);
+
+    let ctx = SessionContext::new();
+    let codec = DefaultPhysicalExtensionCodec {};
+    let roundtrip_plan = roundtrip_test_and_return(
+        Arc::new(DataSinkExec::new(input, data_sink, Some(sort_order))),
+        &ctx,
+        &codec,
+    )
+    .unwrap();
+
+    let roundtrip_plan = roundtrip_plan
+        .as_any()
+        .downcast_ref::<DataSinkExec>()
+        .unwrap();
+    let csv_sink = roundtrip_plan
+        .sink()
+        .as_any()
+        .downcast_ref::<CsvSink>()
+        .unwrap();
+    match csv_sink.writer_options().writer_options.line_terminator() {
+        Terminator::Any(b'\n') => {}
+        other => panic!("Expected Terminator::Any(b'\\n'), got {:?}", other),
+    }
 
     Ok(())
 }

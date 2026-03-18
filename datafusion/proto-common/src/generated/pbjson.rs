@@ -1960,6 +1960,9 @@ impl serde::Serialize for CsvWriterOptions {
         if self.double_quote {
             len += 1;
         }
+        if !self.terminator.is_empty() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("datafusion_common.CsvWriterOptions", len)?;
         if self.compression != 0 {
             let v = CompressionTypeVariant::try_from(self.compression)
@@ -1996,6 +1999,11 @@ impl serde::Serialize for CsvWriterOptions {
         if self.double_quote {
             struct_ser.serialize_field("doubleQuote", &self.double_quote)?;
         }
+        if !self.terminator.is_empty() {
+            #[allow(clippy::needless_borrow)]
+            #[allow(clippy::needless_borrows_for_generic_args)]
+            struct_ser.serialize_field("terminator", pbjson::private::base64::encode(&self.terminator).as_str())?;
+        }
         struct_ser.end()
     }
 }
@@ -2024,6 +2032,7 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
             "escape",
             "double_quote",
             "doubleQuote",
+            "terminator",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -2039,6 +2048,7 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
             Quote,
             Escape,
             DoubleQuote,
+            Terminator,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -2071,6 +2081,7 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                             "quote" => Ok(GeneratedField::Quote),
                             "escape" => Ok(GeneratedField::Escape),
                             "doubleQuote" | "double_quote" => Ok(GeneratedField::DoubleQuote),
+                            "terminator" => Ok(GeneratedField::Terminator),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -2101,6 +2112,7 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                 let mut quote__ = None;
                 let mut escape__ = None;
                 let mut double_quote__ = None;
+                let mut terminator__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::Compression => {
@@ -2169,6 +2181,14 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                             }
                             double_quote__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::Terminator => {
+                            if terminator__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("terminator"));
+                            }
+                            terminator__ = 
+                                Some(map_.next_value::<::pbjson::private::BytesDeserialize<_>>()?.0)
+                            ;
+                        }
                     }
                 }
                 Ok(CsvWriterOptions {
@@ -2183,6 +2203,7 @@ impl<'de> serde::Deserialize<'de> for CsvWriterOptions {
                     quote: quote__.unwrap_or_default(),
                     escape: escape__.unwrap_or_default(),
                     double_quote: double_quote__.unwrap_or_default(),
+                    terminator: terminator__.unwrap_or_default(),
                 })
             }
         }

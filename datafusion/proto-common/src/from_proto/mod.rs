@@ -23,6 +23,7 @@ use crate::common::proto_error;
 use crate::protobuf_common as protobuf;
 use arrow::array::{ArrayRef, AsArray};
 use arrow::buffer::Buffer;
+use arrow::csv::writer::Terminator;
 use arrow::csv::WriterBuilder;
 use arrow::datatypes::{
     i256, DataType, Field, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit,
@@ -1174,6 +1175,15 @@ pub(crate) fn csv_writer_options_from_proto(
             return Err(proto_error("Error parsing CSV Escape"));
         }
     }
+    let terminator = match &writer_options.terminator {
+        bytes if bytes.is_empty() || bytes.len() > 2 => {
+            return Err(proto_error(
+                "CSV Terminator must be a single byte character or a CRLF (\\r\\n)",
+            ))
+        }
+        bytes if *bytes == vec![b'\r', b'\n'] => Terminator::CRLF,
+        bytes => Terminator::Any(bytes[0]),
+    };
     Ok(builder
         .with_header(writer_options.has_header)
         .with_date_format(writer_options.date_format.clone())
@@ -1181,5 +1191,6 @@ pub(crate) fn csv_writer_options_from_proto(
         .with_timestamp_format(writer_options.timestamp_format.clone())
         .with_time_format(writer_options.time_format.clone())
         .with_null(writer_options.null_value.clone())
-        .with_double_quote(writer_options.double_quote))
+        .with_double_quote(writer_options.double_quote)
+        .with_line_terminator(terminator))
 }
