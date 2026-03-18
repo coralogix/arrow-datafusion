@@ -78,6 +78,11 @@ impl TryFrom<&CsvOptions> for CsvWriterOptions {
         if let Some(v) = &value.double_quote {
             builder = builder.with_double_quote(*v)
         }
+        let line_terminator = match value.terminator {
+            None => arrow::csv::writer::Terminator::CRLF,
+            Some(b) => arrow::csv::writer::Terminator::Any(b),
+        };
+        builder = builder.with_line_terminator(line_terminator);
         Ok(CsvWriterOptions {
             writer_options: builder,
             compression: value.compression,

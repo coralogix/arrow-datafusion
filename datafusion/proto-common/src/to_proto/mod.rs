@@ -23,6 +23,7 @@ use crate::protobuf_common::{
     arrow_type::ArrowTypeEnum, scalar_value::Value, EmptyMessage,
 };
 use arrow::array::{ArrayRef, RecordBatch};
+use arrow::csv::writer::Terminator;
 use arrow::csv::WriterBuilder;
 use arrow::datatypes::{
     DataType, Field, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit, Schema,
@@ -1046,6 +1047,10 @@ pub(crate) fn csv_writer_options_to_proto(
     compression: &CompressionTypeVariant,
 ) -> protobuf::CsvWriterOptions {
     let compression: protobuf::CompressionTypeVariant = compression.into();
+    let terminator = match csv_options.line_terminator() {
+        Terminator::CRLF => vec![b'\r', b'\n'],
+        Terminator::Any(c) => vec![*c],
+    };
     protobuf::CsvWriterOptions {
         compression: compression.into(),
         delimiter: (csv_options.delimiter() as char).to_string(),
@@ -1058,5 +1063,6 @@ pub(crate) fn csv_writer_options_to_proto(
         quote: (csv_options.quote() as char).to_string(),
         escape: (csv_options.escape() as char).to_string(),
         double_quote: csv_options.double_quote(),
+        terminator,
     }
 }

@@ -404,6 +404,8 @@ message CsvWriterOptions {
   string escape = 10;
   // Optional flag whether to double quotes, instead of escaping. Defaults to `true`
   bool double_quote = 11;
+  // Optional terminator character as bytes. E.g. `\r\n`, `\n`, `\r`. Defaults to `\r\n`
+  bytes terminator = 12;
 }
 
 // Options controlling CSV format
