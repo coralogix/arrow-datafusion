@@ -92,10 +92,8 @@ use log::debug;
 use parking_lot::Mutex;
 
 /// Hard-coded seed to ensure hash values from the hash join differ from `RepartitionExec`, avoiding collisions.
-const HASH_JOIN_SEED: RandomState =
+pub const HASH_JOIN_SEED: RandomState =
     RandomState::with_seeds('J' as u64, 'O' as u64, 'I' as u64, 'N' as u64);
-
-pub const RANDOM_STATE: RandomState = RandomState::with_seeds(0, 0, 0, 0);
 
 #[derive(Default)]
 pub struct JoinContext {
