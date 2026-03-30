@@ -88,22 +88,22 @@ ahash = { version = "0.8", default-features = false, features = [
     "runtime-rng",
 ] }
 apache-avro = { version = "0.17", default-features = false }
-arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", features = [
+arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", features = [
     "prettyprint",
     "chrono-tz",
 ] }
-arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false, features = [
+arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false, features = [
     "chrono-tz",
 ] }
-arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false }
-arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", features = [
+arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false }
+arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", features = [
     "flight-sql-experimental",
 ] }
-arrow-ipc = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false, features = [
+arrow-ipc = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false, features = [
     "lz4",
 ] }
-arrow-ord = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false }
-arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false }
+arrow-ord = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false }
+arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false }
 async-trait = "0.1.88"
 bigdecimal = "0.4.8"
 bytes = "1.10"
@@ -157,7 +157,7 @@ itertools = "0.14"
 log = "^0.4"
 object_store = { version = ">=0.12.0, <=0.12.5", default-features = false }
 parking_lot = "0.12"
-parquet = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.0", default-features = false, features = [
+parquet = { git = "https://github.com/Coralogix/arrow-rs.git", tag = "v55.1.0-cx.1", default-features = false, features = [
     "arrow",
     "async",
     "object_store",
