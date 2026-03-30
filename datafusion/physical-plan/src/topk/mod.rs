@@ -757,7 +757,9 @@ impl RecordBatchStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Float64Array, Int32Array, RecordBatch};
+    use arrow::array::{
+        DictionaryArray, Float64Array, Int32Array, Int8Array, RecordBatch,
+    };
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow_schema::SortOptions;
     use datafusion_common::assert_batches_eq;
@@ -883,6 +885,128 @@ mod tests {
                 "| 1 | 20.0 |",
                 "| 2 | 10.0 |",
                 "+---+------+",
+            ],
+            &results
+        );
+
+        Ok(())
+    }
+
+    /// Regression test for duplicate batch references in emit_with_state.
+    ///
+    /// The buggy code in `emit_with_state` creates one record batch reference per TopK row,
+    /// even when many rows reference the same batch. When `interleave_record_batch` processes
+    /// these duplicated references, dictionary-encoded columns get their dictionary values
+    /// concatenated k times via `MutableArrayData`, which can overflow the dictionary key type.
+    ///
+    /// This test uses Dictionary<Int8, Int32> columns because:
+    /// 1. Int8 keys overflow at just 128 entries (easy to trigger with small data)
+    /// 2. Int32 values cause `should_merge_dictionary_values` to return false (it only
+    ///    handles Utf8/Binary value types), forcing the MutableArrayData fallback path
+    /// 3. The MutableArrayData path panics with "MutableArrayData::new is infallible"
+    ///    when the concatenated dictionary values exceed the key type's range
+    ///
+    /// With the fix (deduplicating batch references), only the unique batches are passed
+    /// to interleave, so the total dictionary values stay within the key type's range.
+    #[tokio::test]
+    async fn test_topk_dictionary_overflow() -> Result<()> {
+        // Schema: sort column (Int32) + dictionary column (Dict<Int8, Int32>)
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("sort_col", DataType::Int32, false),
+            Field::new(
+                "dict_col",
+                DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Int32)),
+                false,
+            ),
+        ]));
+
+        let sort_expr = PhysicalSortExpr {
+            expr: col("sort_col", schema.as_ref())?,
+            options: SortOptions::default(), // ascending
+        };
+
+        let runtime = Arc::new(RuntimeEnv::default());
+        let metrics = ExecutionPlanMetricsSet::new();
+
+        // k=20: keep the 20 smallest rows
+        let mut topk = TopK::try_new(
+            0,
+            Arc::clone(&schema),
+            LexOrdering::default(),
+            LexOrdering::from(vec![sort_expr]),
+            20,   // k
+            1024, // batch_size
+            runtime,
+            &metrics,
+        )?;
+
+        // Create 2 batches of 15 rows each, with different dictionary values.
+        // Each batch has 15 dictionary values (distinct Int32 values).
+        //
+        // After TopK processes both batches, the heap will contain 20 rows
+        // from both batches (15 from batch 0 + 5 from batch 1).
+        //
+        // Bug: emit_with_state creates 20 references (one per TopK row).
+        //      MutableArrayData concatenates 20 copies of dictionary values.
+        //      Total dictionary entries: 20 × 15 = 300 > 127 (Int8 max) → PANIC
+        //
+        // Fix: Only 2 unique batches → 2 × 15 = 30 entries → OK
+        for batch_idx in 0..2i32 {
+            let num_rows = 15;
+            // Sort values: batch 0 gets [0..15), batch 1 gets [15..30)
+            let sort_values: Vec<i32> =
+                (0..num_rows).map(|i| batch_idx * num_rows + i).collect();
+            let sort_array = Int32Array::from(sort_values);
+
+            // Dictionary values: 15 distinct Int32 values per batch
+            let dict_values = Int32Array::from(
+                (0..num_rows)
+                    .map(|i| batch_idx * 1000 + i)
+                    .collect::<Vec<i32>>(),
+            );
+            // Keys: each row maps to its own dictionary value
+            let keys = Int8Array::from((0..num_rows as i8).collect::<Vec<i8>>());
+            let dict_array = DictionaryArray::new(keys, Arc::new(dict_values));
+
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(sort_array), Arc::new(dict_array)],
+            )?;
+
+            topk.insert_batch(batch)?;
+        }
+
+        // emit() calls emit_with_state() which calls interleave_record_batch.
+        // With the bug, this panics due to dictionary key overflow.
+        let results: Vec<_> = topk.emit()?.try_collect().await?;
+
+        // After the fix, verify correctness: 20 rows sorted ascending
+        assert_batches_eq!(
+            &[
+                "+----------+----------+",
+                "| sort_col | dict_col |",
+                "+----------+----------+",
+                "| 0        | 0        |",
+                "| 1        | 1        |",
+                "| 2        | 2        |",
+                "| 3        | 3        |",
+                "| 4        | 4        |",
+                "| 5        | 5        |",
+                "| 6        | 6        |",
+                "| 7        | 7        |",
+                "| 8        | 8        |",
+                "| 9        | 9        |",
+                "| 10       | 10       |",
+                "| 11       | 11       |",
+                "| 12       | 12       |",
+                "| 13       | 13       |",
+                "| 14       | 14       |",
+                "| 15       | 1000     |",
+                "| 16       | 1001     |",
+                "| 17       | 1002     |",
+                "| 18       | 1003     |",
+                "| 19       | 1004     |",
+                "+----------+----------+",
             ],
             &results
         );
