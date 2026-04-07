@@ -223,8 +223,8 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "snap",
- "strum",
- "strum_macros",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
  "thiserror 1.0.69",
  "typed-builder",
  "uuid",
@@ -247,8 +247,7 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 [[package]]
 name = "arrow"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3f15b4c6b148206ff3a2b35002e08929c2462467b62b9c02036d9c34f9ef994"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -271,8 +270,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30feb679425110209ae35c3fbf82404a39a4c0436bb3ec36164d8bffed2a4ce4"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -285,8 +283,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70732f04d285d49054a48b72c54f791bb3424abae92d27aafdf776c98af161c8"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "ahash 0.8.12",
  "arrow-buffer",
@@ -302,8 +299,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "169b1d5d6cb390dd92ce582b06b23815c7953e9dfaaea75556e89d890d19993d"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "bytes",
  "half",
@@ -313,8 +309,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4f12eccc3e1c05a766cafb31f6a60a46c2f8efec9b74c6e0648766d30686af8"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -334,8 +329,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "012c9fef3f4a11573b2c74aec53712ff9fdae4a95f4ce452d1bbf088ee00f06b"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -349,8 +343,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8de1ce212d803199684b658fc4ba55fb2d7e87b213de5af415308d2fee3619c2"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -361,8 +354,7 @@ dependencies = [
 [[package]]
 name = "arrow-flight"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cb3e1d2b441e6d1d5988e3f7c4523c9466b18ef77d7c525d92d36d4cad49fbe"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -388,8 +380,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9ea5967e8b2af39aff5d9de2197df16e305f47f404781d3230b2dc672da5d92"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -403,8 +394,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5709d974c4ea5be96d900c01576c7c0b99705f4a3eec343648cb1ca863988a9c"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -425,8 +415,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6506e3a059e3be23023f587f79c82ef0bcf6d293587e3272d20f2d30b969b5a7"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -438,8 +427,7 @@ dependencies = [
 [[package]]
 name = "arrow-pyarrow"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e55ecf16b9b61d433f6e63c72fc6afcf2597d7db96583de88ebb887d1822268"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-data",
@@ -450,8 +438,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52bf7393166beaf79b4bed9bfdf19e97472af32ce5b6b48169d321518a08cae2"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -463,8 +450,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af7686986a3bf2254c9fb130c623cdcb2f8e1f15763e7c71c310f0834da3d292"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "bitflags 2.9.1",
  "serde",
@@ -474,8 +460,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd2b45757d6a2373faa3352d02ff5b54b098f5e21dccebc45a21806bc34501e5"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "ahash 0.8.12",
  "arrow-array",
@@ -488,8 +473,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0377d532850babb4d927a06294314b316e23311503ed580ec6ce6a0158f49d40"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -561,28 +545,6 @@ name = "async-recursion"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "async-stream"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
-dependencies = [
- "async-stream-impl",
- "futures-core",
- "pin-project-lite",
-]
-
-[[package]]
-name = "async-stream-impl"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -849,7 +811,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
- "tower 0.5.2",
+ "tower",
  "tracing",
 ]
 
@@ -970,11 +932,10 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.7.9"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
+checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
- "async-trait",
  "axum-core",
  "bytes",
  "futures-util",
@@ -987,29 +948,26 @@ dependencies = [
  "mime",
  "percent-encoding",
  "pin-project-lite",
- "rustversion",
- "serde",
+ "serde_core",
  "sync_wrapper",
- "tower 0.5.2",
+ "tower",
  "tower-layer",
  "tower-service",
 ]
 
 [[package]]
 name = "axum-core"
-version = "0.4.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
 dependencies = [
- "async-trait",
  "bytes",
- "futures-util",
+ "futures-core",
  "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "mime",
  "pin-project-lite",
- "rustversion",
  "sync_wrapper",
  "tower-layer",
  "tower-service",
@@ -1515,12 +1473,13 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 
 [[package]]
 name = "comfy-table"
-version = "7.1.4"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a65ebfec4fb190b6f90e944a817d60499ee0744e582530e2c9900a22e591d9a"
+checksum = "7c64043d6c7b7a4c58e39e7efccfdea7b93d885a795d0c054a69dbbf4dd52686"
 dependencies = [
- "unicode-segmentation",
- "unicode-width 0.2.0",
+ "strum 0.25.0",
+ "strum_macros 0.25.3",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -3328,6 +3287,12 @@ dependencies = [
 
 [[package]]
 name = "heck"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
+
+[[package]]
+name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
@@ -4101,9 +4066,9 @@ dependencies = [
 
 [[package]]
 name = "matchit"
-version = "0.7.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "md-5"
@@ -4360,9 +4325,9 @@ dependencies = [
 
 [[package]]
 name = "object_store"
-version = "0.12.3"
+version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efc4f07659e11cd45a341cd24d71e683e3be65d9ff1f8150061678fe60437496"
+checksum = "fbfbfff40aeccab00ec8a910b57ca8ecf4319b335c542f2edcd19dd25a1e2a00"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4472,8 +4437,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b17da4150748086bd43352bc77372efa9b6e3dbd06a04831d2a98c041c225cfa"
+source = "git+https://github.com/Coralogix/arrow-rs.git?rev=7c1fcf978#7c1fcf97853ee7fee558b54e4e77fd5f6c641ed9"
 dependencies = [
  "ahash 0.8.12",
  "arrow-array",
@@ -4885,7 +4849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -4905,7 +4869,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.104",
@@ -5366,7 +5330,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
- "tower 0.5.2",
+ "tower",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -5722,10 +5686,11 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "serde"
-version = "1.0.219"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
+ "serde_core",
  "serde_derive",
 ]
 
@@ -5739,10 +5704,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_derive"
-version = "1.0.219"
+name = "serde_core"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"
+checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6090,9 +6064,28 @@ dependencies = [
 
 [[package]]
 name = "strum"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "290d54ea6f91c969195bdbcd7442c8c2a2ba87da8bf60a7ee86a235d4bc1e125"
+
+[[package]]
+name = "strum"
 version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+
+[[package]]
+name = "strum_macros"
+version = "0.25.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23dc1fa9ac9c169a78ba62f0b841814b7abae11bdd047b9c58f893439e309ea0"
+dependencies = [
+ "heck 0.4.1",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.104",
+]
 
 [[package]]
 name = "strum_macros"
@@ -6555,11 +6548,10 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.12.3"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
+checksum = "85839f0b32fd242bb3209262371d07feda6d780d16ee9d2bc88581b89da1549b"
 dependencies = [
- "async-stream",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -6577,27 +6569,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-stream",
- "tower 0.4.13",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower"
-version = "0.4.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
-dependencies = [
- "futures-core",
- "futures-util",
- "indexmap 1.9.3",
- "pin-project",
- "pin-project-lite",
- "rand 0.8.5",
- "slab",
- "tokio",
- "tokio-util",
+ "tower",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -6611,11 +6583,15 @@ checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
 dependencies = [
  "futures-core",
  "futures-util",
+ "indexmap 2.10.0",
  "pin-project-lite",
+ "slab",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

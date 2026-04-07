@@ -89,20 +89,20 @@ ahash = { version = "0.8", default-features = false, features = [
     "runtime-rng",
 ] }
 apache-avro = { version = "0.17", default-features = false }
-arrow = { version = "55.2.0", features = [
+arrow = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", features = [
     "prettyprint",
     "chrono-tz",
 ] }
-arrow-buffer = { version = "55.2.0", default-features = false }
-arrow-flight = { version = "55.2.0", features = [
+arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", default-features = false }
+arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", features = [
     "flight-sql-experimental",
 ] }
-arrow-ipc = { version = "55.2.0", default-features = false, features = [
+arrow-ipc = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", default-features = false, features = [
     "lz4",
     "zstd",
 ] }
-arrow-ord = { version = "55.2.0", default-features = false }
-arrow-schema = { version = "55.2.0", default-features = false }
+arrow-ord = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", default-features = false }
+arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", default-features = false }
 async-trait = "0.1.88"
 bigdecimal = "0.4.8"
 bytes = "1.10"
@@ -154,9 +154,9 @@ hex = { version = "0.4.3" }
 indexmap = "2.10.0"
 itertools = "0.14"
 log = "^0.4"
-object_store = { version = "0.12.3", default-features = false }
+object_store = { version = ">=0.12.3, <0.13", default-features = false }
 parking_lot = "0.12"
-parquet = { version = "55.2.0", default-features = false, features = [
+parquet = { git = "https://github.com/Coralogix/arrow-rs.git", rev = "7c1fcf978", default-features = false, features = [
     "arrow",
     "async",
     "object_store",
