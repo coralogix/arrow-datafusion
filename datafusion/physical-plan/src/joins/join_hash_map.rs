@@ -134,6 +134,9 @@ pub trait JoinHashMapType: Send + Sync {
 
     /// Returns the number of entries in the join hash map.
     fn len(&self) -> usize;
+
+    /// Returns `true` if the join hash map contains the given hash value.
+    fn contains_hash(&self, hash: u64) -> bool;
 }
 
 pub struct JoinHashMapU32 {
@@ -212,6 +215,10 @@ impl JoinHashMapType for JoinHashMapU32 {
     fn len(&self) -> usize {
         self.map.len()
     }
+
+    fn contains_hash(&self, hash: u64) -> bool {
+        self.map.find(hash, |(h, _)| *h == hash).is_some()
+    }
 }
 
 pub struct JoinHashMapU64 {
@@ -289,6 +296,10 @@ impl JoinHashMapType for JoinHashMapU64 {
 
     fn len(&self) -> usize {
         self.map.len()
+    }
+
+    fn contains_hash(&self, hash: u64) -> bool {
+        self.map.find(hash, |(h, _)| *h == hash).is_some()
     }
 }
 
