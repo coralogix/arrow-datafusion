@@ -20,7 +20,10 @@
 use arrow::array::BooleanBufferBuilder;
 pub use cross_join::CrossJoinExec;
 use datafusion_physical_expr::PhysicalExprRef;
-pub use hash_join::HashJoinExec;
+pub use hash_join::{
+    HashJoinExec, JoinContext, JoinLeftData, SharedJoinState, SharedJoinStateImpl,
+    SharedProbeState, HASH_JOIN_SEED,
+};
 pub use nested_loop_join::NestedLoopJoinExec;
 use parking_lot::Mutex;
 // Note: SortMergeJoin is not used in plans yet

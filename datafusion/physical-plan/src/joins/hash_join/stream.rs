@@ -20,10 +20,11 @@
 //! This module implements [`HashJoinStream`], the streaming engine for
 //! [`super::HashJoinExec`]. See comments in [`HashJoinStream`] for more details.
 
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::task::Poll;
 
-use crate::joins::hash_join::exec::JoinLeftData;
+use crate::joins::hash_join::exec::{merge_bitmap, JoinLeftData, SharedProbeState};
 use crate::joins::hash_join::shared_bounds::SharedBoundsAccumulator;
 use crate::joins::utils::{
     equal_rows_arr, get_final_indices_from_shared_bitmap, OnceFut,
@@ -213,6 +214,9 @@ pub(super) struct HashJoinStream {
 
     /// Partitioning mode to use
     mode: PartitionMode,
+
+    /// Optional join context for distributed CollectLeft coordination
+    join_context: Option<Arc<super::exec::JoinContext>>,
 }
 
 impl RecordBatchStream for HashJoinStream {
@@ -316,6 +320,7 @@ impl HashJoinStream {
         right_side_ordered: bool,
         bounds_accumulator: Option<Arc<SharedBoundsAccumulator>>,
         mode: PartitionMode,
+        join_context: Option<Arc<super::exec::JoinContext>>,
     ) -> Self {
         Self {
             partition,
@@ -336,6 +341,7 @@ impl HashJoinStream {
             bounds_accumulator,
             bounds_waiter: None,
             mode,
+            join_context,
         }
     }
 
@@ -361,7 +367,8 @@ impl HashJoinStream {
                     self.join_metrics.baseline.record_poll(poll)
                 }
                 HashJoinStreamState::ExhaustedProbeSide => {
-                    let poll = handle_state!(self.process_unmatched_build_batch());
+                    let poll =
+                        handle_state!(ready!(self.process_unmatched_build_batch(cx)));
                     self.join_metrics.baseline.record_poll(poll)
                 }
                 HashJoinStreamState::Completed => Poll::Ready(None),
@@ -404,6 +411,10 @@ impl HashJoinStream {
             .left_fut
             .get_shared(cx))?;
         build_timer.done();
+
+        if let Some(ctx) = self.join_context.as_ref() {
+            ctx.set_build_state(Arc::clone(&left_data));
+        }
 
         // Handle dynamic filter bounds accumulation
         //
@@ -618,18 +629,35 @@ impl HashJoinStream {
     /// Updates state to `Completed`
     fn process_unmatched_build_batch(
         &mut self,
-    ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         let timer = self.join_metrics.join_time.timer();
 
         if !need_produce_result_in_final(self.join_type) {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
         }
 
         let build_side = self.build_side.try_as_ready()?;
         if !build_side.left_data.report_probe_completed() {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
+        }
+
+        if let Some(shared_state) = build_side.left_data.shared_state.as_ref() {
+            let mut guard = build_side.left_data.visited_indices_bitmap().lock();
+            match ready!(shared_state.poll_probe_completed(guard.deref(), cx)) {
+                Ok(SharedProbeState::Continue) => {
+                    self.state = HashJoinStreamState::Completed;
+                    return Poll::Ready(Ok(StatefulStreamResult::Continue));
+                }
+                Ok(SharedProbeState::Ready(shared_mask)) => {
+                    if let Err(e) = merge_bitmap(guard.deref_mut(), shared_mask) {
+                        return Poll::Ready(Err(e));
+                    }
+                }
+                Err(err) => return Poll::Ready(Err(err)),
+            }
         }
 
         // use the global left bitmap to produce the left indices and right indices
@@ -660,7 +688,7 @@ impl HashJoinStream {
 
         self.state = HashJoinStreamState::Completed;
 
-        Ok(StatefulStreamResult::Ready(Some(result?)))
+        Poll::Ready(Ok(StatefulStreamResult::Ready(Some(result?))))
     }
 }
 

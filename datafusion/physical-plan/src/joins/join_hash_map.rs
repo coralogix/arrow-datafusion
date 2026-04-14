@@ -117,6 +117,9 @@ pub trait JoinHashMapType: Send + Sync {
 
     /// Returns `true` if the join hash map contains no entries.
     fn is_empty(&self) -> bool;
+
+    /// Returns `true` if the join hash map contains the given hash value.
+    fn contains_hash(&self, hash: u64) -> bool;
 }
 
 pub struct JoinHashMapU32 {
@@ -183,6 +186,10 @@ impl JoinHashMapType for JoinHashMapU32 {
     fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    fn contains_hash(&self, hash: u64) -> bool {
+        self.map.find(hash, |(h, _)| *h == hash).is_some()
+    }
 }
 
 pub struct JoinHashMapU64 {
@@ -248,6 +255,10 @@ impl JoinHashMapType for JoinHashMapU64 {
 
     fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    fn contains_hash(&self, hash: u64) -> bool {
+        self.map.find(hash, |(h, _)| *h == hash).is_some()
     }
 }
 
