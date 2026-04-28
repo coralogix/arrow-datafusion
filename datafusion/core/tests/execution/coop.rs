@@ -25,8 +25,10 @@ use datafusion::physical_plan;
 use datafusion::physical_plan::aggregates::{
     AggregateExec, AggregateMode, PhysicalGroupBy,
 };
-use datafusion::physical_plan::execution_plan::Boundedness;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::execution_plan::{
+    Boundedness, EmissionType, SchedulingType,
+};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion::prelude::SessionContext;
 use datafusion_common::{DataFusionError, JoinType, ScalarValue};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
@@ -36,7 +38,7 @@ use datafusion_functions_aggregate::min_max;
 use datafusion_physical_expr::expressions::{
     binary, col, lit, BinaryExpr, Column, Literal,
 };
-use datafusion_physical_expr::Partitioning;
+use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion_physical_optimizer::ensure_coop::EnsureCooperative;
@@ -109,6 +111,85 @@ impl LazyBatchGenerator for RangeBatchGenerator {
         let batch =
             RecordBatch::try_new(Arc::clone(&self.schema), vec![Arc::new(array)])?;
         Ok(Some(batch))
+    }
+}
+
+/// Test-only execution plan that emits an unbounded stream of identical
+/// batches and advertises [`SchedulingType::NonCooperative`]. The stream
+/// returns [`Poll::Ready`] on every poll and consumes no tokio
+/// cooperative-scheduling budget. Used by discriminating tests that need a
+/// child which cannot itself produce cooperative yield points, so any
+/// observed yielding must come from the operator under test.
+#[derive(Debug)]
+struct NonCooperativeInfiniteExec {
+    schema: SchemaRef,
+    batch: RecordBatch,
+    cache: PlanProperties,
+}
+
+impl NonCooperativeInfiniteExec {
+    fn new(schema: SchemaRef, batch: RecordBatch) -> Self {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Unbounded {
+                requires_infinite_memory: false,
+            },
+        )
+        .with_scheduling_type(SchedulingType::NonCooperative);
+        Self {
+            schema,
+            batch,
+            cache,
+        }
+    }
+}
+
+impl DisplayAs for NonCooperativeInfiniteExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "NonCooperativeInfiniteExec")
+    }
+}
+
+impl ExecutionPlan for NonCooperativeInfiniteExec {
+    fn name(&self) -> &'static str {
+        "NonCooperativeInfiniteExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> datafusion_common::Result<SendableRecordBatchStream> {
+        let batch = self.batch.clone();
+        let schema = Arc::clone(&self.schema);
+        let stream =
+            futures::stream::poll_fn(move |_cx| Poll::Ready(Some(Ok(batch.clone()))));
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
 
@@ -419,6 +500,41 @@ async fn filter_reject_all_batches_yields(
     let coalesced = Arc::new(CoalesceBatchesExec::new(filtered, 8_192));
 
     query_yields(coalesced, session_ctx.task_ctx()).await
+}
+
+#[tokio::test]
+async fn filter_reject_all_batches_yields_without_cooperative_input(
+) -> Result<(), Box<dyn Error>> {
+    // Discriminating test: the input leaf advertises NonCooperative and its
+    // stream consumes no coop budget. We deliberately skip
+    // `EnsureCooperative` so that nothing wraps the leaf, leaving FilterExec
+    // as the only possible source of cooperative yielding. If FilterExec
+    // did not yield on its own, this test would hang and the 10s timeout in
+    // `stream_yields` would fire.
+    let session_ctx = SessionContext::new();
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
+    let mut builder = Int64Array::builder(8192);
+    for v in i64::MIN..i64::MIN + 8192 {
+        builder.append_value(v);
+    }
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(builder.finish())])?;
+
+    let infinite = Arc::new(NonCooperativeInfiniteExec::new(schema, batch));
+
+    let false_predicate = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("value", 0)),
+        Gt,
+        Arc::new(Literal::new(ScalarValue::Int64(Some(i64::MAX)))),
+    ));
+    let filtered = Arc::new(FilterExec::try_new(false_predicate, infinite)?);
+
+    query_yields_no_ensure_cooperative(filtered, session_ctx.task_ctx()).await
 }
 
 #[rstest]
@@ -817,5 +933,16 @@ async fn query_yields(
     let stream = physical_plan::execute_stream(optimized, task_ctx)?;
 
     // Spawn a task that tries to poll the stream and check whether given stream yields
+    stream_yields(stream).await
+}
+
+/// Like [`query_yields`], but does not run `EnsureCooperative`. Used to
+/// verify that operators yield on their own when no other plan node
+/// participates in cooperative scheduling.
+async fn query_yields_no_ensure_cooperative(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: Arc<TaskContext>,
+) -> Result<(), Box<dyn Error>> {
+    let stream = physical_plan::execute_stream(plan, task_ctx)?;
     stream_yields(stream).await
 }
