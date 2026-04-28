@@ -62,9 +62,9 @@ use datafusion_physical_expr::{
 };
 
 use datafusion_physical_expr_common::physical_expr::fmt_sql;
+use futures::stream::{Stream, StreamExt};
 #[cfg(datafusion_coop = "tokio_fallback")]
 use futures::Future;
-use futures::stream::{Stream, StreamExt};
 use log::trace;
 
 const FILTER_EXEC_DEFAULT_SELECTIVITY: u8 = 20;

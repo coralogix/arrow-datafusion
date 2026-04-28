@@ -28,7 +28,9 @@ use datafusion::physical_plan::aggregates::{
 use datafusion::physical_plan::execution_plan::{
     Boundedness, EmissionType, SchedulingType,
 };
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+};
 use datafusion::prelude::SessionContext;
 use datafusion_common::{DataFusionError, JoinType, ScalarValue};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
