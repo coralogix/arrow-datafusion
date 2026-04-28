@@ -27,6 +27,7 @@ use super::{
     RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 use crate::common::can_project;
+use crate::coop::make_cooperative;
 use crate::execution_plan::{CardinalityEffect, SchedulingType};
 use crate::filter_pushdown::{
     ChildFilterDescription, ChildPushdownResult, FilterDescription, FilterPushdownPhase,
@@ -63,17 +64,9 @@ use datafusion_physical_expr::{
 
 use datafusion_physical_expr_common::physical_expr::fmt_sql;
 use futures::stream::{Stream, StreamExt};
-#[cfg(datafusion_coop = "tokio_fallback")]
-use futures::Future;
 use log::trace;
 
 const FILTER_EXEC_DEFAULT_SELECTIVITY: u8 = 20;
-
-/// Number of inner-loop iterations between cooperative yield checks
-/// when running with `--cfg datafusion_coop="per_stream"`. Mirrors the
-/// constant in `crate::coop` and matches Tokio's task budget.
-#[cfg(datafusion_coop = "per_stream")]
-const FILTER_YIELD_FREQUENCY: u8 = 128;
 
 /// FilterExec evaluates a boolean predicate against all input batches to determine which rows to
 /// include in its output batches.
@@ -312,10 +305,10 @@ impl FilterExec {
             input.pipeline_behavior(),
             input.boundedness(),
         )
-        // FilterExec inserts cooperative yield points in its `poll_next` so that
-        // an all-rows-rejected batch loop cannot monopolise a Tokio worker.
-        // Marking the plan cooperative also signals to `EnsureCooperative` that
-        // it does not need to wrap this operator.
+        // FilterExec wraps its input in `make_cooperative` so that an
+        // all-rows-rejected batch loop cannot monopolise a Tokio worker.
+        // Marking the plan cooperative also signals to `EnsureCooperative`
+        // that it does not need to wrap this operator.
         .with_scheduling_type(SchedulingType::Cooperative))
     }
 }
@@ -401,11 +394,9 @@ impl ExecutionPlan for FilterExec {
         Ok(Box::pin(FilterExecStream {
             schema: self.schema(),
             predicate: Arc::clone(&self.predicate),
-            input: self.input.execute(partition, context)?,
+            input: make_cooperative(self.input.execute(partition, context)?),
             baseline_metrics,
             projection: self.projection.clone(),
-            #[cfg(datafusion_coop = "per_stream")]
-            budget: FILTER_YIELD_FREQUENCY,
         }))
     }
 
@@ -641,12 +632,6 @@ struct FilterExecStream {
     baseline_metrics: BaselineMetrics,
     /// The projection indices of the columns in the input schema
     projection: Option<Vec<usize>>,
-    /// Cooperative-scheduling counter for `--cfg datafusion_coop="per_stream"`.
-    /// Decremented once per processed input batch; when it reaches zero the
-    /// stream yields to the runtime so the task remains cancellable even when
-    /// the predicate rejects every row.
-    #[cfg(datafusion_coop = "per_stream")]
-    budget: u8,
 }
 
 pub fn batch_filter(
@@ -698,36 +683,6 @@ impl Stream for FilterExecStream {
     ) -> Poll<Option<Self::Item>> {
         let poll;
         loop {
-            // Cooperative yield point: re-checked on every iteration so a
-            // predicate that rejects all rows in a batch cannot monopolise
-            // the worker. Mirrors `crate::coop::CooperativeStream::poll_next`
-            // for each of the three `cfg(datafusion_coop)` modes.
-            #[cfg(any(
-                datafusion_coop = "tokio",
-                not(any(
-                    datafusion_coop = "tokio_fallback",
-                    datafusion_coop = "per_stream"
-                ))
-            ))]
-            let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
-
-            #[cfg(datafusion_coop = "tokio_fallback")]
-            {
-                if !tokio::task::coop::has_budget_remaining() {
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-            }
-
-            #[cfg(datafusion_coop = "per_stream")]
-            {
-                if self.budget == 0 {
-                    self.budget = FILTER_YIELD_FREQUENCY;
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-            }
-
             match ready!(self.input.poll_next_unpin(cx)) {
                 Some(Ok(batch)) => {
                     let timer = self.baseline_metrics.elapsed_compute().timer();
@@ -738,35 +693,6 @@ impl Stream for FilterExecStream {
                         &self.schema,
                     )?;
                     timer.done();
-
-                    // Account for the work that was just performed. This must
-                    // happen on both the empty-batch (continue) and non-empty
-                    // (return Ready) paths so that every predicate evaluation
-                    // counts toward the cooperative budget.
-                    #[cfg(any(
-                        datafusion_coop = "tokio",
-                        not(any(
-                            datafusion_coop = "tokio_fallback",
-                            datafusion_coop = "per_stream"
-                        ))
-                    ))]
-                    coop.made_progress();
-
-                    #[cfg(datafusion_coop = "tokio_fallback")]
-                    {
-                        // We've already done the work; consume one budget unit
-                        // by polling `consume_budget` once. Mirrors the pattern
-                        // in `crate::coop::CooperativeStream::poll_next`.
-                        let consume = tokio::task::coop::consume_budget();
-                        let consume_ref = std::pin::pin!(consume);
-                        let _ = consume_ref.poll(cx);
-                    }
-
-                    #[cfg(datafusion_coop = "per_stream")]
-                    {
-                        self.budget -= 1;
-                    }
-
                     // Skip entirely filtered batches
                     if filtered_batch.num_rows() == 0 {
                         continue;
@@ -775,10 +701,6 @@ impl Stream for FilterExecStream {
                     break;
                 }
                 value => {
-                    // Input ended or errored: do not record progress. In the
-                    // `tokio` mode the `coop` guard is dropped without
-                    // `made_progress`, restoring the budget unit reserved on
-                    // entry; this matches `CooperativeStream`'s behaviour.
                     poll = Poll::Ready(value);
                     break;
                 }
