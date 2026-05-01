@@ -3167,3 +3167,39 @@ fn roundtrip_lead_with_default_value() -> Result<()> {
         true,
     )?))
 }
+#[test]
+fn roundtrip_filter_with_none_projection() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, false),
+        Field::new("b", DataType::Int32, false),
+        Field::new("c", DataType::Int32, false),
+    ]));
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("a", 0)),
+        Operator::Gt,
+        lit(ScalarValue::Int32(Some(0))),
+    ));
+    let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::clone(&schema)));
+
+    // Case 1: None projection (return all columns)
+    roundtrip_test(Arc::new(FilterExec::try_new(
+        Arc::clone(&predicate),
+        Arc::clone(&input),
+    )?))?;
+
+    // Case 2: Some(vec![]) — explicitly empty projection
+    roundtrip_test(Arc::new(
+        FilterExecBuilder::new(Arc::clone(&predicate), Arc::clone(&input))
+            .apply_projection(Some(vec![]))?
+            .build()?,
+    ))?;
+
+    // Case 3: Some(vec![2, 0]) — partial projection
+    roundtrip_test(Arc::new(
+        FilterExecBuilder::new(Arc::clone(&predicate), Arc::clone(&input))
+            .apply_projection(Some(vec![2, 0]))?
+            .build()?,
+    ))?;
+
+    Ok(())
+}
