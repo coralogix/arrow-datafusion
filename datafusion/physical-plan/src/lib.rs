@@ -57,7 +57,7 @@ pub use spill::spill_manager::SpillManager;
 
 mod ordering;
 mod render_tree;
-mod topk;
+pub mod topk;
 mod visitor;
 
 pub mod aggregates;
