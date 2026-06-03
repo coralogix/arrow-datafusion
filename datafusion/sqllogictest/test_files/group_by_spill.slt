@@ -1,0 +1,98 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Tests for GroupedHashAggregateStream memory-limited execution with
+# high-cardinality wide-string group keys.
+#
+# When the in-memory groups hash table outgrows its current capacity,
+# hashbrown allocates a new larger backing array via
+# `RawTable::reserve_rehash` (re-entry path through
+# `HashTableAllocExt::insert_accounted` → `ArrowBytesViewMap::insert_if_new_inner`
+# → `GroupValuesBytesView::intern` →
+# `GroupedHashAggregateStream::group_aggregate_batch`). The
+# `insert_accounted` name suggests the path tracks allocations, but the
+# underlying `hashbrown::raw::do_alloc` for the resize allocation is
+# NOT routed through `MemoryReservation::try_grow`. The hash-table
+# growth bytes therefore leak past the declared `memory_limit`.
+#
+# Sibling failure mode: when the hash table fits in memory but the
+# emit-flush path runs, `GroupValuesRows::emit` →
+# `RowConverter::convert_rows` → `arrow_row::variable::decode_binary`
+# allocates per-column `MutableBuffer`s without
+# `MemoryReservation::try_grow` either.
+#
+# Production motivation: a 2026-05-20 incident at one DataFusion-based
+# log analytics deployment killed 79 executor pods in a 2-minute window
+# from 5 concurrent `groupby` queries on a free-text log message field
+# (high cardinality, wide string keys). The same untracked-allocation
+# pattern that overshoots by KB at SLT scale overshoots by GB at
+# production scale, with cardinality × key-width × concurrency as the
+# scaling factors.
+#
+# Sibling SLT for `NestedLoopJoinExec`: `nested_loop_join_spill.slt`.
+# Issue: apache/datafusion#22723.
+# Surfacing framework: apache/datafusion#22626 (allocator-level
+# accounting wrapper exposed as the `memory-accounting` Cargo
+# feature). With the feature enabled and a tight `--default-pool-size-mb`,
+# this test produces `allocator overdraft: account balance at panic
+# = -N bytes`. Without the feature it currently passes as a correctness
+# test only.
+
+# Use a single target partition to avoid repartitioning concerns.
+statement ok
+SET datafusion.execution.target_partitions = 1
+
+# Pre-materialize wide string keys at the default (generous) memory limit,
+# so the groupby query below scans them directly without input-side
+# string ops on the plan. This isolates the hash-agg state path as the
+# allocation site under test.
+statement ok
+CREATE TABLE wide_keys AS
+SELECT cast(v AS varchar) || repeat('x', 200) AS k
+FROM generate_series(1, 50000) AS t(v)
+
+# Pool small enough that the hash table can't hold all 50000 wide-string
+# groups within its declared budget. With the accounting wrapper
+# installed (apache/datafusion#22626), the rehash allocation overshoots
+# and the framework fires with `allocator overdraft`. Until the leak is
+# fixed, this test is expected to fail — same pattern as
+# apache/datafusion#22721 / #22723 for NestedLoopJoinExec.
+statement ok
+SET datafusion.runtime.memory_limit = '500K'
+
+# --- High-cardinality groupby on a wide pre-materialized string key ---
+# Asserts correct group count. With the accounting wrapper installed
+# (apache/datafusion#22626) this test fails with `allocator overdraft`
+# because the hash-table-grow path bypasses MemoryReservation.
+query I nosort
+SELECT count(*) FROM (
+  SELECT k, count(*) AS c
+  FROM wide_keys
+  GROUP BY k
+)
+----
+50000
+
+# Restore settings to slt runner defaults
+statement ok
+RESET datafusion.runtime.memory_limit
+
+statement ok
+DROP TABLE wide_keys
+
+statement ok
+SET datafusion.execution.target_partitions = 4
