@@ -136,6 +136,121 @@ SELECT count(rolling_sum) AS n FROM (
 ----
 100
 
+# ---------------------------------------------------------------------------
+# Cumulative aggregate: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW.
+# Equivalent to DQL `window orderby $m.timestamp rows running() calc sum(...)`.
+# Canonical log-analytics shape (cumulative metric over time, no PARTITION BY).
+#
+# Today this collapses to Distribution::SinglePartition because:
+#   1. ParallelWindow only matches RANGE frames with finite preceding/following
+#      bounds (parallel_window.rs:146 rejects Rows; parallel_window.rs:158
+#      rejects UNBOUNDED).
+#   2. BoundedWindowAggExec then falls back to SinglePartition
+#      (bounded_window_agg_exec.rs:352).
+#
+# Goal: parallel prefix scan. Sketch of target plan:
+#   SortPreservingMergeExec [seq]
+#     CarryExec                            -- broadcasts each partition's final
+#                                             cumulative value as carry-in to
+#                                             the next; pipelined, no overlap.
+#       BoundedWindowAggExec(parallel_aware) -- per-partition cumulative from 0
+#         RangeRepartitionExec             -- range-partition by seq, NO halo
+#           SortExec [seq]
+#             DataSourceExec
+# ---------------------------------------------------------------------------
+
+# EXPLAIN — RED today (single-partition fallback). Target plan is the parallel
+# prefix-scan shape above. Expected text is structural; statistics decoration
+# will need an update-mode pass once CarryExec prints itself.
+query TT
+EXPLAIN SELECT
+    seq,
+    SUM(amount) OVER (
+        ORDER BY seq
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_sum
+FROM events
+ORDER BY seq
+LIMIT 10;
+----
+logical_plan
+01)Sort: events.seq ASC NULLS LAST, fetch=10
+02)--Projection: events.seq, sum(events.amount) ORDER BY [events.seq ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS cumulative_sum
+03)----WindowAggr: windowExpr=[[sum(events.amount) ORDER BY [events.seq ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
+04)------TableScan: events projection=[seq, amount]
+physical_plan
+01)SortPreservingMergeExec: [seq@0 ASC NULLS LAST], fetch=10, statistics=[Rows=Absent, Bytes=Absent, [(Col[0]:),(Col[1]:)]]
+02)--ProjectionExec: expr=[seq@0 as seq, sum(events.amount) ORDER BY [events.seq ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as cumulative_sum], statistics=[Rows=Absent, Bytes=Absent, [(Col[0]:),(Col[1]:)]]
+03)----CarryExec, statistics=[Rows=Absent, Bytes=Absent, [(Col[0]:),(Col[1]:),(Col[2]:)]]
+04)------BoundedWindowAggExec: wdw=[sum(events.amount) ORDER BY [events.seq ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(events.amount) ORDER BY [events.seq ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Int64 }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted], statistics=[Rows=Absent, Bytes=Absent, [(Col[0]:),(Col[1]:),(Col[2]:)]]
+05)--------RangeRepartitionExec, statistics=[Rows=Absent, Bytes=Absent, [(Col[0]:),(Col[1]:)]]
+06)----------SortExec: expr=[seq@0 ASC NULLS LAST], preserve_partitioning=[true], statistics=[Rows=Exact(100), Bytes=Exact(1600), [(Col[0]: Min=Exact(Int64(0)) Max=Exact(Int64(99)) Null=Exact(0) ScanBytes=Exact(800)),(Col[1]: Min=Exact(Int64(0)) Max=Exact(Int64(6)) Null=Exact(0) ScanBytes=Exact(800))]]
+07)------------DataSourceExec: file_groups={4 groups: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/parallel_window/events/0.parquet], [WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/parallel_window/events/1.parquet], [WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/parallel_window/events/2.parquet], [WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/parallel_window/events/3.parquet]]}, projection=[seq, amount], file_type=parquet, sort_order_for_reorder=[seq@0 ASC NULLS LAST], statistics=[Rows=Exact(100), Bytes=Exact(1600), [(Col[0]: Min=Exact(Int64(0)) Max=Exact(Int64(99)) Null=Exact(0) ScanBytes=Exact(800)),(Col[1]: Min=Exact(Int64(0)) Max=Exact(Int64(6)) Null=Exact(0) ScanBytes=Exact(800))]]
+
+
+# Result — GREEN today (BoundedWindowAggExec is correct, just running on one
+# core). After implementation this must remain row-for-row identical.
+query II
+SELECT
+    seq,
+    SUM(amount) OVER (
+        ORDER BY seq
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_sum
+FROM events
+ORDER BY seq
+LIMIT 10;
+----
+0 0
+1 1
+2 3
+3 6
+4 10
+5 15
+6 21
+7 21
+8 22
+9 24
+
+# Sentinel: count(cumulative_sum) forces the window to materialize and proves
+# CarryExec neither drops nor duplicates rows.
+query I
+SELECT count(cumulative_sum) AS n FROM (
+    SELECT seq, SUM(amount) OVER (
+        ORDER BY seq
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_sum
+    FROM events
+) t;
+----
+100
+
+# Cross-partition-boundary check — RED on the passthrough stub because each
+# input partition's local cumulative sum starts at 0; the prefix-sum offset
+# isn't applied. Once the real CarryExec body lands, these values match the
+# serial reference. Manual reference values: amount(seq) = seq % 7, so
+# cumulative_sum(N) = Σ_{i=0..N} (i % 7).
+query II
+SELECT seq, cumulative_sum FROM (
+    SELECT seq, SUM(amount) OVER (
+        ORDER BY seq
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_sum
+    FROM events
+) t
+WHERE seq IN (24, 25, 26, 49, 50, 51, 74, 75, 76)
+ORDER BY seq;
+----
+24 69
+25 73
+26 78
+49 147
+50 148
+51 150
+74 220
+75 225
+76 231
+
 # Reset session settings so this file doesn't leak config into the rest of the run.
 statement ok
 set datafusion.explain.show_statistics = false;
