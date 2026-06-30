@@ -202,6 +202,17 @@ impl FilterExec {
         self.projection.as_ref()
     }
 
+    /// Number of rows to fetch
+    pub fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    /// Update the number of rows to fetch
+    pub fn with_fetch(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
+    }
+
     /// Calculates `Statistics` for `FilterExec`, by applying selectivity (either default, or estimated) to input statistics.
     fn statistics_helper(
         schema: &SchemaRef,
@@ -426,7 +437,7 @@ impl ExecutionPlan for FilterExec {
                 e.with_default_selectivity(selectivity)
             })
             .and_then(|e| e.with_projection(self.projection().cloned()))
-            .map(|e| e.with_fetch(self.fetch).unwrap())
+            .map(|e| Arc::new(e.with_fetch(self.fetch)) as Arc<dyn ExecutionPlan>)
     }
 
     fn execute(

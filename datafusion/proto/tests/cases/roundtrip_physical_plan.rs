@@ -778,6 +778,32 @@ fn roundtrip_filter_with_not_and_in_list() -> Result<()> {
 }
 
 #[test]
+fn roundtrip_filter_with_fetch() -> Result<()> {
+    let field_a = Field::new("a", DataType::Boolean, false);
+    let field_b = Field::new("b", DataType::Int64, false);
+    let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+    let predicate = col("a", &schema)?;
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(
+        FilterExec::try_new(predicate, Arc::new(EmptyExec::new(schema)))?
+            .with_fetch(Some(42)),
+    );
+
+    // Verify `fetch` is preserved across serialization.
+    let ctx = SessionContext::new();
+    let codec = DefaultPhysicalExtensionCodec {};
+    let proto: protobuf::PhysicalPlanNode =
+        protobuf::PhysicalPlanNode::try_from_physical_plan(filter.clone(), &codec)
+            .expect("serialization should succeed");
+    let result: Arc<dyn ExecutionPlan> = proto
+        .try_into_physical_plan(&ctx.task_ctx(), &codec)
+        .expect("deserialization should succeed");
+    let result_filter = result.as_any().downcast_ref::<FilterExec>().unwrap();
+    assert_eq!(result_filter.fetch(), Some(42));
+
+    roundtrip_test(filter)
+}
+
+#[test]
 fn roundtrip_sort() -> Result<()> {
     let field_a = Field::new("a", DataType::Boolean, false);
     let field_b = Field::new("b", DataType::Int64, false);

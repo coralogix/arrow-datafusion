@@ -586,8 +586,10 @@ impl protobuf::PhysicalPlanNode {
             None
         };
 
-        let filter =
-            FilterExec::try_new(predicate, input)?.with_projection(projection)?;
+        let fetch = filter.fetch.map(|f| f as usize);
+        let filter = FilterExec::try_new(predicate, input)?
+            .with_projection(projection)?
+            .with_fetch(fetch);
         match filter_selectivity {
             Ok(filter_selectivity) => Ok(Arc::new(
                 filter.with_default_selectivity(filter_selectivity)?,
@@ -2112,6 +2114,7 @@ impl protobuf::PhysicalPlanNode {
                     projection: exec.projection().as_ref().map_or_else(Vec::new, |v| {
                         v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
                     }),
+                    fetch: exec.fetch().map(|f| f as u32),
                 },
             ))),
         })
