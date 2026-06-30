@@ -166,14 +166,33 @@ async fn gather(
     agg_col: usize,
 ) -> Result<Vec<PartitionPayload>> {
     let n = input.output_partitioning().partition_count();
+
+    // Drain every output partition on its own tokio task. `try_join_all`
+    // would also be concurrent but only on the calling task — every poll
+    // would happen on a single worker thread, capping the consumer side
+    // at one CPU. Spawning puts each drain on the multi-threaded runtime
+    // and lets the upstream routers actually fan out. Sequential drain
+    // (the original) deadlocks because the upstream coordinator blocks
+    // sending to any unread bucket and stalls routing to every bucket.
+    let handles: Vec<_> = (0..n)
+        .map(|k| {
+            let mut stream = input.execute(k, Arc::clone(&ctx))?;
+            Ok::<_, datafusion_common::DataFusionError>(tokio::spawn(async move {
+                let mut buf: Vec<RecordBatch> = Vec::new();
+                while let Some(item) = stream.next().await {
+                    buf.push(item?);
+                }
+                Ok::<_, datafusion_common::DataFusionError>(buf)
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut buffers: Vec<Vec<RecordBatch>> = Vec::with_capacity(n);
-    for k in 0..n {
-        let mut stream = input.execute(k, Arc::clone(&ctx))?;
-        let mut buf = Vec::new();
-        while let Some(item) = stream.next().await {
-            buf.push(item?);
-        }
-        buffers.push(buf);
+    for handle in handles {
+        buffers.push(
+            handle
+                .await
+                .map_err(|e| internal_datafusion_err!("drain task panicked: {e}"))??,
+        );
     }
 
     // Derive each partition's final + cumulative prefix. `running` starts
