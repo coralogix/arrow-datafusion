@@ -223,8 +223,8 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
 name = "arrow"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -245,8 +245,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-arith"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -258,8 +258,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-array"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -276,8 +276,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-buffer"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "bytes",
  "half",
@@ -287,8 +287,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-cast"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -308,8 +308,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-csv"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -322,8 +322,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-data"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -334,8 +334,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-flight"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -361,8 +361,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-ipc"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -376,8 +376,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-json"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -399,8 +399,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-ord"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -411,8 +411,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-row"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -423,8 +423,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-schema"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "bitflags",
  "serde",
@@ -434,8 +434,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-select"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -447,8 +447,8 @@ dependencies = [
 
 [[package]]
 name = "arrow-string"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -2703,7 +2703,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2847,7 +2847,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4310,8 +4310,8 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "57.1.0"
-source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.1.0-cx.0#ab29f6a97894fd4575c3965d794a24f5554231ba"
+version = "57.3.1"
+source = "git+https://github.com/coralogix/arrow-rs.git?tag=v57.3.1-cx.0#100bf9756b0ba4b3966402e697f695a6841f2d3e"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -4681,7 +4681,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -4701,7 +4701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.113",
@@ -4802,7 +4802,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5160,7 +5160,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5624,7 +5624,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -5878,7 +5878,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6766,7 +6766,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
