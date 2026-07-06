@@ -1006,6 +1006,7 @@ message FilterExecNode {
   PhysicalExprNode expr = 2;
   uint32 default_filter_selectivity = 3;
   repeated uint32 projection = 9;
+  optional uint32 fetch = 10;
 }
 
 message FileGroup {
