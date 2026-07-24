@@ -20,6 +20,7 @@
 //! This module implements [`HashJoinStream`], the streaming engine for
 //! [`super::HashJoinExec`]. See comments in [`HashJoinStream`] for more details.
 
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
@@ -28,7 +29,7 @@ use crate::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use crate::joins::Map;
 use crate::joins::MapOffset;
 use crate::joins::PartitionMode;
-use crate::joins::hash_join::exec::JoinLeftData;
+use crate::joins::hash_join::exec::{JoinLeftData, SharedProbeState, merge_bitmap};
 use crate::joins::hash_join::shared_bounds::{
     PartitionBounds, PartitionBuildData, SharedBuildAccumulator,
 };
@@ -226,6 +227,8 @@ pub(super) struct HashJoinStream {
     output_buffer: LimitedBatchCoalescer,
     /// Whether this is a null-aware anti join
     null_aware: bool,
+    /// Optional join context for distributed CollectLeft coordination
+    join_context: Option<Arc<super::exec::JoinContext>>,
 }
 
 impl RecordBatchStream for HashJoinStream {
@@ -375,6 +378,7 @@ impl HashJoinStream {
         mode: PartitionMode,
         null_aware: bool,
         fetch: Option<usize>,
+        join_context: Option<Arc<super::exec::JoinContext>>,
     ) -> Self {
         // Create output buffer with coalescing and optional fetch limit.
         let output_buffer =
@@ -403,6 +407,7 @@ impl HashJoinStream {
             mode,
             output_buffer,
             null_aware,
+            join_context,
         }
     }
 
@@ -440,7 +445,7 @@ impl HashJoinStream {
                     handle_state!(self.process_probe_batch())
                 }
                 HashJoinStreamState::ExhaustedProbeSide => {
-                    handle_state!(self.process_unmatched_build_batch())
+                    handle_state!(ready!(self.process_unmatched_build_batch(cx)))
                 }
                 HashJoinStreamState::Completed if !self.output_buffer.is_empty() => {
                     // Flush any remaining buffered data
@@ -493,6 +498,10 @@ impl HashJoinStream {
         // Note: For null-aware anti join, we need to check the probe side (right) for NULLs,
         // not the build side (left). The probe-side NULL check happens during process_probe_batch.
         // The probe_side_has_null flag will be set there if any probe batch contains NULL.
+
+        if let Some(ctx) = self.join_context.as_ref() {
+            ctx.set_build_state(Arc::clone(&left_data));
+        }
 
         // Handle dynamic filter build-side information accumulation
         //
@@ -814,12 +823,13 @@ impl HashJoinStream {
     /// Updates state to `Completed`
     fn process_unmatched_build_batch(
         &mut self,
-    ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         let timer = self.join_metrics.join_time.timer();
 
         if !need_produce_result_in_final(self.join_type) {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
         }
 
         let build_side = self.build_side.try_as_ready()?;
@@ -834,11 +844,27 @@ impl HashJoinStream {
         {
             timer.done();
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
         }
         if !build_side.left_data.report_probe_completed() {
             self.state = HashJoinStreamState::Completed;
-            return Ok(StatefulStreamResult::Continue);
+            return Poll::Ready(Ok(StatefulStreamResult::Continue));
+        }
+
+        if let Some(shared_state) = build_side.left_data.shared_state.as_ref() {
+            let mut guard = build_side.left_data.visited_indices_bitmap().lock();
+            match ready!(shared_state.poll_probe_completed(guard.deref(), cx)) {
+                Ok(SharedProbeState::Continue) => {
+                    self.state = HashJoinStreamState::Completed;
+                    return Poll::Ready(Ok(StatefulStreamResult::Continue));
+                }
+                Ok(SharedProbeState::Ready(shared_mask)) => {
+                    if let Err(e) = merge_bitmap(guard.deref_mut(), &shared_mask) {
+                        return Poll::Ready(Err(e));
+                    }
+                }
+                Err(err) => return Poll::Ready(Err(err)),
+            }
         }
 
         // use the global left bitmap to produce the left indices and right indices
@@ -911,7 +937,7 @@ impl HashJoinStream {
             }
         }
 
-        Ok(StatefulStreamResult::Continue)
+        Poll::Ready(Ok(StatefulStreamResult::Continue))
     }
 }
 
