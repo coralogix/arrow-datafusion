@@ -128,7 +128,13 @@ fn try_unwrap_cast_comparison(
     if let Some(casted_literal) = try_cast_literal_to_type(literal_value, &inner_type) {
         let literal_expr = lit(casted_literal);
         let binary_expr = BinaryExpr::new(inner_expr, op, literal_expr);
-        return Ok(Some(Arc::new(binary_expr)));
+        // Keep the rewrite only if it is still well typed. The cast of the
+        // literal is not guaranteed to yield `inner_type`, and dropping the
+        // outer cast in that case leaves a comparison whose sides cannot be
+        // coerced (e.g. `Timestamp > Float64`).
+        if binary_expr.data_type(schema).is_ok() {
+            return Ok(Some(Arc::new(binary_expr)));
+        }
     }
 
     Ok(None)
