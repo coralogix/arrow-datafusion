@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// CoalesceBatchesExec is deprecated in DF 53 but planners may still insert it
+// between SortExec and RepartitionExec, so this rule keeps matching it.
+#![expect(deprecated)]
+
 //! Push TopK (Sort with fetch) past Hash Repartition
 //!
 //! When a `SortExec` with a fetch limit (TopK) sits above a
