@@ -60,8 +60,12 @@ impl<'a> PhysicalExprSimplifier<'a> {
         while count < MAX_LOOP_COUNT {
             count += 1;
             let result = current_expr.transform(|node| {
+                // Only a sanity check: an expression may legitimately have no
+                // statically inferable type here (e.g. a predicate typed against
+                // a virtual schema), so record the type when it is known instead
+                // of unwrapping and panicking.
                 #[cfg(debug_assertions)]
-                let original_type = node.data_type(schema).unwrap();
+                let original_type = node.data_type(schema).ok();
 
                 // Apply NOT expression simplification first, then unwrap cast optimization,
                 // then constant expression evaluation
@@ -73,11 +77,13 @@ impl<'a> PhysicalExprSimplifier<'a> {
                     })?;
 
                 #[cfg(debug_assertions)]
-                assert_eq!(
-                    rewritten.data.data_type(schema).unwrap(),
-                    original_type,
-                    "Simplified expression should have the same data type as the original"
-                );
+                if let Some(original_type) = original_type {
+                    assert_eq!(
+                        rewritten.data.data_type(schema).ok(),
+                        Some(original_type),
+                        "Simplified expression should have the same data type as the original"
+                    );
+                }
 
                 Ok(rewritten)
             })?;
