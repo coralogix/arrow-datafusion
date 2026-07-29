@@ -53,7 +53,8 @@ pub trait DynHash: private::HashSealed {
 impl<T: Hash + Any> private::HashSealed for T {}
 impl<T: Hash + Any> DynHash for T {
     fn dyn_hash(&self, mut state: &mut dyn Hasher) {
-        self.type_id().hash(&mut state);
+        //self.type_id().hash(&mut state);
+        std::any::type_name::<Self>().hash(&mut state);
         self.hash(&mut state)
     }
 }
