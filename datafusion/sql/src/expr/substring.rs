@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::planner::{ContextProvider, PlannerContext, SqlToRel};
-use datafusion_common::{internal_datafusion_err, plan_err};
 use datafusion_common::{DFSchema, Result, ScalarValue};
-use datafusion_expr::expr::ScalarFunction;
-use datafusion_expr::Expr;
+use datafusion_common::{not_impl_err, plan_err};
+use datafusion_expr::{Expr, planner::PlannerResult};
+
 use sqlparser::ast::Expr as SQLExpr;
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
     pub(super) fn sql_substring_to_expr(
         &self,
         expr: Box<SQLExpr>,
@@ -31,7 +31,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
-        let args = match (substring_from, substring_for) {
+        let mut substring_args = match (substring_from, substring_for) {
             (Some(from_expr), Some(for_expr)) => {
                 let arg =
                     self.sql_expr_to_logical_expr(*expr, schema, planner_context)?;
@@ -51,7 +51,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             (None, Some(for_expr)) => {
                 let arg =
                     self.sql_expr_to_logical_expr(*expr, schema, planner_context)?;
-                let from_logic = Expr::Literal(ScalarValue::Int64(Some(1)));
+                let from_logic = Expr::Literal(ScalarValue::Int64(Some(1)), None);
                 let for_logic =
                     self.sql_expr_to_logical_expr(*for_expr, schema, planner_context)?;
                 vec![arg, from_logic, for_logic]
@@ -62,19 +62,26 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                     substring_from: None,
                     substring_for: None,
                     special: false,
+                    shorthand: false,
                 };
 
                 return plan_err!("Substring without for/from is not valid {orig_sql:?}");
             }
         };
 
-        let fun = self
-            .context_provider
-            .get_function_meta("substr")
-            .ok_or_else(|| {
-                internal_datafusion_err!("Unable to find expected 'substr' function")
-            })?;
+        // Try to plan the substring expression using one of the registered planners
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_substring(substring_args)? {
+                PlannerResult::Planned(expr) => return Ok(expr),
+                PlannerResult::Original(args) => {
+                    substring_args = args;
+                }
+            }
+        }
 
-        Ok(Expr::ScalarFunction(ScalarFunction::new_udf(fun, args)))
+        not_impl_err!(
+            "Substring could not be planned by registered expr planner. \
+                        Hint: Please try with `unicode_expressions` DataFusion feature enabled"
+        )
     }
 }

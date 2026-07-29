@@ -21,33 +21,136 @@
 
 Tests are critical to ensure that DataFusion is working properly and
 is not accidentally broken during refactorings. All new features
-should have test coverage.
+should have test coverage and the entire test suite is run as part of CI.
 
-DataFusion has several levels of tests in its [Test
-Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)
-and tries to follow the Rust standard [Testing Organization](https://doc.rust-lang.org/book/ch11-03-test-organization.html) in the The Book.
+DataFusion has several levels of tests in its [Test Pyramid] and tries to follow
+the Rust standard [Testing Organization] described in [The Book].
+
+Run tests using `cargo`:
+
+```shell
+cargo test
+```
+
+You can also use other runners such as [cargo-nextest].
+
+```shell
+cargo nextest run
+```
+
+[test pyramid]: https://martinfowler.com/articles/practical-test-pyramid.html
+[testing organization]: https://doc.rust-lang.org/book/ch11-03-test-organization.html
+[the book]: https://doc.rust-lang.org/book/
+[cargo-nextest]: https://nexte.st/
 
 ## Unit tests
 
 Tests for code in an individual module are defined in the same source file with a `test` module, following Rust convention.
 
+For example, to run tests in the `datafusion` crate:
+
+```shell
+cargo test -p datafusion
+```
+
+The [test_util] module provides useful macros to write unit tests effectively, such as [`assert_batches_sorted_eq`] and [`assert_batches_eq`] for RecordBatches and [`assert_contains`] / [`assert_not_contains`] which are used extensively in the codebase.
+
+[test_util]: https://github.com/apache/datafusion/tree/main/datafusion/common/src/test_util.rs
+[`assert_batches_sorted_eq`]: https://docs.rs/datafusion/latest/datafusion/macro.assert_batches_sorted_eq.html
+[`assert_batches_eq`]: https://docs.rs/datafusion/latest/datafusion/macro.assert_batches_eq.html
+[`assert_contains`]: https://docs.rs/datafusion/latest/datafusion/common/macro.assert_contains.html
+[`assert_not_contains`]: https://docs.rs/datafusion/latest/datafusion/common/macro.assert_not_contains.html
+
 ## sqllogictests Tests
 
-DataFusion's SQL implementation is tested using [sqllogictest](https://github.com/apache/datafusion/tree/main/datafusion/sqllogictest) which are run like any other Rust test using `cargo test --test sqllogictests`.
+DataFusion's SQL implementation is tested using [sqllogictest](https://github.com/apache/datafusion/tree/main/datafusion/sqllogictest). You can run these tests with commands like:
 
-`sqllogictests` tests may be less convenient for new contributors who are familiar with writing `.rs` tests as they require learning another tool. However, `sqllogictest` based tests are much easier to develop and maintain as they 1) do not require a slow recompile/link cycle and 2) can be automatically updated via `cargo test --test sqllogictests -- --complete`.
+```shell
+# Run all tests
+cargo test --profile=ci --test sqllogictests
+# Run a specific test file
+cargo test --profile=ci --test sqllogictests -- aggregate.slt
+# Run and update expected outputs
+cargo test --profile=ci --test sqllogictests -- --complete
+```
+
+`sqllogictests` may be less convenient for new contributors who are familiar with writing `.rs` tests as they require learning another tool. However, `sqllogictest` based tests are much easier to develop and maintain as they 1) do not require a slow recompile/link cycle and 2) can be automatically updated.
 
 Like similar systems such as [DuckDB](https://duckdb.org/dev/testing), DataFusion has chosen to trade off a slightly higher barrier to contribution for longer term maintainability.
 
-### Rust Integration Tests
+DataFusion has integrated [sqlite's test suite](https://sqlite.org/sqllogictest/doc/trunk/about.wiki) as a supplemental test suite that is run whenever a PR is merged into DataFusion. To run it manually please refer to the [README](https://github.com/apache/datafusion/blob/main/datafusion/sqllogictest/README.md#running-tests-sqlite) file for instructions.
 
-There are several tests of the public interface of the DataFusion library in the [tests](https://github.com/apache/datafusion/tree/main/datafusion/core/tests) directory.
+## Snapshot testing (`cargo insta`)
+
+[Insta](https://github.com/mitsuhiko/insta) is used for snapshot testing. Snapshots are generated
+and compared on each test run. If the output changes, tests will fail.
+
+To review the changes, you can use Insta CLI:
+
+```shell
+cargo install cargo-insta
+cargo insta review
+```
+
+## Extended Tests
+
+In addition to the standard CI test suite that is run on all PRs prior to merge,
+DataFusion has "extended" tests (defined in [extended.yml]) that are run on each
+commit to `main`. These tests rarely fail but take significantly longer to run
+than the standard test suite and add important test coverage such as ensuring
+correctness when there are hash collisions and running the relevant portions of
+the entire [sqlite test suite]. You can run the extended tests
+locally by following the [instructions in the documentation].
+
+[sqlite test suite]: https://www.sqlite.org/sqllogictest/dir?ci=tip
+[instructions in the documentation]: https://github.com/apache/datafusion/tree/main/datafusion/sqllogictest#running-tests-sqlite
+
+## Rust Integration Tests
+
+There are several public interface tests for the DataFusion library in the [tests](https://github.com/apache/datafusion/tree/main/datafusion/core/tests) directory.
 
 You can run these tests individually using `cargo` as normal command such as
 
 ```shell
-cargo test -p datafusion --test parquet_exec
+cargo test -p datafusion --test parquet_integration
 ```
+
+## SQL "Fuzz" testing
+
+DataFusion uses the [SQLancer] for "fuzz" testing: it generates random SQL
+queries and execute them against DataFusion to find bugs.
+
+The code is in the [datafusion-sqllancer] repository, and we welcome further
+contributions. Kudos to [@2010YOUY01] for the initial implementation.
+
+[sqlancer]: https://github.com/sqlancer/sqlancer
+[datafusion-sqllancer]: https://github.com/datafusion-contrib/datafusion-sqllancer
+[@2010youy01]: https://github.com/2010YOUY01
+
+## Documentation Examples
+
+We use Rust [doctest] to verify examples from the documentation are correct and
+up-to-date. These tests are run as part of our CI and you can run them them
+locally with the following command:
+
+```shell
+cargo test --doc
+```
+
+### API Documentation Examples
+
+As with other Rust projects, examples in doc comments in `.rs` files are
+automatically checked to ensure they work and evolve along with the code.
+
+### User Guide Documentation
+
+Rust example code from the user guide (anything marked with \`\`\`rust) is also
+tested in the same way using the [doc_comment] crate. See the end of
+[core/src/lib.rs] for more details.
+
+[doctest]: https://doc.rust-lang.org/rust-by-example/testing/doc_testing.html
+[doc_comment]: https://docs.rs/doc-comment/latest/doc_comment
+[core/src/lib.rs]: https://github.com/apache/datafusion/blob/main/datafusion/core/src/lib.rs#L583
 
 ## Benchmarks
 

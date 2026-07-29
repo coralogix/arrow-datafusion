@@ -22,7 +22,7 @@ SELECT true, false, false = false, true = false
 true false true false
 
 # test_mathematical_expressions_with_null
-query RRRRRRRRRRRRRRRRRR?RRRRRRRIRRRRRRBB
+query RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRBB
 SELECT
     sqrt(NULL),
     cbrt(NULL),
@@ -107,7 +107,7 @@ SELECT
     STRUCT(true, false),
     STRUCT('str1', 'str2')
 ----
-{c0: 1, c1: 2, c2: 3, c3: 4, c4: 5} {c0: } {c0: 2} {c0: 1, c1: } {c0: true, c1: false} {c0: str1, c1: str2}
+{c0: 1, c1: 2, c2: 3, c3: 4, c4: 5} {c0: NULL} {c0: 2} {c0: 1, c1: NULL} {c0: true, c1: false} {c0: str1, c1: str2}
 
 # test binary_bitwise_shift
 query IIII
@@ -122,203 +122,197 @@ SELECT
 query ?
 SELECT interval '1'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 1.000000000 secs
+1.000000000 secs
 
 query ?
 SELECT interval '1 second'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 1.000000000 secs
+1.000000000 secs
 
 query ?
 SELECT interval '500 milliseconds'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 0.500000000 secs
+0.500000000 secs
 
 query ?
 SELECT interval '5 second'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 5.000000000 secs
+5.000000000 secs
 
 query ?
 SELECT interval '0.5 minute'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 30.000000000 secs
+30.000000000 secs
 
 query ?
 SELECT interval '.5 minute'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 30.000000000 secs
+30.000000000 secs
 
 query ?
 SELECT interval '5 minute'
 ----
-0 years 0 mons 0 days 0 hours 5 mins 0.000000000 secs
+5 mins
 
 query ?
 SELECT interval '5 minute 1 second'
 ----
-0 years 0 mons 0 days 0 hours 5 mins 1.000000000 secs
+5 mins 1.000000000 secs
 
 query ?
 SELECT interval '1 hour'
 ----
-0 years 0 mons 0 days 1 hours 0 mins 0.000000000 secs
+1 hours
 
 query ?
 SELECT interval '5 hour'
 ----
-0 years 0 mons 0 days 5 hours 0 mins 0.000000000 secs
+5 hours
 
 query ?
 SELECT interval '1 day'
 ----
-0 years 0 mons 1 days 0 hours 0 mins 0.000000000 secs
+1 days
 
 query ?
 SELECT interval '1 week'
 ----
-0 years 0 mons 7 days 0 hours 0 mins 0.000000000 secs
+7 days
 
 query ?
 SELECT interval '2 weeks'
 ----
-0 years 0 mons 14 days 0 hours 0 mins 0.000000000 secs
+14 days
 
 query ?
 SELECT interval '1 day 1'
 ----
-0 years 0 mons 1 days 0 hours 0 mins 1.000000000 secs
+1 days 1.000000000 secs
 
 query ?
 SELECT interval '0.5'
 ----
-0 years 0 mons 0 days 0 hours 0 mins 0.500000000 secs
+0.500000000 secs
 
 query ?
 SELECT interval '0.5 day 1'
 ----
-0 years 0 mons 0 days 12 hours 0 mins 1.000000000 secs
+12 hours 1.000000000 secs
 
 query ?
 SELECT interval '0.49 day'
 ----
-0 years 0 mons 0 days 11 hours 45 mins 36.000000000 secs
+11 hours 45 mins 36.000000000 secs
 
 query ?
 SELECT interval '0.499 day'
 ----
-0 years 0 mons 0 days 11 hours 58 mins 33.600000000 secs
+11 hours 58 mins 33.600000000 secs
 
 query ?
 SELECT interval '0.4999 day'
 ----
-0 years 0 mons 0 days 11 hours 59 mins 51.360000000 secs
+11 hours 59 mins 51.360000000 secs
 
 query ?
 SELECT interval '0.49999 day'
 ----
-0 years 0 mons 0 days 11 hours 59 mins 59.136000000 secs
+11 hours 59 mins 59.136000000 secs
 
 query ?
 SELECT interval '0.49999999999 day'
 ----
-0 years 0 mons 0 days 11 hours 59 mins 59.999999136 secs
+11 hours 59 mins 59.999999136 secs
 
 query ?
 SELECT interval '5 day'
 ----
-0 years 0 mons 5 days 0 hours 0 mins 0.000000000 secs
-
-# Hour is ignored, this matches PostgreSQL
-query ?
-SELECT interval '5 day' hour
-----
-0 years 0 mons 5 days 0 hours 0 mins 0.000000000 secs
+5 days
 
 query ?
 SELECT interval '5 day 4 hours 3 minutes 2 seconds 100 milliseconds'
 ----
-0 years 0 mons 5 days 4 hours 3 mins 2.100000000 secs
+5 days 4 hours 3 mins 2.100000000 secs
 
 query ?
 SELECT interval '0.5 month'
 ----
-0 years 0 mons 15 days 0 hours 0 mins 0.000000000 secs
+15 days
 
 query ?
 SELECT interval '0.5' month
 ----
-0 years 0 mons 15 days 0 hours 0 mins 0.000000000 secs
+15 days
 
 query ?
 SELECT interval '1 month'
 ----
-0 years 1 mons 0 days 0 hours 0 mins 0.000000000 secs
+1 mons
 
 query ?
 SELECT interval '1' MONTH
 ----
-0 years 1 mons 0 days 0 hours 0 mins 0.000000000 secs
+1 mons
 
 query ?
 SELECT interval '5 month'
 ----
-0 years 5 mons 0 days 0 hours 0 mins 0.000000000 secs
+5 mons
 
 query ?
 SELECT interval '13 month'
 ----
-0 years 13 mons 0 days 0 hours 0 mins 0.000000000 secs
+13 mons
 
 query ?
 SELECT interval '0.5 year'
 ----
-0 years 6 mons 0 days 0 hours 0 mins 0.000000000 secs
+6 mons
 
 query ?
 SELECT interval '1 year'
 ----
-0 years 12 mons 0 days 0 hours 0 mins 0.000000000 secs
+12 mons
 
 query ?
 SELECT interval '1 decade'
 ----
-0 years 120 mons 0 days 0 hours 0 mins 0.000000000 secs
+120 mons
 
 query ?
 SELECT interval '2 decades'
 ----
-0 years 240 mons 0 days 0 hours 0 mins 0.000000000 secs
+240 mons
 
 query ?
 SELECT interval '1 century'
 ----
-0 years 1200 mons 0 days 0 hours 0 mins 0.000000000 secs
+1200 mons
 
 query ?
 SELECT interval '2 year'
 ----
-0 years 24 mons 0 days 0 hours 0 mins 0.000000000 secs
+24 mons
 
 query ?
 SELECT interval '1 year 1 day'
 ----
-0 years 12 mons 1 days 0 hours 0 mins 0.000000000 secs
+12 mons 1 days
 
 query ?
 SELECT interval '1 year 1 day 1 hour'
 ----
-0 years 12 mons 1 days 1 hours 0 mins 0.000000000 secs
+12 mons 1 days 1 hours
 
 query ?
 SELECT interval '1 year 1 day 1 hour 1 minute'
 ----
-0 years 12 mons 1 days 1 hours 1 mins 0.000000000 secs
+12 mons 1 days 1 hours 1 mins
 
 query ?
 SELECT interval '1 year 1 day 1 hour 1 minute 1 second'
 ----
-0 years 12 mons 1 days 1 hours 1 mins 1.000000000 secs
+12 mons 1 days 1 hours 1 mins 1.000000000 secs
 
 query I
 SELECT ascii('')
@@ -329,6 +323,16 @@ query I
 SELECT ascii('x')
 ----
 120
+
+query I
+SELECT ascii('222')
+----
+50
+
+query I
+SELECT ascii('0xa') 
+----
+48
 
 query I
 SELECT ascii(NULL)
@@ -365,10 +369,15 @@ SELECT bit_length('josé')
 ----
 40
 
-query ?
+query I
 SELECT bit_length(NULL)
 ----
 NULL
+
+query I
+SELECT bit_length(arrow_cast('jonathan', 'Utf8View'));
+----
+64
 
 query T
 SELECT btrim(' xyxtrimyyx ', NULL)
@@ -395,7 +404,7 @@ SELECT btrim('\nxyxtrimyyx\n', 'xyz\n')
 ----
 trim
 
-query ?
+query T
 SELECT btrim(NULL, 'xyz')
 ----
 NULL
@@ -415,10 +424,12 @@ SELECT chr(CAST(NULL AS int))
 ----
 NULL
 
-statement error DataFusion error: Execution error: null character not permitted.
+query T
 SELECT chr(CAST(0 AS int))
+----
+\0
 
-statement error DataFusion error: Execution error: requested character too large for encoding.
+statement error DataFusion error: Execution error: invalid Unicode scalar value: 9223372036854775807
 SELECT chr(CAST(9223372036854775807 AS bigint))
 
 query T
@@ -466,6 +477,23 @@ SELECT concat_ws('|','a',NULL,NULL)
 ----
 a
 
+statement ok
+create table foo (a varchar, b varchar) as values ('a', 'b');
+
+
+query T
+SELECT concat_ws('', a, b,'c') from foo
+----
+abc
+
+query T
+SELECT concat_ws('',arrow_cast(a, 'Utf8View'),arrow_cast(b, 'Utf8View'),'c') from foo
+----
+abc
+
+statement ok
+drop table foo
+
 query T
 SELECT initcap('')
 ----
@@ -476,7 +504,7 @@ SELECT initcap('hi THOMAS')
 ----
 Hi Thomas
 
-query ?
+query T
 SELECT initcap(NULL)
 ----
 NULL
@@ -491,7 +519,7 @@ SELECT lower('TOM')
 ----
 tom
 
-query ?
+query T
 SELECT lower(NULL)
 ----
 NULL
@@ -511,7 +539,7 @@ SELECT ltrim('zzzytest', 'xyz')
 ----
 test
 
-query ?
+query T
 SELECT ltrim(NULL, 'xyz')
 ----
 NULL
@@ -531,7 +559,7 @@ SELECT octet_length('josé')
 ----
 5
 
-query ?
+query I
 SELECT octet_length(NULL)
 ----
 NULL
@@ -551,10 +579,18 @@ SELECT repeat('Pg', CAST(NULL AS INT))
 ----
 NULL
 
-query ?
+query T
 SELECT repeat(NULL, 4)
 ----
 NULL
+
+query T
+select repeat('-1.2', arrow_cast(3, 'Int32'));
+----
+-1.2-1.2-1.2
+
+query error DataFusion error: Error during planning: Internal error: Expect TypeSignatureClass::Native\(LogicalType\(Native\(Int64\), Int64\)\) but received NativeType::Float64, DataType: Float64
+select repeat('-1.2', 3.2);
 
 query T
 SELECT replace('abcdefabcdef', 'cd', 'XX')
@@ -576,7 +612,7 @@ SELECT replace('abcdefabcdef', NULL, 'XX')
 ----
 NULL
 
-query ?
+query T
 SELECT replace(NULL, 'cd', 'XX')
 ----
 NULL
@@ -596,7 +632,7 @@ SELECT rtrim('testxxzx', 'xyz')
 ----
 test
 
-query ?
+query T
 SELECT rtrim(NULL, 'xyz')
 ----
 NULL
@@ -611,7 +647,7 @@ SELECT split_part('abc~@~def~@~ghi', '~@~', 20)
 ----
 (empty)
 
-query ?
+query T
 SELECT split_part(NULL, '~@~', 20)
 ----
 NULL
@@ -661,6 +697,11 @@ NULL
 
 query T
 SELECT to_hex(2147483647)
+----
+7fffffff
+
+query T
+SELECT to_hex(CAST(2147483647 as BIGINT UNSIGNED))
 ----
 7fffffff
 
@@ -788,7 +829,7 @@ SELECT upper('tom')
 ----
 TOM
 
-query ?
+query T
 SELECT upper(NULL)
 ----
 NULL
@@ -824,675 +865,6 @@ SELECT
     TRY_CAST('x' AS INT) as d
 ----
 0 NULL 0 NULL
-
-# test_extract_date_part
-
-query error
-SELECT EXTRACT("'''year'''" FROM  timestamp '2020-09-08T12:00:00+00:00')
-
-query error
-SELECT EXTRACT("'year'" FROM  timestamp '2020-09-08T12:00:00+00:00')
-
-query R
-SELECT date_part('YEAR', CAST('2000-01-01' AS DATE))
-----
-2000
-
-query R
-SELECT EXTRACT(year FROM  timestamp '2020-09-08T12:00:00+00:00')
-----
-2020
-
-query R
-SELECT EXTRACT("year" FROM  timestamp '2020-09-08T12:00:00+00:00')
-----
-2020
-
-query error
-SELECT EXTRACT('year' FROM  timestamp '2020-09-08T12:00:00+00:00')
-
-query R
-SELECT date_part('QUARTER', CAST('2000-01-01' AS DATE))
-----
-1
-
-query R
-SELECT EXTRACT(quarter FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-3
-
-query R
-SELECT EXTRACT("quarter" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-3
-
-query error
-SELECT EXTRACT('quarter' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('MONTH', CAST('2000-01-01' AS DATE))
-----
-1
-
-query R
-SELECT EXTRACT(month FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-9
-
-query R
-SELECT EXTRACT("month" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-9
-
-query error
-SELECT EXTRACT('month' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('WEEK', CAST('2003-01-01' AS DATE))
-----
-1
-
-query R
-SELECT EXTRACT(WEEK FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-37
-
-query R
-SELECT EXTRACT("WEEK" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-37
-
-query error
-SELECT EXTRACT('WEEK' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('DAY', CAST('2000-01-01' AS DATE))
-----
-1
-
-query R
-SELECT EXTRACT(day FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-8
-
-query R
-SELECT EXTRACT("day" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-8
-
-query error
-SELECT EXTRACT('day' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('DOY', CAST('2000-01-01' AS DATE))
-----
-1
-
-query R
-SELECT EXTRACT(doy FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-252
-
-query R
-SELECT EXTRACT("doy" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-252
-
-query error
-SELECT EXTRACT('doy' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('DOW', CAST('2000-01-01' AS DATE))
-----
-6
-
-query R
-SELECT EXTRACT(dow FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-2
-
-query R
-SELECT EXTRACT("dow" FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-----
-2
-
-query error
-SELECT EXTRACT('dow' FROM to_timestamp('2020-09-08T12:00:00+00:00'))
-
-query R
-SELECT date_part('HOUR', CAST('2000-01-01' AS DATE))
-----
-0
-
-query R
-SELECT EXTRACT(hour FROM to_timestamp('2020-09-08T12:03:03+00:00'))
-----
-12
-
-query R
-SELECT EXTRACT("hour" FROM to_timestamp('2020-09-08T12:03:03+00:00'))
-----
-12
-
-query error
-SELECT EXTRACT('hour' FROM to_timestamp('2020-09-08T12:03:03+00:00'))
-
-query R
-SELECT EXTRACT(minute FROM to_timestamp('2020-09-08T12:12:00+00:00'))
-----
-12
-
-query R
-SELECT EXTRACT("minute" FROM to_timestamp('2020-09-08T12:12:00+00:00'))
-----
-12
-
-query error
-SELECT EXTRACT('minute' FROM to_timestamp('2020-09-08T12:12:00+00:00'))
-
-query R
-SELECT date_part('minute', to_timestamp('2020-09-08T12:12:00+00:00'))
-----
-12
-
-query R
-SELECT EXTRACT(second FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12.12345678
-
-query R
-SELECT EXTRACT(millisecond FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123.45678
-
-query R
-SELECT EXTRACT(microsecond FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456.78
-
-query R
-SELECT EXTRACT(nanosecond FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456780
-
-query R
-SELECT EXTRACT("second" FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12.12345678
-
-query R
-SELECT EXTRACT("millisecond" FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123.45678
-
-query R
-SELECT EXTRACT("microsecond" FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456.78
-
-query R
-SELECT EXTRACT("nanosecond" FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456780
-
-query error
-SELECT EXTRACT('second' FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-
-query error
-SELECT EXTRACT('millisecond' FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-
-query error
-SELECT EXTRACT('microsecond' FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-
-query error
-SELECT EXTRACT('nanosecond' FROM timestamp '2020-09-08T12:00:12.12345678+00:00')
-
-# Keep precision when coercing Utf8 to Timestamp
-query R
-SELECT date_part('second', timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12.12345678
-
-query R
-SELECT date_part('millisecond', timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123.45678
-
-query R
-SELECT date_part('microsecond', timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456.78
-
-query R
-SELECT date_part('nanosecond', timestamp '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456780
-
-query R
-SELECT date_part('second', '2020-09-08T12:00:12.12345678+00:00')
-----
-12.12345678
-
-query R
-SELECT date_part('millisecond', '2020-09-08T12:00:12.12345678+00:00')
-----
-12123.45678
-
-query R
-SELECT date_part('microsecond', '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456.78
-
-query R
-SELECT date_part('nanosecond', '2020-09-08T12:00:12.12345678+00:00')
-----
-12123456780
-
-# test_date_part_time
-
-## time32 seconds
-query R
-SELECT date_part('hour', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-23
-
-query R
-SELECT extract(hour from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-23
-
-query R
-SELECT date_part('minute', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-32
-
-query R
-SELECT extract(minute from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-32
-
-query R
-SELECT date_part('second', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50
-
-query R
-SELECT extract(second from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50
-
-query R
-SELECT date_part('millisecond', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000
-
-query R
-SELECT extract(millisecond from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000
-
-query R
-SELECT date_part('microsecond', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000000
-
-query R
-SELECT extract(microsecond from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000000
-
-query R
-SELECT date_part('nanosecond', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000000000
-
-query R
-SELECT extract(nanosecond from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-50000000000
-
-query R
-SELECT date_part('epoch', arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-84770
-
-query R
-SELECT extract(epoch from arrow_cast('23:32:50'::time, 'Time32(Second)'))
-----
-84770
-
-## time32 milliseconds
-query R
-SELECT date_part('hour', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-23
-
-query R
-SELECT extract(hour from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-23
-
-query R
-SELECT date_part('minute', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-32
-
-query R
-SELECT extract(minute from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-32
-
-query R
-SELECT date_part('second', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50.123
-
-query R
-SELECT extract(second from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50.123
-
-query R
-SELECT date_part('millisecond', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123
-
-query R
-SELECT extract(millisecond from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123
-
-query R
-SELECT date_part('microsecond', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123000
-
-query R
-SELECT extract(microsecond from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123000
-
-query R
-SELECT date_part('nanosecond', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123000000
-
-query R
-SELECT extract(nanosecond from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-50123000000
-
-query R
-SELECT date_part('epoch', arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-84770.123
-
-query R
-SELECT extract(epoch from arrow_cast('23:32:50.123'::time, 'Time32(Millisecond)'))
-----
-84770.123
-
-## time64 microseconds
-query R
-SELECT date_part('hour', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-23
-
-query R
-SELECT extract(hour from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-23
-
-query R
-SELECT date_part('minute', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-32
-
-query R
-SELECT extract(minute from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-32
-
-query R
-SELECT date_part('second', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50.123456
-
-query R
-SELECT extract(second from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50.123456
-
-query R
-SELECT date_part('millisecond', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123.456
-
-query R
-SELECT extract(millisecond from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123.456
-
-query R
-SELECT date_part('microsecond', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123456
-
-query R
-SELECT extract(microsecond from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123456
-
-query R
-SELECT date_part('nanosecond', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123456000
-
-query R
-SELECT extract(nanosecond from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-50123456000
-
-query R
-SELECT date_part('epoch', arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-84770.123456
-
-query R
-SELECT extract(epoch from arrow_cast('23:32:50.123456'::time, 'Time64(Microsecond)'))
-----
-84770.123456
-
-## time64 nanoseconds
-query R
-SELECT date_part('hour', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-23
-
-query R
-SELECT extract(hour from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-23
-
-query R
-SELECT date_part('minute', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-32
-
-query R
-SELECT extract(minute from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-32
-
-query R
-SELECT date_part('second', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50.123456789
-
-query R
-SELECT extract(second from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50.123456789
-
-query R
-SELECT date_part('millisecond', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123.456789
-
-query R
-SELECT extract(millisecond from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123.456789
-
-# just some floating point stuff happening in the result here
-query R
-SELECT date_part('microsecond', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123456.789000005
-
-query R
-SELECT extract(microsecond from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123456.789000005
-
-query R
-SELECT date_part('nanosecond', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123456789
-
-query R
-SELECT extract(nanosecond from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-50123456789
-
-query R
-SELECT date_part('epoch', arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-84770.123456789
-
-query R
-SELECT extract(epoch from arrow_cast('23:32:50.123456789'::time, 'Time64(Nanosecond)'))
-----
-84770.123456789
-
-# test_extract_epoch
-
-query R
-SELECT extract(epoch from '1870-01-01T07:29:10.256'::timestamp)
-----
--3155646649.744
-
-query R
-SELECT extract(epoch from '2000-01-01T00:00:00.000'::timestamp)
-----
-946684800
-
-query R
-SELECT extract(epoch from to_timestamp('2000-01-01T00:00:00+00:00'))
-----
-946684800
-
-query R
-SELECT extract(epoch from NULL::timestamp)
-----
-NULL
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-01', 'Date32'))
-----
-0
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-02', 'Date32'))
-----
-86400
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-11', 'Date32'))
-----
-864000
-
-query R
-SELECT extract(epoch from arrow_cast('1969-12-31', 'Date32'))
-----
--86400
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-01', 'Date64'))
-----
-0
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-02', 'Date64'))
-----
-86400
-
-query R
-SELECT extract(epoch from arrow_cast('1970-01-11', 'Date64'))
-----
-864000
-
-query R
-SELECT extract(epoch from arrow_cast('1969-12-31', 'Date64'))
-----
--86400
-
-# test_extract_date_part_func
-
-query B
-SELECT (date_part('year', now()) = EXTRACT(year FROM now()))
-----
-true
-
-query B
-SELECT (date_part('quarter', now()) = EXTRACT(quarter FROM now()))
-----
-true
-
-query B
-SELECT (date_part('month', now()) = EXTRACT(month FROM now()))
-----
-true
-
-query B
-SELECT (date_part('week', now()) = EXTRACT(week FROM now()))
-----
-true
-
-query B
-SELECT (date_part('day', now()) = EXTRACT(day FROM now()))
-----
-true
-
-query B
-SELECT (date_part('hour', now()) = EXTRACT(hour FROM now()))
-----
-true
-
-query B
-SELECT (date_part('minute', now()) = EXTRACT(minute FROM now()))
-----
-true
-
-query B
-SELECT (date_part('second', now()) = EXTRACT(second FROM now()))
-----
-true
-
-query B
-SELECT (date_part('millisecond', now()) = EXTRACT(millisecond FROM now()))
-----
-true
-
-query B
-SELECT (date_part('microsecond', now()) = EXTRACT(microsecond FROM now()))
-----
-true
-
-query B
-SELECT (date_part('nanosecond', now()) = EXTRACT(nanosecond FROM now()))
-----
-true
 
 query B
 SELECT 'a' IN ('a','b')
@@ -1694,6 +1066,213 @@ SELECT '2' NOT IN ('a','b',NULL,1)
 ----
 NULL
 
+# ========================================================================
+# Comprehensive IN LIST tests with NULL handling
+# These tests validate SQL three-valued logic for IN operations
+# ========================================================================
+
+# test_in_list_null_literals
+# NULL IN (any_list) should always return NULL per SQL three-valued logic
+
+query B
+SELECT NULL IN (1, 1)
+----
+NULL
+
+query B
+SELECT NULL IN (NULL, 1)
+----
+NULL
+
+query B
+SELECT NULL IN (NULL, NULL)
+----
+NULL
+
+# test_in_list_with_columns
+# Create test table for column-based IN LIST tests
+
+statement ok
+CREATE OR REPLACE TABLE in_list_test(b INT) AS VALUES (1), (2), (3), (4), (NULL);
+
+# Test: b IN (1, 2) with various values
+
+query B
+SELECT b IN (1, 2) FROM in_list_test WHERE b = 1;
+----
+true
+
+query IB
+SELECT b, b IN (1, 2) FROM in_list_test WHERE b IN (1, 2) ORDER BY b;
+----
+1 true
+2 true
+
+query IB
+SELECT b, b IN (1, 2) FROM in_list_test WHERE b IN (3, 4) ORDER BY b;
+----
+3 false
+4 false
+
+query B
+SELECT b IN (1, 2) FROM in_list_test WHERE b = 1;
+----
+true
+
+query B
+SELECT b IN (1, 2) FROM in_list_test WHERE b = 3;
+----
+false
+
+query B
+SELECT b IN (1, 2) FROM in_list_test WHERE b IS NULL;
+----
+NULL
+
+# Test: b IN (NULL, 1) - list contains NULL
+
+query B
+SELECT b IN (NULL, 1) FROM in_list_test WHERE b = 1;
+----
+true
+
+query B
+SELECT b IN (NULL, 1) FROM in_list_test WHERE b = 2;
+----
+NULL
+
+query B
+SELECT b IN (NULL, 1) FROM in_list_test WHERE b IS NULL;
+----
+NULL
+
+# Test: b IN (NULL, NULL) - list contains only NULLs
+
+query B
+SELECT b IN (NULL, NULL) FROM in_list_test WHERE b = 1;
+----
+NULL
+
+query B
+SELECT b IN (NULL, NULL) FROM in_list_test WHERE b IS NULL;
+----
+NULL
+
+# Test: literal IN (list_with_column) - column appears in the list
+
+statement ok
+CREATE OR REPLACE TABLE in_list_col_test(b INT) AS VALUES (1), (3), (NULL);
+
+query B
+SELECT 1 IN (2, b) FROM in_list_col_test WHERE b = 1;
+----
+true
+
+query B
+SELECT 1 IN (2, b) FROM in_list_col_test WHERE b = 3;
+----
+false
+
+query B
+SELECT 1 IN (2, b) FROM in_list_col_test WHERE b IS NULL;
+----
+NULL
+
+# Test: b IN (1, b) - column references itself in list
+
+query B
+SELECT b IN (1, b) FROM in_list_col_test WHERE b = 1;
+----
+true
+
+query B
+SELECT b IN (1, b) FROM in_list_col_test WHERE b = 3;
+----
+true
+
+query B
+SELECT b IN (1, b) FROM in_list_col_test WHERE b IS NULL;
+----
+NULL
+
+# test_in_list_tuples
+# Test tuple/row-wise IN comparisons using struct syntax
+# Note: Using arrow_cast for precise type control
+
+# (NULL, NULL) IN ((1, 2)) => FALSE
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), arrow_cast(NULL, 'Int32')) IN (struct(1, 2))
+----
+false
+
+# (NULL, NULL) IN ((NULL, 1)) => FALSE
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), arrow_cast(NULL, 'Int32')) IN (struct(arrow_cast(NULL, 'Int32'), 1))
+----
+false
+
+# (NULL, NULL) IN ((NULL, NULL)) => TRUE (exact match)
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), arrow_cast(NULL, 'Int32')) IN (struct(arrow_cast(NULL, 'Int32'), arrow_cast(NULL, 'Int32')))
+----
+true
+
+# (NULL, 1) IN ((1, 2)) => FALSE
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), 1) IN (struct(1, 2))
+----
+false
+
+# (NULL, 1) IN ((NULL, 1)) => TRUE (exact match)
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), 1) IN (struct(arrow_cast(NULL, 'Int32'), 1))
+----
+true
+
+# (NULL, 1) IN ((NULL, NULL)) => FALSE
+query B
+SELECT struct(arrow_cast(NULL, 'Int32'), 1) IN (struct(arrow_cast(NULL, 'Int32'), arrow_cast(NULL, 'Int32')))
+----
+false
+
+# (1, 2) IN ((1, 2)) => TRUE
+query B
+SELECT struct(1, 2) IN (struct(1, 2))
+----
+true
+
+# (1, 3) IN ((1, 2)) => FALSE
+query B
+SELECT struct(1, 3) IN (struct(1, 2))
+----
+false
+
+# (4, 4) IN ((1, 2)) => FALSE
+query B
+SELECT struct(4, 4) IN (struct(1, 2))
+----
+false
+
+# (1, 1) IN ((NULL, 1)) => FALSE
+query B
+SELECT struct(1, 1) IN (struct(NULL, 1))
+----
+false
+
+# (1, 1) IN ((NULL, NULL)) => FALSE
+query B
+SELECT struct(1, 1) IN (struct(NULL, NULL))
+----
+false
+
+# Cleanup test tables
+
+statement ok
+DROP TABLE in_list_test;
+
+statement ok
+DROP TABLE in_list_col_test;
+
 query T
 SELECT encode('tom','base64');
 ----
@@ -1774,7 +1353,7 @@ SELECT arrow_cast(decode(arrow_cast('746f6d', 'LargeBinary'),'hex'), 'Utf8');
 ----
 tom
 
-query ?
+query T
 SELECT encode(NULL,'base64');
 ----
 NULL
@@ -1784,7 +1363,7 @@ SELECT decode(NULL,'base64');
 ----
 NULL
 
-query ?
+query T
 SELECT encode(NULL,'hex');
 ----
 NULL
@@ -1819,6 +1398,11 @@ SELECT md5('tom');
 ----
 34b7da764b21d298ef307d04d8152dc5
 
+query T
+SELECT md5(arrow_cast('tom', 'Dictionary(Int32, Utf8)'));
+----
+34b7da764b21d298ef307d04d8152dc5
+
 query ?
 SELECT digest('tom','md5');
 ----
@@ -1829,7 +1413,7 @@ SELECT md5('');
 ----
 d41d8cd98f00b204e9800998ecf8427e
 
-query ?
+query T
 SELECT md5(NULL);
 ----
 NULL
@@ -1999,6 +1583,11 @@ SELECT digest('','blake3');
 ----
 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
+# vverify utf8view
+query ?
+SELECT sha224(arrow_cast('tom', 'Utf8View'));
+----
+0bf6cb62649c42a9ae3876ab6f6d92ad36cb5414e495f8873292be4d
 
 query T
 SELECT substring('alphabet', 1)
@@ -2222,6 +1811,112 @@ select NULL < column1 from (VALUES (true), (false)) as t;
 NULL
 NULL
 
+#### comparisons_with_spaceship_operator
+
+# Basic comparisons
+query B
+select 1 <=> 1;
+----
+true
+
+query B
+select 1 <=> 2;
+----
+false
+
+# NULL handling
+query B
+select NULL <=> NULL;
+----
+true
+
+query B
+select 1 <=> NULL;
+----
+false
+
+query B
+select NULL <=> 1;
+----
+false
+
+# Table comparisons
+query B
+select column1 <=> column2 from (VALUES (1, 1), (2, 3), (NULL, NULL)) as t;
+----
+true
+false 
+true
+
+# Sanity test - comparing <=> with equivalent expression
+query B
+SELECT 
+  (column1 <=> column2) = 
+  (IFNULL(column1, false) = IFNULL(column2, false)) AS comparison_result
+FROM (VALUES 
+  (1, 1),      -- equal values
+  (1, 2),      -- different values
+  (NULL, NULL), -- both NULL
+  (1, NULL),    -- first not NULL, second NULL
+  (NULL, 1)     -- first NULL, second not NULL
+) AS t(column1, column2);
+----
+true
+true
+true
+true
+true
+
+#### Other binary operators
+
+# ArrowAt for strings
+query error
+select 'foo' <@ 'bar'
+
+# AtArrow for strings
+query error
+select 'foo' @> 'bar'
+
+# AtAt for strings
+query error
+select 'foo' @@ 'bar'
+
+# Arrow for arrays
+query error
+select make_array(1,2,3) -> 2
+
+# LongArrow for arrays
+query error
+select make_array(1,2,3) ->> 2
+
+# HashArrow for structs
+query error
+select struct(1,2,3) #> 0
+
+# HashLongArrow for structs
+query error
+select struct(1,2,3) #>> 0
+
+# HashMinus for structs
+query error
+select struct(1,2,3) #- 0
+
+# AtQuestion for JSON/structs
+query error
+select struct(1,2,3) @? 'a.b.c'
+
+# Question for JSON/structs
+query error
+select struct(1,2,3) ? 'a.b.c'
+
+# QuestionPipe for JSON/structs
+query error
+select struct(1,2,3) ?| array['a','b','c']
+
+# QuestionAnd for JSON/structs
+query error
+select struct(1,2,3) ?& array['a','b','c']
+
 #### binary_mathematical_operator_with_null_lt
 
 # 1. Integer and NULL
@@ -2356,7 +2051,7 @@ CREATE TABLE t_source(
     column1 String,
     column2 String,
     column3 String,
-    column4 String,
+    column4 String
 ) AS VALUES
 ('one', 'one', 'one', 'one'),
 ('two', 'two', '', 'two'),
@@ -2440,7 +2135,7 @@ select struct(time,load1,load2,host) from t1;
 {c0: 2018-05-22T19:53:26, c1: 1.1, c2: 101.0, c3: host1}
 {c0: 2018-05-22T19:53:26, c1: 2.2, c2: 202.0, c3: host2}
 {c0: 2018-05-22T19:53:26, c1: 3.3, c2: 303.0, c3: host3}
-{c0: 2018-05-22T19:53:26, c1: 1.1, c2: 101.0, c3: }
+{c0: 2018-05-22T19:53:26, c1: 1.1, c2: 101.0, c3: NULL}
 
 # can have an aggregate function with an inner coalesce
 query TR
@@ -2473,7 +2168,7 @@ host2 202
 host3 303
 
 # TODO: Issue tracked in https://github.com/apache/datafusion/issues/10364
-query error
+query TR
 select 
     t2.server['c3'] as host, 
     sum((
@@ -2488,6 +2183,10 @@ select
     ) t2 
     where t2.server['c3'] IS NOT NULL 
     group by t2.server['c3'] order by host;
+----
+host1 101
+host2 202
+host3 303
 
 # can have 2 projections with aggr(short_circuited), with different short-circuited expr
 query TRR
@@ -2559,7 +2258,7 @@ host2 2.2 202
 host3 3.3 303
 
 # TODO: Issue tracked in https://github.com/apache/datafusion/issues/10364
-query error
+query TRR
 select 
     t2.server['c3'] as host, 
     sum((
@@ -2579,6 +2278,10 @@ select
     ) t2 
     where t2.server['c3'] IS NOT NULL 
     group by t2.server['c3'] order by host;
+----
+host1 1.1 101
+host2 2.2 202
+host3 3.3 303
 
 # can have 2 projections with aggr(short_circuited), with the same short-circuited expr (e.g. coalesce)
 query TRR
@@ -2587,3 +2290,75 @@ select t2."struct(t1.time,t1.load1,t1.load2,t1.host)"['c3'] as host, sum(coalesc
 host1 1.1 101
 host2 2.2 202
 host3 3.3 303
+
+statement ok
+create table t (a float) as values (1), (2), (3);
+
+query TT
+explain select min(a) filter (where a > 1) as x from t;
+----
+logical_plan
+01)Projection: min(t.a) FILTER (WHERE t.a > Int64(1)) AS x
+02)--Aggregate: groupBy=[[]], aggr=[[min(t.a) FILTER (WHERE t.a > Float32(1)) AS min(t.a) FILTER (WHERE t.a > Int64(1))]]
+03)----TableScan: t projection=[a]
+physical_plan
+01)ProjectionExec: expr=[min(t.a) FILTER (WHERE t.a > Int64(1))@0 as x]
+02)--AggregateExec: mode=Single, gby=[], aggr=[min(t.a) FILTER (WHERE t.a > Int64(1))]
+03)----DataSourceExec: partitions=1, partition_sizes=[1]
+
+
+statement ok
+drop table t;
+
+# test between expression with null
+query I
+select 1 where null between null and null;
+----
+
+query T
+select 'A' where null between null and null;
+----
+
+query I
+select 1 where null between null and 2;
+----
+
+query T
+select 'A' where null between 2 and null;
+----
+
+### Demonstrate use of E literals for escaping
+# should not have literal tab
+query T
+select 'foo\t\tbar';
+----
+foo\t\tbar
+
+# should have literal tab
+query T
+select E'foo\t\tbar';
+----
+foo		bar
+
+statement ok
+create table t (a float) as values (1), (null), (3);
+
+# https://github.com/apache/datafusion/issues/17055
+# is not null did not correctly infer as boolean in udf argument position
+query B
+select greatest(a is not null, false) from t;
+----
+true
+false
+true
+
+# same for is null
+query B
+select greatest(a is null, false) from t;
+----
+false
+true
+false
+
+statement ok
+drop table t;

@@ -15,66 +15,121 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Column expression
+//! Physical column reference: [`Column`]
 
 use std::any::Any;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::physical_expr::down_cast_any_ref;
-use crate::PhysicalExpr;
-
+use crate::physical_expr::PhysicalExpr;
+use arrow::datatypes::FieldRef;
 use arrow::{
-    datatypes::{DataType, Schema},
+    datatypes::{DataType, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use datafusion_common::{internal_err, Result};
+use datafusion_common::tree_node::{Transformed, TreeNode};
+use datafusion_common::{Result, internal_err, plan_err};
 use datafusion_expr::ColumnarValue;
 
+/// Represents the column at a given index in a RecordBatch
+///
+/// This is a physical expression that represents a column at a given index in an
+/// arrow [`Schema`] / [`RecordBatch`].
+///
+/// Unlike the [logical `Expr::Column`], this expression is always resolved by schema index,
+/// even though it does have a name. This is because the physical plan is always
+/// resolved to a specific schema and there is no concept of "relation"
+///
+/// # Example:
+///  If the schema is `a`, `b`, `c` the `Column` for `b` would be represented by
+///  index 1, since `b` is the second column in the schema.
+///
+/// ```
+/// # use datafusion_physical_expr::expressions::Column;
+/// # use arrow::datatypes::{DataType, Field, Schema};
+/// // Schema with columns a, b, c
+/// let schema = Schema::new(vec![
+///     Field::new("a", DataType::Int32, false),
+///     Field::new("b", DataType::Int32, false),
+///     Field::new("c", DataType::Int32, false),
+/// ]);
+///
+/// // reference to column b is index 1
+/// let column_b = Column::new_with_schema("b", &schema).unwrap();
+/// assert_eq!(column_b.index(), 1);
+///
+/// // reference to column c is index 2
+/// let column_c = Column::new_with_schema("c", &schema).unwrap();
+/// assert_eq!(column_c.index(), 2);
+/// ```
+/// [logical `Expr::Column`]: https://docs.rs/datafusion/latest/datafusion/logical_expr/enum.Expr.html#variant.Column
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct UnKnownColumn {
+pub struct Column {
+    /// The name of the column (used for debugging and display purposes)
     name: String,
+    /// The index of the column in its schema
+    index: usize,
 }
 
-impl UnKnownColumn {
-    /// Create a new unknown column expression
-    pub fn new(name: &str) -> Self {
+impl Column {
+    /// Create a new column expression which references the
+    /// column with the given index in the schema.
+    pub fn new(name: &str, index: usize) -> Self {
         Self {
             name: name.to_owned(),
+            index,
         }
     }
 
-    /// Get the column name
+    /// Create a new column expression which references the
+    /// column with the given name in the schema
+    pub fn new_with_schema(name: &str, schema: &Schema) -> Result<Self> {
+        Ok(Column::new(name, schema.index_of(name)?))
+    }
+
+    /// Get the column's name
     pub fn name(&self) -> &str {
         &self.name
     }
-}
 
-impl std::fmt::Display for UnKnownColumn {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.name)
+    /// Get the column's schema index
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
-impl PhysicalExpr for UnKnownColumn {
+impl std::fmt::Display for Column {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}@{}", self.name, self.index)
+    }
+}
+
+impl PhysicalExpr for Column {
     /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
     /// Get the data type of this expression, given the schema of the input
-    fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
-        Ok(DataType::Null)
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        self.bounds_check(input_schema)?;
+        Ok(input_schema.field(self.index).data_type().clone())
     }
 
-    /// Decide whehter this expression is nullable, given the schema of the input
-    fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
-        Ok(true)
+    /// Decide whether this expression is nullable, given the schema of the input
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.bounds_check(input_schema)?;
+        Ok(input_schema.field(self.index).is_nullable())
     }
 
     /// Evaluate the expression
-    fn evaluate(&self, _batch: &RecordBatch) -> Result<ColumnarValue> {
-        internal_err!("UnKnownColumn::evaluate() should not be called")
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        self.bounds_check(batch.schema().as_ref())?;
+        Ok(ColumnarValue::Array(Arc::clone(batch.column(self.index))))
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> Result<FieldRef> {
+        Ok(input_schema.field(self.index).clone().into())
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -88,30 +143,71 @@ impl PhysicalExpr for UnKnownColumn {
         Ok(self)
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.hash(&mut s);
+    fn fmt_sql(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
     }
 }
 
-impl PartialEq<dyn Any> for UnKnownColumn {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self == x)
-            .unwrap_or(false)
+impl Column {
+    fn bounds_check(&self, input_schema: &Schema) -> Result<()> {
+        if self.index < input_schema.fields.len() {
+            Ok(())
+        } else {
+            internal_err!(
+                "PhysicalExpr Column references column '{}' at index {} (zero-based) but input schema only has {} columns: {:?}",
+                self.name,
+                self.index,
+                input_schema.fields.len(),
+                input_schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>()
+            )
+        }
     }
+}
+
+/// Create a column expression
+pub fn col(name: &str, schema: &Schema) -> Result<Arc<dyn PhysicalExpr>> {
+    Ok(Arc::new(Column::new_with_schema(name, schema)?))
+}
+
+/// Rewrites an expression according to new schema; i.e. changes the columns it
+/// refers to with the column at corresponding index in the new schema. Returns
+/// an error if the given schema has fewer columns than the original schema.
+/// Note that the resulting expression may not be valid if data types in the
+/// new schema is incompatible with expression nodes.
+pub fn with_new_schema(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &SchemaRef,
+) -> Result<Arc<dyn PhysicalExpr>> {
+    Ok(expr
+        .transform_up(|expr| {
+            if let Some(col) = expr.as_any().downcast_ref::<Column>() {
+                let idx = col.index();
+                let Some(field) = schema.fields().get(idx) else {
+                    return plan_err!(
+                        "New schema has fewer columns than original schema"
+                    );
+                };
+                let new_col = Column::new(field.name(), idx);
+                Ok(Transformed::yes(Arc::new(new_col) as _))
+            } else {
+                Ok(Transformed::no(expr))
+            }
+        })?
+        .data)
 }
 
 #[cfg(test)]
 mod test {
-    use crate::expressions::Column;
-    use crate::PhysicalExpr;
+    use super::Column;
+    use crate::physical_expr::PhysicalExpr;
 
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use datafusion_common::Result;
 
     use std::sync::Arc;
 
@@ -121,8 +217,9 @@ mod test {
         let col = Column::new("id", 9);
         let error = col.data_type(&schema).expect_err("error").strip_backtrace();
         assert!("Internal error: PhysicalExpr Column references column 'id' at index 9 (zero-based) \
-            but input schema only has 1 columns: [\"foo\"].\nThis was likely caused by a bug in \
-            DataFusion's code and we would welcome that you file an bug report in our issue tracker".starts_with(&error))
+             but input schema only has 1 columns: [\"foo\"].\nThis issue was likely caused by a bug \
+             in DataFusion's code. Please help us to resolve this by filing a bug report \
+             in our issue tracker: https://github.com/apache/datafusion/issues".starts_with(&error))
     }
 
     #[test]
@@ -131,20 +228,21 @@ mod test {
         let col = Column::new("id", 9);
         let error = col.nullable(&schema).expect_err("error").strip_backtrace();
         assert!("Internal error: PhysicalExpr Column references column 'id' at index 9 (zero-based) \
-            but input schema only has 1 columns: [\"foo\"].\nThis was likely caused by a bug in \
-            DataFusion's code and we would welcome that you file an bug report in our issue tracker".starts_with(&error))
+             but input schema only has 1 columns: [\"foo\"].\nThis issue was likely caused by a bug \
+             in DataFusion's code. Please help us to resolve this by filing a bug report \
+             in our issue tracker: https://github.com/apache/datafusion/issues".starts_with(&error));
     }
 
     #[test]
-    fn out_of_bounds_evaluate() -> Result<()> {
+    fn out_of_bounds_evaluate() {
         let schema = Schema::new(vec![Field::new("foo", DataType::Utf8, true)]);
         let data: StringArray = vec!["data"].into();
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)])?;
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)]).unwrap();
         let col = Column::new("id", 9);
         let error = col.evaluate(&batch).expect_err("error").strip_backtrace();
         assert!("Internal error: PhysicalExpr Column references column 'id' at index 9 (zero-based) \
-            but input schema only has 1 columns: [\"foo\"].\nThis was likely caused by a bug in \
-            DataFusion's code and we would welcome that you file an bug report in our issue tracker".starts_with(&error));
-        Ok(())
+             but input schema only has 1 columns: [\"foo\"].\nThis issue was likely caused by a bug \
+             in DataFusion's code. Please help us to resolve this by filing a bug report \
+             in our issue tracker: https://github.com/apache/datafusion/issues".starts_with(&error));
     }
 }

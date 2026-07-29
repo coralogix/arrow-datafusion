@@ -20,13 +20,14 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{DisplayAs, ExecutionMode, PlanProperties, SendableRecordBatchStream};
+use super::{DisplayAs, PlanProperties, SendableRecordBatchStream};
+use crate::execution_plan::{Boundedness, EmissionType};
 use crate::stream::RecordBatchStreamAdapter;
 use crate::{DisplayFormatType, ExecutionPlan, Partitioning};
 
 use arrow::{array::StringBuilder, datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion_common::display::StringifiedPlan;
-use datafusion_common::{internal_err, Result};
+use datafusion_common::{Result, assert_eq_or_internal_err};
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::EquivalenceProperties;
 
@@ -53,7 +54,7 @@ impl ExplainExec {
         stringified_plans: Vec<StringifiedPlan>,
         verbose: bool,
     ) -> Self {
-        let cache = Self::compute_properties(schema.clone());
+        let cache = Self::compute_properties(Arc::clone(&schema));
         ExplainExec {
             schema,
             stringified_plans,
@@ -67,18 +68,18 @@ impl ExplainExec {
         &self.stringified_plans
     }
 
-    /// access to verbose
+    /// Access to verbose
     pub fn verbose(&self) -> bool {
         self.verbose
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Final,
+            Boundedness::Bounded,
         )
     }
 }
@@ -92,6 +93,10 @@ impl DisplayAs for ExplainExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ExplainExec")
+            }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
             }
         }
     }
@@ -112,7 +117,7 @@ impl ExecutionPlan for ExplainExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        // this is a leaf node and has no children
+        // This is a leaf node and has no children
         vec![]
     }
 
@@ -128,11 +133,17 @@ impl ExecutionPlan for ExplainExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        trace!("Start ExplainExec::execute for partition {} of context session_id {} and task_id {:?}", partition, context.session_id(), context.task_id());
-        if 0 != partition {
-            return internal_err!("ExplainExec invalid partition {partition}");
-        }
-
+        trace!(
+            "Start ExplainExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
+        assert_eq_or_internal_err!(
+            partition,
+            0,
+            "ExplainExec invalid partition {partition}"
+        );
         let mut type_builder =
             StringBuilder::with_capacity(self.stringified_plans.len(), 1024);
         let mut plan_builder =
@@ -160,7 +171,7 @@ impl ExecutionPlan for ExplainExec {
         }
 
         let record_batch = RecordBatch::try_new(
-            self.schema.clone(),
+            Arc::clone(&self.schema),
             vec![
                 Arc::new(type_builder.finish()),
                 Arc::new(plan_builder.finish()),
@@ -168,10 +179,14 @@ impl ExecutionPlan for ExplainExec {
         )?;
 
         trace!(
-            "Before returning RecordBatchStream in ExplainExec::execute for partition {} of context session_id {} and task_id {:?}", partition, context.session_id(), context.task_id());
+            "Before returning RecordBatchStream in ExplainExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
+            Arc::clone(&self.schema),
             futures::stream::iter(vec![Ok(record_batch)]),
         )))
     }

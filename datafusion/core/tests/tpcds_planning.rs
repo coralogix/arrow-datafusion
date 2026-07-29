@@ -229,9 +229,6 @@ async fn tpcds_logical_q40() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore]
-// Optimizer rule 'scalar_subquery_to_join' failed: Optimizing disjunctions not supported!
-// issue: https://github.com/apache/datafusion/issues/5368
 async fn tpcds_logical_q41() -> Result<()> {
     create_logical_plan(41).await
 }
@@ -571,7 +568,6 @@ async fn tpcds_physical_q9() -> Result<()> {
     create_physical_plan(9).await
 }
 
-#[ignore] // Physical plan does not support logical expression Exists(<subquery>)
 #[tokio::test]
 async fn tpcds_physical_q10() -> Result<()> {
     create_physical_plan(10).await
@@ -697,7 +693,6 @@ async fn tpcds_physical_q34() -> Result<()> {
     create_physical_plan(34).await
 }
 
-#[ignore] // Physical plan does not support logical expression Exists(<subquery>)
 #[tokio::test]
 async fn tpcds_physical_q35() -> Result<()> {
     create_physical_plan(35).await
@@ -728,8 +723,6 @@ async fn tpcds_physical_q40() -> Result<()> {
     create_physical_plan(40).await
 }
 
-#[ignore]
-// Context("check_analyzed_plan", Plan("Correlated column is not allowed in predicate: (..)
 #[tokio::test]
 async fn tpcds_physical_q41() -> Result<()> {
     create_physical_plan(41).await
@@ -750,7 +743,6 @@ async fn tpcds_physical_q44() -> Result<()> {
     create_physical_plan(44).await
 }
 
-#[ignore] // Physical plan does not support logical expression (<subquery>)
 #[tokio::test]
 async fn tpcds_physical_q45() -> Result<()> {
     create_physical_plan(45).await
@@ -1044,7 +1036,10 @@ async fn regression_test(query_no: u8, create_physical: bool) -> Result<()> {
     for table in &tables {
         ctx.register_table(
             table.name.as_str(),
-            Arc::new(MemTable::try_new(Arc::new(table.schema.clone()), vec![])?),
+            Arc::new(MemTable::try_new(
+                Arc::new(table.schema.clone()),
+                vec![vec![]],
+            )?),
         )?;
     }
 
@@ -1057,9 +1052,12 @@ async fn regression_test(query_no: u8, create_physical: bool) -> Result<()> {
     for sql in &sql {
         let df = ctx.sql(sql).await?;
         let (state, plan) = df.into_parts();
-        let plan = state.optimize(&plan)?;
         if create_physical {
             let _ = state.create_physical_plan(&plan).await?;
+        } else {
+            // Run the logical optimizer even if we are not creating the physical plan
+            // to ensure it will properly succeed
+            let _ = state.optimize(&plan)?;
         }
     }
 

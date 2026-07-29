@@ -32,5 +32,6 @@ SQL Reference
    aggregate_functions
    window_functions
    scalar_functions
-   sql_status
-   write_options
+   special_functions
+   format_options
+   prepared_statements

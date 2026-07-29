@@ -16,16 +16,16 @@
 // under the License.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
-use arrow::buffer::ScalarBuffer;
+use arrow::array::{
+    Array, ArrowPrimitiveType, GenericByteArray, GenericByteViewArray, OffsetSizeTrait,
+    PrimitiveArray, StringViewArray, types::ByteArrayType,
+};
+use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::ArrowNativeTypeOp;
 use arrow::row::Rows;
-use arrow_array::types::ByteArrayType;
-use arrow_array::{
-    Array, ArrowPrimitiveType, GenericByteArray, OffsetSizeTrait, PrimitiveArray,
-};
-use arrow_buffer::{Buffer, OffsetBuffer};
 use datafusion_execution::memory_pool::MemoryReservation;
 
 /// A comparable collection of values for use with [`Cursor`]
@@ -37,6 +37,10 @@ pub trait CursorValues {
 
     /// Returns true if `l[l_idx] == r[r_idx]`
     fn eq(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> bool;
+
+    /// Returns true if `row[idx] == row[idx - 1]`
+    /// Given `idx` should be greater than 0
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool;
 
     /// Returns comparison of `l[l_idx]` and `r[r_idx]`
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering;
@@ -95,11 +99,37 @@ impl<T: CursorValues> Cursor<T> {
         self.offset += 1;
         t
     }
+
+    pub fn is_eq_to_prev_one(&self, prev_cursor: Option<&Cursor<T>>) -> bool {
+        if self.offset > 0 {
+            self.is_eq_to_prev_row()
+        } else if let Some(prev_cursor) = prev_cursor {
+            self.is_eq_to_prev_row_in_prev_batch(prev_cursor)
+        } else {
+            false
+        }
+    }
 }
 
 impl<T: CursorValues> PartialEq for Cursor<T> {
     fn eq(&self, other: &Self) -> bool {
         T::eq(&self.values, self.offset, &other.values, other.offset)
+    }
+}
+
+impl<T: CursorValues> Cursor<T> {
+    fn is_eq_to_prev_row(&self) -> bool {
+        T::eq_to_previous(&self.values, self.offset)
+    }
+
+    fn is_eq_to_prev_row_in_prev_batch(&self, other: &Self) -> bool {
+        assert_eq!(self.offset, 0);
+        T::eq(
+            &self.values,
+            self.offset,
+            &other.values,
+            other.values.len() - 1,
+        )
     }
 }
 
@@ -122,12 +152,11 @@ impl<T: CursorValues> Ord for Cursor<T> {
 /// Used for sorting when there are multiple columns in the sort key
 #[derive(Debug)]
 pub struct RowValues {
-    rows: Rows,
+    rows: Arc<Rows>,
 
     /// Tracks for the memory used by in the `Rows` of this
     /// cursor. Freed on drop
-    #[allow(dead_code)]
-    reservation: MemoryReservation,
+    _reservation: MemoryReservation,
 }
 
 impl RowValues {
@@ -136,14 +165,17 @@ impl RowValues {
     ///
     /// Panics if the reservation is not for exactly `rows.size()`
     /// bytes or if `rows` is empty.
-    pub fn new(rows: Rows, reservation: MemoryReservation) -> Self {
+    pub fn new(rows: Arc<Rows>, reservation: MemoryReservation) -> Self {
         assert_eq!(
             rows.size(),
             reservation.size(),
             "memory reservation mismatch"
         );
         assert!(rows.num_rows() > 0);
-        Self { rows, reservation }
+        Self {
+            rows,
+            _reservation: reservation,
+        }
     }
 }
 
@@ -154,6 +186,11 @@ impl CursorValues for RowValues {
 
     fn eq(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> bool {
         l.rows.row(l_idx) == r.rows.row(r_idx)
+    }
+
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
+        assert!(idx > 0);
+        cursor.rows.row(idx) == cursor.rows.row(idx - 1)
     }
 
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
@@ -188,6 +225,11 @@ impl<T: ArrowNativeTypeOp> CursorValues for PrimitiveValues<T> {
         l.0[l_idx].is_eq(r.0[r_idx])
     }
 
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
+        assert!(idx > 0);
+        cursor.0[idx].is_eq(cursor.0[idx - 1])
+    }
+
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
         l.0[l_idx].compare(r.0[r_idx])
     }
@@ -219,6 +261,11 @@ impl<T: OffsetSizeTrait> CursorValues for ByteArrayValues<T> {
         l.value(l_idx) == r.value(r_idx)
     }
 
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
+        assert!(idx > 0);
+        cursor.value(idx) == cursor.value(idx - 1)
+    }
+
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
         l.value(l_idx).cmp(r.value(r_idx))
     }
@@ -235,6 +282,78 @@ impl<T: ByteArrayType> CursorArray for GenericByteArray<T> {
     }
 }
 
+impl CursorArray for StringViewArray {
+    type Values = StringViewArray;
+    fn values(&self) -> Self {
+        self.gc()
+    }
+}
+
+impl CursorValues for StringViewArray {
+    fn len(&self) -> usize {
+        self.views().len()
+    }
+
+    #[inline(always)]
+    fn eq(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> bool {
+        // SAFETY: Both l_idx and r_idx are guaranteed to be within bounds,
+        // and any null-checks are handled in the outer layers.
+        // Fast path: Compare the lengths before full byte comparison.
+        let l_view = unsafe { l.views().get_unchecked(l_idx) };
+        let r_view = unsafe { r.views().get_unchecked(r_idx) };
+
+        if l.data_buffers().is_empty() && r.data_buffers().is_empty() {
+            return l_view == r_view;
+        }
+
+        let l_len = *l_view as u32;
+        let r_len = *r_view as u32;
+        if l_len != r_len {
+            return false;
+        }
+
+        unsafe { GenericByteViewArray::compare_unchecked(l, l_idx, r, r_idx).is_eq() }
+    }
+
+    #[inline(always)]
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
+        // SAFETY: The caller guarantees that idx > 0 and the indices are valid.
+        // Already checked it in is_eq_to_prev_one function
+        // Fast path: Compare the lengths of the current and previous views.
+        let l_view = unsafe { cursor.views().get_unchecked(idx) };
+        let r_view = unsafe { cursor.views().get_unchecked(idx - 1) };
+        if cursor.data_buffers().is_empty() {
+            return l_view == r_view;
+        }
+
+        let l_len = *l_view as u32;
+        let r_len = *r_view as u32;
+
+        if l_len != r_len {
+            return false;
+        }
+
+        unsafe {
+            GenericByteViewArray::compare_unchecked(cursor, idx, cursor, idx - 1).is_eq()
+        }
+    }
+
+    #[inline(always)]
+    fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
+        // SAFETY: Prior assertions guarantee that l_idx and r_idx are valid indices.
+        // Null-checks are assumed to have been handled in the wrapper (e.g., ArrayValues).
+        // And the bound is checked in is_finished, it is safe to call get_unchecked
+        if l.data_buffers().is_empty() && r.data_buffers().is_empty() {
+            let l_view = unsafe { l.views().get_unchecked(l_idx) };
+            let r_view = unsafe { r.views().get_unchecked(r_idx) };
+            return StringViewArray::inline_key_fast(*l_view)
+                .cmp(&StringViewArray::inline_key_fast(*r_view));
+        }
+
+        unsafe { GenericByteViewArray::compare_unchecked(l, l_idx, r, r_idx) }
+    }
+}
+
 /// A collection of sorted, nullable [`CursorValues`]
 ///
 /// Note: comparing cursors with different `SortOptions` will yield an arbitrary ordering
@@ -245,6 +364,10 @@ pub struct ArrayValues<T: CursorValues> {
     // Otherwise, the first null index
     null_threshold: usize,
     options: SortOptions,
+
+    /// Tracks the memory used by the values array,
+    /// freed on drop.
+    _reservation: MemoryReservation,
 }
 
 impl<T: CursorValues> ArrayValues<T> {
@@ -252,7 +375,11 @@ impl<T: CursorValues> ArrayValues<T> {
     /// to `options`.
     ///
     /// Panics if the array is empty
-    pub fn new<A: CursorArray<Values = T>>(options: SortOptions, array: &A) -> Self {
+    pub fn new<A: CursorArray<Values = T>>(
+        options: SortOptions,
+        array: &A,
+        reservation: MemoryReservation,
+    ) -> Self {
         assert!(array.len() > 0, "Empty array passed to FieldCursor");
         let null_threshold = match options.nulls_first {
             true => array.null_count(),
@@ -263,6 +390,7 @@ impl<T: CursorValues> ArrayValues<T> {
             values: array.values(),
             null_threshold,
             options,
+            _reservation: reservation,
         }
     }
 
@@ -280,6 +408,15 @@ impl<T: CursorValues> CursorValues for ArrayValues<T> {
         match (l.is_null(l_idx), r.is_null(r_idx)) {
             (true, true) => true,
             (false, false) => T::eq(&l.values, l_idx, &r.values, r_idx),
+            _ => false,
+        }
+    }
+
+    fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
+        assert!(idx > 0);
+        match (cursor.is_null(idx), cursor.is_null(idx - 1)) {
+            (true, true) => true,
+            (false, false) => T::eq(&cursor.values, idx, &cursor.values, idx - 1),
             _ => false,
         }
     }
@@ -305,6 +442,11 @@ impl<T: CursorValues> CursorValues for ArrayValues<T> {
 
 #[cfg(test)]
 mod tests {
+    use datafusion_execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryPool,
+    };
+    use std::sync::Arc;
+
     use super::*;
 
     fn new_primitive(
@@ -317,10 +459,15 @@ mod tests {
             false => values.len() - null_count,
         };
 
+        let memory_pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(10000));
+        let consumer = MemoryConsumer::new("test");
+        let reservation = consumer.register(&memory_pool);
+
         let values = ArrayValues {
             values: PrimitiveValues(values),
             null_threshold,
             options,
+            _reservation: reservation,
         };
 
         Cursor::new(values)

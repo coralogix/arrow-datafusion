@@ -26,20 +26,21 @@ use crate::common::ToDFSchema;
 use crate::config::ConfigOptions;
 use crate::datasource::listing::{ListingTableUrl, PartitionedFile};
 use crate::datasource::object_store::ObjectStoreUrl;
-use crate::datasource::physical_plan::{FileScanConfig, ParquetExec};
+use crate::datasource::physical_plan::ParquetSource;
 use crate::error::Result;
 use crate::logical_expr::execution_props::ExecutionProps;
 use crate::logical_expr::simplify::SimplifyContext;
 use crate::optimizer::simplify_expressions::ExprSimplifier;
 use crate::physical_expr::create_physical_expr;
+use crate::physical_plan::ExecutionPlan;
 use crate::physical_plan::filter::FilterExec;
 use crate::physical_plan::metrics::MetricsSet;
-use crate::physical_plan::ExecutionPlan;
 use crate::prelude::{Expr, SessionConfig, SessionContext};
 
-use crate::datasource::physical_plan::parquet::ParquetExecBuilder;
-use object_store::path::Path;
+use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
+use datafusion_datasource::source::DataSourceExec;
 use object_store::ObjectMeta;
+use object_store::path::Path;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
@@ -81,28 +82,38 @@ impl TestParquetFile {
         props: WriterProperties,
         batches: impl IntoIterator<Item = RecordBatch>,
     ) -> Result<Self> {
-        let file = File::create(&path).unwrap();
+        let file = File::create(&path)?;
 
         let mut batches = batches.into_iter();
         let first_batch = batches.next().expect("need at least one record batch");
         let schema = first_batch.schema();
 
-        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props))?;
 
-        writer.write(&first_batch).unwrap();
+        writer.write(&first_batch)?;
         let mut num_rows = first_batch.num_rows();
 
         for batch in batches {
-            writer.write(&batch).unwrap();
+            writer.write(&batch)?;
             num_rows += batch.num_rows();
         }
-        writer.close().unwrap();
+        writer.close()?;
 
         println!("Generated test dataset with {num_rows} rows");
 
-        let size = std::fs::metadata(&path)?.len() as usize;
+        let size = std::fs::metadata(&path)?.len();
 
-        let canonical_path = path.canonicalize()?;
+        let mut canonical_path = path.canonicalize()?;
+
+        if cfg!(target_os = "windows") {
+            canonical_path = canonical_path
+                .to_str()
+                .unwrap()
+                .replace("\\", "/")
+                .strip_prefix("//?/")
+                .unwrap()
+                .into();
+        };
 
         let object_store_url =
             ListingTableUrl::parse(canonical_path.to_str().unwrap_or_default())?
@@ -126,67 +137,78 @@ impl TestParquetFile {
 }
 
 impl TestParquetFile {
-    /// Return a `ParquetExec` with the specified options.
+    /// Return a `DataSourceExec` with the specified options.
     ///
-    /// If `maybe_filter` is non-None, the ParquetExec will be filtered using
+    /// If `maybe_filter` is non-None, the DataSourceExec will be filtered using
     /// the given expression, and this method will return the same plan that DataFusion
     /// will make with a pushed down predicate followed by a filter:
     ///
     /// ```text
     /// (FilterExec)
-    ///   (ParquetExec)
+    ///   (DataSourceExec)
     /// ```
     ///
-    /// Otherwise if `maybe_filter` is None, return just a `ParquetExec`
+    /// Otherwise if `maybe_filter` is None, return just a `DataSourceExec`
     pub async fn create_scan(
         &self,
         ctx: &SessionContext,
         maybe_filter: Option<Expr>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let scan_config =
-            FileScanConfig::new(self.object_store_url.clone(), self.schema.clone())
-                .with_file(PartitionedFile {
+        let parquet_options = ctx.copied_table_options().parquet;
+        let source = Arc::new(
+            ParquetSource::new(Arc::clone(&self.schema))
+                .with_table_parquet_options(parquet_options.clone()),
+        );
+        let scan_config_builder =
+            FileScanConfigBuilder::new(self.object_store_url.clone(), source).with_file(
+                PartitionedFile {
                     object_meta: self.object_meta.clone(),
                     partition_values: vec![],
                     range: None,
                     statistics: None,
                     extensions: None,
-                });
+                    metadata_size_hint: None,
+                },
+            );
 
-        let df_schema = self.schema.clone().to_dfschema_ref()?;
+        let df_schema = Arc::clone(&self.schema).to_dfschema_ref()?;
 
         // run coercion on the filters to coerce types etc.
         let props = ExecutionProps::new();
-        let context = SimplifyContext::new(&props).with_schema(df_schema.clone());
-        let parquet_options = ctx.copied_table_options().parquet;
+        let context = SimplifyContext::new(&props).with_schema(Arc::clone(&df_schema));
         if let Some(filter) = maybe_filter {
             let simplifier = ExprSimplifier::new(context);
             let filter = simplifier.coerce(filter, &df_schema).unwrap();
             let physical_filter_expr =
                 create_physical_expr(&filter, &df_schema, &ExecutionProps::default())?;
 
-            let parquet_exec =
-                ParquetExecBuilder::new_with_options(scan_config, parquet_options)
-                    .with_predicate(physical_filter_expr.clone())
-                    .build_arc();
+            let source = Arc::new(
+                ParquetSource::new(Arc::clone(&self.schema))
+                    .with_table_parquet_options(parquet_options)
+                    .with_predicate(Arc::clone(&physical_filter_expr)),
+            );
+            let config = scan_config_builder.with_source(source).build();
+            let parquet_exec = DataSourceExec::from_data_source(config);
 
             let exec = Arc::new(FilterExec::try_new(physical_filter_expr, parquet_exec)?);
             Ok(exec)
         } else {
-            Ok(
-                ParquetExecBuilder::new_with_options(scan_config, parquet_options)
-                    .build_arc(),
-            )
+            let config = scan_config_builder.build();
+            Ok(DataSourceExec::from_data_source(config))
         }
     }
 
     /// Retrieve metrics from the parquet exec returned from `create_scan`
     ///
-    /// Recursively searches for ParquetExec and returns the metrics
+    /// Recursively searches for DataSourceExec and returns the metrics
     /// on the first one it finds
     pub fn parquet_metrics(plan: &Arc<dyn ExecutionPlan>) -> Option<MetricsSet> {
-        if let Some(parquet) = plan.as_any().downcast_ref::<ParquetExec>() {
-            return parquet.metrics();
+        if let Some(data_source_exec) = plan.as_any().downcast_ref::<DataSourceExec>()
+            && data_source_exec
+                .downcast_to_file_source::<ParquetSource>()
+                .is_some()
+        {
+            return data_source_exec.metrics();
         }
 
         for child in plan.children() {
@@ -199,7 +221,7 @@ impl TestParquetFile {
 
     /// The schema of this parquet file
     pub fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 
     /// The path to the parquet file

@@ -22,7 +22,12 @@
 [![Crates.io][crates-badge]][crates-url]
 [![Apache licensed][license-badge]][license-url]
 [![Build Status][actions-badge]][actions-url]
+![Commit Activity][commit-activity-badge]
+[![Open Issues][open-issues-badge]][open-issues-url]
+[![Pending PRs][pending-pr-badge]][pending-pr-url]
 [![Discord chat][discord-badge]][discord-url]
+[![Linkedin][linkedin-badge]][linkedin-url]
+![Crates.io MSRV][msrv-badge]
 
 [crates-badge]: https://img.shields.io/crates/v/datafusion.svg
 [crates-url]: https://crates.io/crates/datafusion
@@ -30,19 +35,54 @@
 [license-url]: https://github.com/apache/datafusion/blob/main/LICENSE.txt
 [actions-badge]: https://github.com/apache/datafusion/actions/workflows/rust.yml/badge.svg
 [actions-url]: https://github.com/apache/datafusion/actions?query=branch%3Amain
-[discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
+[discord-badge]: https://img.shields.io/badge/Chat-Discord-purple
 [discord-url]: https://discord.com/invite/Qw5gKqHxUM
+[commit-activity-badge]: https://img.shields.io/github/commit-activity/m/apache/datafusion
+[open-issues-badge]: https://img.shields.io/github/issues-raw/apache/datafusion
+[open-issues-url]: https://github.com/apache/datafusion/issues
+[pending-pr-badge]: https://img.shields.io/github/issues-search/apache/datafusion?query=is%3Apr+is%3Aopen+draft%3Afalse+review%3Arequired+status%3Asuccess&label=Pending%20PRs&logo=github
+[pending-pr-url]: https://github.com/apache/datafusion/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+review%3Arequired+status%3Asuccess+sort%3Aupdated-desc
+[linkedin-badge]: https://img.shields.io/badge/Follow-Linkedin-blue
+[linkedin-url]: https://www.linkedin.com/company/apache-datafusion/
+[msrv-badge]: https://img.shields.io/crates/msrv/datafusion?label=Min%20Rust%20Version
 
-[Website](https://github.com/apache/datafusion) |
-[Guides](https://github.com/apache/datafusion/tree/main/docs) |
+[Website](https://datafusion.apache.org/) |
 [API Docs](https://docs.rs/datafusion/latest/datafusion/) |
 [Chat](https://discord.com/channels/885562378132000778/885562378132000781)
 
-<img src="./docs/source/_static/images/2x_bgwhite_original.png" width="512" alt="logo"/>
+<a href="https://datafusion.apache.org/">
+  <img src="https://github.com/apache/datafusion/raw/HEAD/docs/source/_static/images/2x_bgwhite_original.png" width="512" alt="logo"/>
+</a>
 
-Apache DataFusion is a very fast, extensible query engine for building high-quality data-centric systems in
-[Rust](http://rustlang.org), using the [Apache Arrow](https://arrow.apache.org)
-in-memory format. [Python Bindings](https://github.com/apache/datafusion-python) are also available. DataFusion offers SQL and Dataframe APIs, excellent [performance](https://benchmark.clickhouse.com/), built-in support for CSV, Parquet, JSON, and Avro, extensive customization, and a great community.
+DataFusion is an extensible query engine written in [Rust] that
+uses [Apache Arrow] as its in-memory format.
+
+This crate provides libraries and binaries for developers building fast and
+feature rich database and analytic systems, customized to particular workloads.
+See [use cases] for examples. The following related subprojects target end users:
+
+- [DataFusion Python](https://github.com/apache/datafusion-python/) offers a Python interface for SQL and DataFrame
+  queries.
+- [DataFusion Comet](https://github.com/apache/datafusion-comet/) is an accelerator for Apache Spark based on
+  DataFusion.
+
+"Out of the box,"
+DataFusion offers [SQL](https://datafusion.apache.org/user-guide/sql/index.html) and [Dataframe](https://datafusion.apache.org/user-guide/dataframe.html) APIs, excellent [performance],
+built-in support for CSV, Parquet, JSON, and Avro, extensive customization, and
+a great community.
+
+DataFusion features a full query planner, a columnar, streaming, multi-threaded,
+vectorized execution engine, and partitioned data sources. You can
+customize DataFusion at almost all points including additional data sources,
+query languages, functions, custom operators and more.
+See the [Architecture] section for more details.
+
+[rust]: http://rustlang.org
+[apache arrow]: https://arrow.apache.org
+[use cases]: https://datafusion.apache.org/user-guide/introduction.html#use-cases
+[python bindings]: https://github.com/apache/datafusion-python
+[performance]: https://benchmark.clickhouse.com/
+[architecture]: https://datafusion.apache.org/contributor-guide/architecture.html
 
 Here are links to some important information
 
@@ -75,31 +115,44 @@ This crate has several [features] which can be specified in your `Cargo.toml`.
 
 Default features:
 
-- `array_expressions`: functions for working with arrays such as `array_to_string`
+- `nested_expressions`: functions for working with nested type function such as `array_to_string`
 - `compression`: reading files compressed with `xz2`, `bzip2`, `flate2`, and `zstd`
 - `crypto_expressions`: cryptographic functions such as `md5` and `sha256`
 - `datetime_expressions`: date and time functions such as `to_timestamp`
 - `encoding_expressions`: `encode` and `decode` functions
 - `parquet`: support for reading the [Apache Parquet] format
+- `sql`: Support for sql parsing / planning
 - `regex_expressions`: regular expression functions, such as `regexp_match`
 - `unicode_expressions`: Include unicode aware functions such as `character_length`
-- `unparser` : enables support to reverse LogicalPlans back into SQL
+- `unparser`: enables support to reverse LogicalPlans back into SQL
+- `recursive_protection`: uses [recursive](https://docs.rs/recursive/latest/recursive/) for stack overflow protection.
 
 Optional features:
 
 - `avro`: support for reading the [Apache Avro] format
 - `backtrace`: include backtrace information in error messages
-- `pyarrow`: conversions between PyArrow and DataFusion types
+- `parquet_encryption`: support for using [Parquet Modular Encryption]
 - `serde`: enable arrow-schema's `serde` feature
 
 [apache avro]: https://avro.apache.org/
 [apache parquet]: https://parquet.apache.org/
+[parquet modular encryption]: https://parquet.apache.org/docs/file-format/data-pages/encryption/
 
-## Rust Version Compatibility Policy
+## DataFusion API Evolution and Deprecation Guidelines
 
-DataFusion's Minimum Required Stable Rust Version (MSRV) policy is to support
-each stable Rust version for 6 months after it is
-[released](https://github.com/rust-lang/rust/blob/master/RELEASES.md). This
-generally translates to support for the most recent 3 to 4 stable Rust versions.
+Public methods in Apache DataFusion evolve over time: while we try to maintain a
+stable API, we also improve the API over time. As a result, we typically
+deprecate methods before removing them, according to the [deprecation guidelines].
 
-We enforce this policy using a [MSRV CI Check](https://github.com/search?q=repo%3Aapache%2Fdatafusion+rust-version+language%3ATOML+path%3A%2F%5ECargo.toml%2F&type=code)
+[deprecation guidelines]: https://datafusion.apache.org/contributor-guide/api-health.html
+
+## Dependencies and `Cargo.lock`
+
+Following the [guidance] on committing `Cargo.lock` files, this project commits
+its `Cargo.lock` file.
+
+CI uses the committed `Cargo.lock` file, and dependencies are updated regularly
+using [Dependabot] PRs.
+
+[guidance]: https://blog.rust-lang.org/2023/08/29/committing-lockfiles.html
+[dependabot]: https://docs.github.com/en/code-security/dependabot/working-with-dependabot

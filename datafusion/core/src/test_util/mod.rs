@@ -20,42 +20,48 @@
 #[cfg(feature = "parquet")]
 pub mod parquet;
 
+pub mod csv;
+
+use futures::Stream;
 use std::any::Any;
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::catalog::{TableProvider, TableProviderFactory};
 use crate::dataframe::DataFrame;
-use crate::datasource::provider::TableProviderFactory;
 use crate::datasource::stream::{FileStreamProvider, StreamConfig, StreamTable};
-use crate::datasource::{empty::EmptyTable, provider_as_source, TableProvider};
+use crate::datasource::{empty::EmptyTable, provider_as_source};
 use crate::error::Result;
-use crate::execution::context::{SessionState, TaskContext};
+use crate::execution::session_state::CacheFactory;
 use crate::logical_expr::{LogicalPlanBuilder, UNNAMED_TABLE};
-use crate::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
-    PlanProperties, RecordBatchStream, SendableRecordBatchStream,
-};
+use crate::physical_plan::ExecutionPlan;
 use crate::prelude::{CsvReadOptions, SessionContext};
 
+use crate::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use datafusion_common::TableReference;
-use datafusion_expr::{CreateExternalTable, Expr, TableType};
-use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_catalog::Session;
+use datafusion_common::{DFSchemaRef, TableReference};
+use datafusion_expr::{
+    CreateExternalTable, Expr, LogicalPlan, SortExpr, TableType,
+    UserDefinedLogicalNodeCore,
+};
+use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::Stream;
-use tempfile::TempDir;
 
+use tempfile::TempDir;
 // backwards compatibility
 #[cfg(feature = "parquet")]
 pub use datafusion_common::test_util::parquet_test_data;
 pub use datafusion_common::test_util::{arrow_test_data, get_data_dir};
+
+use crate::execution::RecordBatchStream;
 
 /// Scan an empty data source, mainly used in tests
 pub fn scan_empty(
@@ -107,7 +113,7 @@ pub fn aggr_test_schema() -> SchemaRef {
 
 /// Register session context for the aggregate_test_100.csv file
 pub async fn register_aggregate_csv(
-    ctx: &mut SessionContext,
+    ctx: &SessionContext,
     table_name: &str,
 ) -> Result<()> {
     let schema = aggr_test_schema();
@@ -123,8 +129,8 @@ pub async fn register_aggregate_csv(
 
 /// Create a table from the aggregate_test_100.csv file with the specified name
 pub async fn test_table_with_name(name: &str) -> Result<DataFrame> {
-    let mut ctx = SessionContext::new();
-    register_aggregate_csv(&mut ctx, name).await?;
+    let ctx = SessionContext::new();
+    register_aggregate_csv(&ctx, name).await?;
     ctx.table(name).await
 }
 
@@ -134,6 +140,7 @@ pub async fn test_table() -> Result<DataFrame> {
 }
 
 /// Execute SQL and return results
+#[cfg(feature = "sql")]
 pub async fn plan_and_collect(
     ctx: &SessionContext,
     sql: &str,
@@ -171,23 +178,25 @@ pub fn populate_csv_partitions(
 }
 
 /// TableFactory for tests
+#[derive(Default, Debug)]
 pub struct TestTableFactory {}
 
 #[async_trait]
 impl TableProviderFactory for TestTableFactory {
     async fn create(
         &self,
-        _: &SessionState,
+        _: &dyn Session,
         cmd: &CreateExternalTable,
     ) -> Result<Arc<dyn TableProvider>> {
         Ok(Arc::new(TestTableProvider {
             url: cmd.location.to_string(),
-            schema: Arc::new(cmd.schema.as_ref().into()),
+            schema: Arc::clone(cmd.schema.inner()),
         }))
     }
 }
 
 /// TableProvider for testing purposes
+#[derive(Debug)]
 pub struct TestTableProvider {
     /// URL of table files or folder
     pub url: String,
@@ -204,7 +213,7 @@ impl TableProvider for TestTableProvider {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 
     fn table_type(&self) -> TableType {
@@ -213,137 +222,12 @@ impl TableProvider for TestTableProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!("TestTableProvider is a stub for testing.")
-    }
-}
-
-/// A mock execution plan that simply returns the provided data source characteristic
-#[derive(Debug, Clone)]
-pub struct UnboundedExec {
-    batch_produce: Option<usize>,
-    batch: RecordBatch,
-    cache: PlanProperties,
-}
-impl UnboundedExec {
-    /// Create new exec that clones the given record batch to its output.
-    ///
-    /// Set `batch_produce` to `Some(n)` to emit exactly `n` batches per partition.
-    pub fn new(
-        batch_produce: Option<usize>,
-        batch: RecordBatch,
-        partitions: usize,
-    ) -> Self {
-        let cache = Self::compute_properties(batch.schema(), batch_produce, partitions);
-        Self {
-            batch_produce,
-            batch,
-            cache,
-        }
-    }
-
-    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
-    fn compute_properties(
-        schema: SchemaRef,
-        batch_produce: Option<usize>,
-        n_partitions: usize,
-    ) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-        let mode = if batch_produce.is_none() {
-            ExecutionMode::Unbounded
-        } else {
-            ExecutionMode::Bounded
-        };
-        PlanProperties::new(
-            eq_properties,
-            Partitioning::UnknownPartitioning(n_partitions),
-            mode,
-        )
-    }
-}
-
-impl DisplayAs for UnboundedExec {
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "UnboundableExec: unbounded={}",
-                    self.batch_produce.is_none(),
-                )
-            }
-        }
-    }
-}
-
-impl ExecutionPlan for UnboundedExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.cache
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(self)
-    }
-
-    fn execute(
-        &self,
-        _partition: usize,
-        _context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        Ok(Box::pin(UnboundedStream {
-            batch_produce: self.batch_produce,
-            count: 0,
-            batch: self.batch.clone(),
-        }))
-    }
-}
-
-#[derive(Debug)]
-struct UnboundedStream {
-    batch_produce: Option<usize>,
-    count: usize,
-    batch: RecordBatch,
-}
-
-impl Stream for UnboundedStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        if let Some(val) = self.batch_produce {
-            if val <= self.count {
-                return Poll::Ready(None);
-            }
-        }
-        self.count += 1;
-        Poll::Ready(Some(Ok(self.batch.clone())))
-    }
-}
-
-impl RecordBatchStream for UnboundedStream {
-    fn schema(&self) -> SchemaRef {
-        self.batch.schema()
     }
 }
 
@@ -353,7 +237,7 @@ pub fn register_unbounded_file_with_ordering(
     schema: SchemaRef,
     file_path: &Path,
     table_name: &str,
-    file_sort_order: Vec<Vec<Expr>>,
+    file_sort_order: Vec<Vec<SortExpr>>,
 ) -> Result<()> {
     let source = FileStreamProvider::new_file(schema, file_path.into());
     let config = StreamConfig::new(Arc::new(source)).with_order(file_sort_order);
@@ -361,4 +245,109 @@ pub fn register_unbounded_file_with_ordering(
     // Register table:
     ctx.register_table(table_name, Arc::new(StreamTable::new(Arc::new(config))))?;
     Ok(())
+}
+
+/// Creates a bounded stream that emits the same record batch a specified number of times.
+/// This is useful for testing purposes.
+pub fn bounded_stream(
+    record_batch: RecordBatch,
+    limit: usize,
+) -> SendableRecordBatchStream {
+    Box::pin(BoundedStream {
+        record_batch,
+        count: 0,
+        limit,
+    })
+}
+
+struct BoundedStream {
+    record_batch: RecordBatch,
+    count: usize,
+    limit: usize,
+}
+
+impl Stream for BoundedStream {
+    type Item = Result<RecordBatch, crate::error::DataFusionError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.count >= self.limit {
+            Poll::Ready(None)
+        } else {
+            self.count += 1;
+            Poll::Ready(Some(Ok(self.record_batch.clone())))
+        }
+    }
+}
+
+impl RecordBatchStream for BoundedStream {
+    fn schema(&self) -> SchemaRef {
+        self.record_batch.schema()
+    }
+}
+
+#[derive(Hash, Eq, PartialEq, PartialOrd, Debug)]
+struct CacheNode {
+    input: LogicalPlan,
+}
+
+impl UserDefinedLogicalNodeCore for CacheNode {
+    fn name(&self) -> &str {
+        "CacheNode"
+    }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.input]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        self.input.schema()
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        vec![]
+    }
+
+    fn fmt_for_explain(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "CacheNode")
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        _exprs: Vec<Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> Result<Self> {
+        assert_eq!(inputs.len(), 1, "input size inconsistent");
+        Ok(Self {
+            input: inputs[0].clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct TestCacheFactory {}
+
+impl CacheFactory for TestCacheFactory {
+    fn create(
+        &self,
+        plan: LogicalPlan,
+        _session_state: &SessionState,
+    ) -> Result<LogicalPlan> {
+        Ok(LogicalPlan::Extension(datafusion_expr::Extension {
+            node: Arc::new(CacheNode { input: plan }),
+        }))
+    }
+}
+
+/// Create a test table registered to a session context with an associated cache factory
+pub async fn test_table_with_cache_factory() -> Result<DataFrame> {
+    let session_state = SessionStateBuilder::new()
+        .with_cache_factory(Some(Arc::new(TestCacheFactory {})))
+        .build();
+    let ctx = SessionContext::new_with_state(session_state);
+    let name = "aggregate_test_100";
+    register_aggregate_csv(&ctx, name).await?;
+    ctx.table(name).await
 }

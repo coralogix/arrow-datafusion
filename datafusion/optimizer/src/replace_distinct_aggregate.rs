@@ -16,15 +16,17 @@
 // under the License.
 
 //! [`ReplaceDistinctWithAggregate`] replaces `DISTINCT ...` with `GROUP BY ...`
+
 use crate::optimizer::{ApplyOrder, ApplyOrder::BottomUp};
 use crate::{OptimizerConfig, OptimizerRule};
+use std::sync::Arc;
 
 use datafusion_common::tree_node::Transformed;
-use datafusion_common::{internal_err, Column, Result};
+use datafusion_common::{Column, Result};
 use datafusion_expr::expr_rewriter::normalize_cols;
 use datafusion_expr::utils::expand_wildcard;
-use datafusion_expr::{col, AggregateExt, LogicalPlanBuilder};
 use datafusion_expr::{Aggregate, Distinct, DistinctOn, Expr, LogicalPlan};
+use datafusion_expr::{ExprFunctionExt, Limit, LogicalPlanBuilder, col, lit};
 
 /// Optimizer that replaces logical [[Distinct]] with a logical [[Aggregate]]
 ///
@@ -52,13 +54,22 @@ use datafusion_expr::{Aggregate, Distinct, DistinctOn, Expr, LogicalPlan};
 /// )
 /// ORDER BY a DESC
 /// ```
-
-/// Optimizer that replaces logical [[Distinct]] with a logical [[Aggregate]]
-#[derive(Default)]
+///
+/// In case there are no columns, the [[Distinct]] is replaced by a [[Limit]]
+///
+/// ```text
+/// SELECT DISTINCT * FROM empty_table
+/// ```
+///
+/// Into
+/// ```text
+/// SELECT * FROM empty_table LIMIT 1
+/// ```
+#[derive(Default, Debug)]
 pub struct ReplaceDistinctWithAggregate {}
 
 impl ReplaceDistinctWithAggregate {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new() -> Self {
         Self {}
     }
@@ -77,6 +88,32 @@ impl OptimizerRule for ReplaceDistinctWithAggregate {
         match plan {
             LogicalPlan::Distinct(Distinct::All(input)) => {
                 let group_expr = expand_wildcard(input.schema(), &input, None)?;
+
+                if group_expr.is_empty() {
+                    // Special case: there are no columns to group by, so we can't replace it by a group by
+                    // however, we can replace it by LIMIT 1 because there is either no output or a single empty row
+                    return Ok(Transformed::yes(LogicalPlan::Limit(Limit {
+                        skip: None,
+                        fetch: Some(Box::new(lit(1i64))),
+                        input,
+                    })));
+                }
+
+                let field_count = input.schema().fields().len();
+                for dep in input.schema().functional_dependencies().iter() {
+                    // If distinct is exactly the same with a previous GROUP BY, we can
+                    // simply remove it:
+                    if dep.source_indices.len() >= field_count
+                        && dep.source_indices[..field_count]
+                            .iter()
+                            .enumerate()
+                            .all(|(idx, f_idx)| idx == *f_idx)
+                    {
+                        return Ok(Transformed::yes(input.as_ref().clone()));
+                    }
+                }
+
+                // Replace with aggregation:
                 let aggr_plan = LogicalPlan::Aggregate(Aggregate::try_new(
                     input,
                     group_expr,
@@ -94,7 +131,7 @@ impl OptimizerRule for ReplaceDistinctWithAggregate {
                 let expr_cnt = on_expr.len();
 
                 // Construct the aggregation expression to be used to fetch the selected expressions.
-                let first_value_udaf: std::sync::Arc<datafusion_expr::AggregateUDF> =
+                let first_value_udaf: Arc<datafusion_expr::AggregateUDF> =
                     config.function_registry().unwrap().udaf("first_value")?;
                 let aggr_expr = select_expr.into_iter().map(|e| {
                     if let Some(order_by) = &sort_expr {
@@ -157,19 +194,119 @@ impl OptimizerRule for ReplaceDistinctWithAggregate {
         }
     }
 
-    fn try_optimize(
-        &self,
-        _plan: &LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        internal_err!("Should have called ReplaceDistinctWithAggregate::rewrite")
-    }
-
     fn name(&self) -> &str {
         "replace_distinct_aggregate"
     }
 
     fn apply_order(&self) -> Option<ApplyOrder> {
         Some(BottomUp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::assert_optimized_plan_eq_snapshot;
+    use crate::replace_distinct_aggregate::ReplaceDistinctWithAggregate;
+    use crate::test::*;
+    use arrow::datatypes::{Fields, Schema};
+    use std::sync::Arc;
+
+    use crate::OptimizerContext;
+    use datafusion_common::Result;
+    use datafusion_expr::{
+        Expr, col, logical_plan::builder::LogicalPlanBuilder, table_scan,
+    };
+    use datafusion_functions_aggregate::sum::sum;
+
+    macro_rules! assert_optimized_plan_equal {
+        (
+            $plan:expr,
+            @ $expected:literal $(,)?
+        ) => {{
+            let optimizer_ctx = OptimizerContext::new().with_max_passes(1);
+            let rules: Vec<Arc<dyn crate::OptimizerRule + Send + Sync>> = vec![Arc::new(ReplaceDistinctWithAggregate::new())];
+            assert_optimized_plan_eq_snapshot!(
+                optimizer_ctx,
+                rules,
+                $plan,
+                @ $expected,
+            )
+        }};
+    }
+
+    #[test]
+    fn eliminate_redundant_distinct_simple() -> Result<()> {
+        let table_scan = test_table_scan().unwrap();
+        let plan = LogicalPlanBuilder::from(table_scan)
+            .aggregate(vec![col("c")], Vec::<Expr>::new())?
+            .project(vec![col("c")])?
+            .distinct()?
+            .build()?;
+
+        assert_optimized_plan_equal!(plan, @r"
+        Projection: test.c
+          Aggregate: groupBy=[[test.c]], aggr=[[]]
+            TableScan: test
+        ")
+    }
+
+    #[test]
+    fn eliminate_redundant_distinct_pair() -> Result<()> {
+        let table_scan = test_table_scan().unwrap();
+        let plan = LogicalPlanBuilder::from(table_scan)
+            .aggregate(vec![col("a"), col("b")], Vec::<Expr>::new())?
+            .project(vec![col("a"), col("b")])?
+            .distinct()?
+            .build()?;
+
+        assert_optimized_plan_equal!(plan, @r"
+        Projection: test.a, test.b
+          Aggregate: groupBy=[[test.a, test.b]], aggr=[[]]
+            TableScan: test
+        ")
+    }
+
+    #[test]
+    fn do_not_eliminate_distinct() -> Result<()> {
+        let table_scan = test_table_scan().unwrap();
+        let plan = LogicalPlanBuilder::from(table_scan)
+            .project(vec![col("a"), col("b")])?
+            .distinct()?
+            .build()?;
+
+        assert_optimized_plan_equal!(plan, @r"
+        Aggregate: groupBy=[[test.a, test.b]], aggr=[[]]
+          Projection: test.a, test.b
+            TableScan: test
+        ")
+    }
+
+    #[test]
+    fn do_not_eliminate_distinct_with_aggr() -> Result<()> {
+        let table_scan = test_table_scan().unwrap();
+        let plan = LogicalPlanBuilder::from(table_scan)
+            .aggregate(vec![col("a"), col("b"), col("c")], vec![sum(col("c"))])?
+            .project(vec![col("a"), col("b")])?
+            .distinct()?
+            .build()?;
+
+        assert_optimized_plan_equal!(plan, @r"
+        Aggregate: groupBy=[[test.a, test.b]], aggr=[[]]
+          Projection: test.a, test.b
+            Aggregate: groupBy=[[test.a, test.b, test.c]], aggr=[[sum(test.c)]]
+              TableScan: test
+        ")
+    }
+
+    #[test]
+    fn use_limit_1_when_no_columns() -> Result<()> {
+        let plan = table_scan(Some("test"), &Schema::new(Fields::empty()), None)?
+            .distinct()?
+            .build()?;
+
+        assert_optimized_plan_equal!(plan, @r"
+        Limit: skip=0, fetch=1
+          TableScan: test
+        ")
     }
 }

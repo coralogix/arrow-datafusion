@@ -16,34 +16,40 @@
 // under the License.
 
 use crate::utils::make_scalar_function;
-use arrow::array::Int32Array;
-use arrow::array::{ArrayRef, OffsetSizeTrait};
+use arrow::array::{ArrayRef, AsArray, Int32Array, StringArrayType};
 use arrow::datatypes::DataType;
-use datafusion_common::{cast::as_generic_string_array, internal_err, Result};
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use arrow::error::ArrowError;
+use datafusion_common::types::logical_string;
+use datafusion_common::{Result, internal_err};
+use datafusion_expr::{ColumnarValue, Documentation, TypeSignatureClass};
+use datafusion_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion_expr_common::signature::Coercion;
+use datafusion_macros::user_doc;
 use std::any::Any;
 use std::sync::Arc;
 
-/// Returns the numeric code of the first character of the argument.
-/// ascii('x') = 120
-pub fn ascii<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
-    let string_array = as_generic_string_array::<T>(&args[0])?;
-
-    let result = string_array
-        .iter()
-        .map(|string| {
-            string.map(|string: &str| {
-                let mut chars = string.chars();
-                chars.next().map_or(0, |v| v as i32)
-            })
-        })
-        .collect::<Int32Array>();
-
-    Ok(Arc::new(result) as ArrayRef)
-}
-
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Returns the first Unicode scalar value of a string.",
+    syntax_example = "ascii(str)",
+    sql_example = r#"```sql
+> select ascii('abc');
++--------------------+
+| ascii(Utf8("abc")) |
++--------------------+
+| 97                 |
++--------------------+
+> select ascii('🚀');
++-------------------+
+| ascii(Utf8("🚀")) |
++-------------------+
+| 128640            |
++-------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    related_udf(name = "chr")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct AsciiFunc {
     signature: Signature,
 }
@@ -56,11 +62,11 @@ impl Default for AsciiFunc {
 
 impl AsciiFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(
-                1,
-                vec![Utf8, LargeUtf8],
+            signature: Signature::coercible(
+                vec![Coercion::new_exact(TypeSignatureClass::Native(
+                    logical_string(),
+                ))],
                 Volatility::Immutable,
             ),
         }
@@ -81,18 +87,106 @@ impl ScalarUDFImpl for AsciiFunc {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        use DataType::*;
-
-        Ok(Int32)
+        Ok(DataType::Int32)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        match args[0].data_type() {
-            DataType::Utf8 => make_scalar_function(ascii::<i32>, vec![])(args),
-            DataType::LargeUtf8 => {
-                return make_scalar_function(ascii::<i64>, vec![])(args);
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        make_scalar_function(ascii, vec![])(&args.args)
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
+    }
+}
+
+fn calculate_ascii<'a, V>(array: &V) -> Result<ArrayRef, ArrowError>
+where
+    V: StringArrayType<'a, Item = &'a str>,
+{
+    let values: Vec<_> = (0..array.len())
+        .map(|i| {
+            if array.is_null(i) {
+                0
+            } else {
+                let s = array.value(i);
+                s.chars().next().map_or(0, |c| c as i32)
             }
-            _ => internal_err!("Unsupported data type"),
+        })
+        .collect();
+
+    let array = Int32Array::new(values.into(), array.nulls().cloned());
+
+    Ok(Arc::new(array))
+}
+
+/// Returns the numeric code of the first character of the argument.
+pub fn ascii(args: &[ArrayRef]) -> Result<ArrayRef> {
+    match args[0].data_type() {
+        DataType::Utf8 => {
+            let string_array = args[0].as_string::<i32>();
+            Ok(calculate_ascii(&string_array)?)
         }
+        DataType::LargeUtf8 => {
+            let string_array = args[0].as_string::<i64>();
+            Ok(calculate_ascii(&string_array)?)
+        }
+        DataType::Utf8View => {
+            let string_array = args[0].as_string_view();
+            Ok(calculate_ascii(&string_array)?)
+        }
+        _ => internal_err!("Unsupported data type"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::string::ascii::AsciiFunc;
+    use crate::utils::test::test_function;
+    use arrow::array::{Array, Int32Array};
+    use arrow::datatypes::DataType::Int32;
+    use datafusion_common::{Result, ScalarValue};
+    use datafusion_expr::{ColumnarValue, ScalarUDFImpl};
+
+    macro_rules! test_ascii {
+        ($INPUT:expr, $EXPECTED:expr) => {
+            test_function!(
+                AsciiFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::Utf8($INPUT))],
+                $EXPECTED,
+                i32,
+                Int32,
+                Int32Array
+            );
+
+            test_function!(
+                AsciiFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::LargeUtf8($INPUT))],
+                $EXPECTED,
+                i32,
+                Int32,
+                Int32Array
+            );
+
+            test_function!(
+                AsciiFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::Utf8View($INPUT))],
+                $EXPECTED,
+                i32,
+                Int32,
+                Int32Array
+            );
+        };
+    }
+
+    #[test]
+    fn test_functions() -> Result<()> {
+        test_ascii!(Some(String::from("x")), Ok(Some(120)));
+        test_ascii!(Some(String::from("a")), Ok(Some(97)));
+        test_ascii!(Some(String::from("")), Ok(Some(0)));
+        test_ascii!(Some(String::from("🚀")), Ok(Some(128640)));
+        test_ascii!(Some(String::from("\n")), Ok(Some(10)));
+        test_ascii!(Some(String::from("\t")), Ok(Some(9)));
+        test_ascii!(None, Ok(None));
+        Ok(())
     }
 }

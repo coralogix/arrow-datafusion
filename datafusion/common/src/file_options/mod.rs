@@ -30,17 +30,16 @@ pub mod parquet_writer;
 mod tests {
     use std::collections::HashMap;
 
-    use super::parquet_writer::ParquetWriterOptions;
     use crate::{
-        config::TableOptions,
+        Result,
+        config::{ConfigFileType, TableOptions},
         file_options::{csv_writer::CsvWriterOptions, json_writer::JsonWriterOptions},
         parsers::CompressionTypeVariant,
-        FileType, Result,
     };
 
     use parquet::{
         basic::{Compression, Encoding, ZstdLevel},
-        file::properties::{EnabledStatistics, WriterVersion},
+        file::properties::{EnabledStatistics, WriterPropertiesBuilder, WriterVersion},
         schema::types::ColumnPath,
     };
 
@@ -76,11 +75,13 @@ mod tests {
         option_map.insert("format.bloom_filter_ndv".to_owned(), "123".to_owned());
 
         let mut table_config = TableOptions::new();
-        table_config.set_file_format(FileType::PARQUET);
+        table_config.set_config_format(ConfigFileType::PARQUET);
         table_config.alter_with_string_hash_map(&option_map)?;
 
-        let parquet_options = ParquetWriterOptions::try_from(&table_config.parquet)?;
-        let properties = parquet_options.writer_options();
+        let properties = WriterPropertiesBuilder::try_from(
+            &table_config.parquet.with_skip_arrow_metadata(true),
+        )?
+        .build();
 
         // Verify the expected options propagated down to parquet crate WriterProperties struct
         assert_eq!(properties.max_row_group_size(), 123);
@@ -181,11 +182,13 @@ mod tests {
         );
 
         let mut table_config = TableOptions::new();
-        table_config.set_file_format(FileType::PARQUET);
+        table_config.set_config_format(ConfigFileType::PARQUET);
         table_config.alter_with_string_hash_map(&option_map)?;
 
-        let parquet_options = ParquetWriterOptions::try_from(&table_config.parquet)?;
-        let properties = parquet_options.writer_options();
+        let properties = WriterPropertiesBuilder::try_from(
+            &table_config.parquet.with_skip_arrow_metadata(true),
+        )?
+        .build();
 
         let col1 = ColumnPath::from(vec!["col1".to_owned()]);
         let col2_nested = ColumnPath::from(vec!["col2".to_owned(), "nested".to_owned()]);
@@ -284,7 +287,7 @@ mod tests {
         option_map.insert("format.delimiter".to_owned(), ";".to_owned());
 
         let mut table_config = TableOptions::new();
-        table_config.set_file_format(FileType::CSV);
+        table_config.set_config_format(ConfigFileType::CSV);
         table_config.alter_with_string_hash_map(&option_map)?;
 
         let csv_options = CsvWriterOptions::try_from(&table_config.csv)?;
@@ -306,7 +309,7 @@ mod tests {
         option_map.insert("format.compression".to_owned(), "gzip".to_owned());
 
         let mut table_config = TableOptions::new();
-        table_config.set_file_format(FileType::JSON);
+        table_config.set_config_format(ConfigFileType::JSON);
         table_config.alter_with_string_hash_map(&option_map)?;
 
         let json_options = JsonWriterOptions::try_from(&table_config.json)?;

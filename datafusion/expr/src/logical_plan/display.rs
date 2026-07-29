@@ -14,23 +14,24 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 //! This module provides logic for displaying LogicalPlans in various styles
 
 use std::collections::HashMap;
 use std::fmt;
 
 use crate::{
-    expr_vec_fmt, Aggregate, DescribeTable, Distinct, DistinctOn, DmlStatement, Expr,
-    Filter, Join, Limit, LogicalPlan, Partitioning, Prepare, Projection, RecursiveQuery,
-    Repartition, Sort, Subquery, SubqueryAlias, TableProviderFilterPushDown, TableScan,
-    Unnest, Values, Window,
+    Aggregate, DescribeTable, Distinct, DistinctOn, DmlStatement, Expr, Filter, Join,
+    Limit, LogicalPlan, Partitioning, Projection, RecursiveQuery, Repartition, Sort,
+    Subquery, SubqueryAlias, TableProviderFilterPushDown, TableScan, Unnest, Values,
+    Window, expr_vec_fmt,
 };
 
 use crate::dml::CopyTo;
 use arrow::datatypes::Schema;
 use datafusion_common::display::GraphvizBuilder;
 use datafusion_common::tree_node::{TreeNodeRecursion, TreeNodeVisitor};
-use datafusion_common::{Column, DataFusionError};
+use datafusion_common::{Column, DataFusionError, internal_datafusion_err};
 use serde_json::json;
 
 /// Formats plans with a single line per node. For example:
@@ -58,7 +59,7 @@ impl<'a, 'b> IndentVisitor<'a, 'b> {
     }
 }
 
-impl<'n, 'a, 'b> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
+impl<'n> TreeNodeVisitor<'n> for IndentVisitor<'_, '_> {
     type Node = LogicalPlan;
 
     fn f_down(
@@ -71,11 +72,7 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
         write!(self.f, "{:indent$}", "", indent = self.indent * 2)?;
         write!(self.f, "{}", plan.display())?;
         if self.with_schema {
-            write!(
-                self.f,
-                " {}",
-                display_schema(&plan.schema().as_ref().to_owned().into())
-            )?;
+            write!(self.f, " {}", display_schema(plan.schema().as_arrow()))?;
         }
 
         self.indent += 1;
@@ -97,22 +94,22 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
 /// `foo:Utf8;N` if `foo` is nullable.
 ///
 /// ```
-/// use arrow::datatypes::{Field, Schema, DataType};
+/// use arrow::datatypes::{DataType, Field, Schema};
 /// # use datafusion_expr::logical_plan::display_schema;
 /// let schema = Schema::new(vec![
 ///     Field::new("id", DataType::Int32, false),
 ///     Field::new("first_name", DataType::Utf8, true),
-///  ]);
+/// ]);
 ///
-///  assert_eq!(
-///      "[id:Int32, first_name:Utf8;N]",
-///      format!("{}", display_schema(&schema))
-///  );
+/// assert_eq!(
+///     "[id:Int32, first_name:Utf8;N]",
+///     format!("{}", display_schema(&schema))
+/// );
 /// ```
 pub fn display_schema(schema: &Schema) -> impl fmt::Display + '_ {
     struct Wrapper<'a>(&'a Schema);
 
-    impl<'a> fmt::Display for Wrapper<'a> {
+    impl fmt::Display for Wrapper<'_> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f, "[")?;
             for (idx, field) in self.0.fields().iter().enumerate() {
@@ -180,7 +177,7 @@ impl<'a, 'b> GraphvizVisitor<'a, 'b> {
     }
 }
 
-impl<'n, 'a, 'b> TreeNodeVisitor<'n> for GraphvizVisitor<'a, 'b> {
+impl<'n> TreeNodeVisitor<'n> for GraphvizVisitor<'_, '_> {
     type Node = LogicalPlan;
 
     fn f_down(
@@ -195,7 +192,7 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for GraphvizVisitor<'a, 'b> {
             format!(
                 r"{}\nSchema: {}",
                 plan.display(),
-                display_schema(&plan.schema().as_ref().to_owned().into())
+                display_schema(plan.schema().as_arrow())
             )
         } else {
             format!("{}", plan.display())
@@ -203,14 +200,14 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for GraphvizVisitor<'a, 'b> {
 
         self.graphviz_builder
             .add_node(self.f, id, &label, None)
-            .map_err(|_e| DataFusionError::Internal("Fail to format".to_string()))?;
+            .map_err(|_e| internal_datafusion_err!("Fail to format"))?;
 
         // Create an edge to our parent node, if any
         //  parent_id -> id
         if let Some(parent_id) = self.parent_ids.last() {
             self.graphviz_builder
                 .add_edge(self.f, *parent_id, id)
-                .map_err(|_e| DataFusionError::Internal("Fail to format".to_string()))?;
+                .map_err(|_e| internal_datafusion_err!("Fail to format"))?;
         }
 
         self.parent_ids.push(id);
@@ -224,7 +221,7 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for GraphvizVisitor<'a, 'b> {
         // always be non-empty as pre_visit always pushes
         // So it should always be Ok(true)
         let res = self.parent_ids.pop();
-        res.ok_or(DataFusionError::Internal("Fail to format".to_string()))
+        res.ok_or(internal_datafusion_err!("Fail to format"))
             .map(|_| TreeNodeRecursion::Continue)
     }
 }
@@ -322,7 +319,7 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     "Is Distinct": is_distinct,
                 })
             }
-            LogicalPlan::Values(Values { ref values, .. }) => {
+            LogicalPlan::Values(Values { values, .. }) => {
                 let str_values = values
                     .iter()
                     // limit to only 5 values to avoid horrible display
@@ -338,19 +335,19 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                let elipse = if values.len() > 5 { "..." } else { "" };
+                let eclipse = if values.len() > 5 { "..." } else { "" };
 
-                let values_str = format!("{}{}", str_values, elipse);
+                let values_str = format!("{str_values}{eclipse}");
                 json!({
                     "Node Type": "Values",
                     "Values": values_str
                 })
             }
             LogicalPlan::TableScan(TableScan {
-                ref source,
-                ref table_name,
-                ref filters,
-                ref fetch,
+                source,
+                table_name,
+                filters,
+                fetch,
                 ..
             }) => {
                 let mut object = json!({
@@ -387,19 +384,16 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     }
 
                     if !full_filter.is_empty() {
-                        object["Full Filters"] = serde_json::Value::String(
-                            expr_vec_fmt!(full_filter).to_string(),
-                        );
+                        object["Full Filters"] =
+                            serde_json::Value::String(expr_vec_fmt!(full_filter));
                     };
                     if !partial_filter.is_empty() {
-                        object["Partial Filters"] = serde_json::Value::String(
-                            expr_vec_fmt!(partial_filter).to_string(),
-                        );
+                        object["Partial Filters"] =
+                            serde_json::Value::String(expr_vec_fmt!(partial_filter));
                     }
                     if !unsupported_filters.is_empty() {
-                        object["Unsupported Filters"] = serde_json::Value::String(
-                            expr_vec_fmt!(unsupported_filters).to_string(),
-                        );
+                        object["Unsupported Filters"] =
+                            serde_json::Value::String(expr_vec_fmt!(unsupported_filters));
                     }
                 }
 
@@ -409,7 +403,7 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
 
                 object
             }
-            LogicalPlan::Projection(Projection { ref expr, .. }) => {
+            LogicalPlan::Projection(Projection { expr, .. }) => {
                 json!({
                     "Node Type": "Projection",
                     "Expressions": expr.iter().map(|e| e.to_string()).collect::<Vec<_>>()
@@ -425,19 +419,20 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
             LogicalPlan::Copy(CopyTo {
                 input: _,
                 output_url,
-                format_options,
+                file_type,
                 partition_by: _,
                 options,
+                output_schema: _,
             }) => {
                 let op_str = options
                     .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
+                    .map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 json!({
                     "Node Type": "CopyTo",
                     "Output URL": output_url,
-                    "Format Options": format!("{}", format_options),
+                    "File Type": format!("{}", file_type.get_ext()),
                     "Options": op_str
                 })
             }
@@ -448,25 +443,22 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                 })
             }
             LogicalPlan::Filter(Filter {
-                predicate: ref expr,
-                ..
+                predicate: expr, ..
             }) => {
                 json!({
                     "Node Type": "Filter",
                     "Condition": format!("{}", expr)
                 })
             }
-            LogicalPlan::Window(Window {
-                ref window_expr, ..
-            }) => {
+            LogicalPlan::Window(Window { window_expr, .. }) => {
                 json!({
                     "Node Type": "WindowAggr",
                     "Expressions": expr_vec_fmt!(window_expr)
                 })
             }
             LogicalPlan::Aggregate(Aggregate {
-                ref group_expr,
-                ref aggr_expr,
+                group_expr,
+                aggr_expr,
                 ..
             }) => {
                 json!({
@@ -488,7 +480,7 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                 object
             }
             LogicalPlan::Join(Join {
-                on: ref keys,
+                on: keys,
                 filter,
                 join_constraint,
                 join_type,
@@ -505,11 +497,6 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     "Join Constraint": format!("{:?}", join_constraint),
                     "Join Keys": join_expr.join(", "),
                     "Filter": format!("{}", filter_expr)
-                })
-            }
-            LogicalPlan::CrossJoin(_) => {
-                json!({
-                    "Node Type": "Cross Join"
                 })
             }
             LogicalPlan::Repartition(Repartition {
@@ -544,19 +531,17 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     })
                 }
             },
-            LogicalPlan::Limit(Limit {
-                ref skip,
-                ref fetch,
-                ..
-            }) => {
+            LogicalPlan::Limit(Limit { skip, fetch, .. }) => {
                 let mut object = serde_json::json!(
                     {
                         "Node Type": "Limit",
-                        "Skip": skip,
                     }
                 );
+                if let Some(s) = skip {
+                    object["Skip"] = s.to_string().into()
+                };
                 if let Some(f) = fetch {
-                    object["Fetch"] = serde_json::Value::Number((*f).into());
+                    object["Fetch"] = f.to_string().into()
                 };
                 object
             }
@@ -565,7 +550,7 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     "Node Type": "Subquery"
                 })
             }
-            LogicalPlan::SubqueryAlias(SubqueryAlias { ref alias, .. }) => {
+            LogicalPlan::SubqueryAlias(SubqueryAlias { alias, .. }) => {
                 json!({
                     "Node Type": "Subquery",
                     "Alias": alias.table(),
@@ -595,9 +580,8 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                         "Select": expr_vec_fmt!(select_expr),
                     });
                     if let Some(sort_expr) = sort_expr {
-                        object["Sort"] = serde_json::Value::String(
-                            expr_vec_fmt!(sort_expr).to_string(),
-                        );
+                        object["Sort"] =
+                            serde_json::Value::String(expr_vec_fmt!(sort_expr));
                     }
 
                     object
@@ -624,15 +608,6 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                     "Detail": format!("{:?}", e.node)
                 })
             }
-            LogicalPlan::Prepare(Prepare {
-                name, data_types, ..
-            }) => {
-                json!({
-                    "Node Type": "Prepare",
-                    "Name": name,
-                    "Data Types": format!("{:?}", data_types)
-                })
-            }
             LogicalPlan::DescribeTable(DescribeTable { .. }) => {
                 json!({
                     "Node Type": "DescribeTable"
@@ -647,8 +622,14 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
                 let input_columns = plan.schema().columns();
                 let list_type_columns = list_col_indices
                     .iter()
-                    .map(|i| &input_columns[*i])
-                    .collect::<Vec<&Column>>();
+                    .map(|(i, unnest_info)| {
+                        format!(
+                            "{}|depth={:?}",
+                            &input_columns[*i].to_string(),
+                            unnest_info.depth
+                        )
+                    })
+                    .collect::<Vec<String>>();
                 let struct_type_columns = struct_col_indices
                     .iter()
                     .map(|i| &input_columns[*i])
@@ -663,7 +644,7 @@ impl<'a, 'b> PgJsonVisitor<'a, 'b> {
     }
 }
 
-impl<'n, 'a, 'b> TreeNodeVisitor<'n> for PgJsonVisitor<'a, 'b> {
+impl<'n> TreeNodeVisitor<'n> for PgJsonVisitor<'_, '_> {
     type Node = LogicalPlan;
 
     fn f_down(
@@ -698,9 +679,10 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for PgJsonVisitor<'a, 'b> {
     ) -> datafusion_common::Result<TreeNodeRecursion> {
         let id = self.parent_ids.pop().unwrap();
 
-        let current_node = self.objects.remove(&id).ok_or_else(|| {
-            DataFusionError::Internal("Missing current node!".to_string())
-        })?;
+        let current_node = self
+            .objects
+            .remove(&id)
+            .ok_or_else(|| internal_datafusion_err!("Missing current node!"))?;
 
         if let Some(parent_id) = self.parent_ids.last() {
             let parent_node = self
@@ -731,13 +713,14 @@ impl<'n, 'a, 'b> TreeNodeVisitor<'n> for PgJsonVisitor<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field};
+    use insta::assert_snapshot;
 
     use super::*;
 
     #[test]
     fn test_display_empty_schema() {
         let schema = Schema::empty();
-        assert_eq!("[]", format!("{}", display_schema(&schema)));
+        assert_snapshot!(display_schema(&schema), @"[]");
     }
 
     #[test]
@@ -747,9 +730,6 @@ mod tests {
             Field::new("first_name", DataType::Utf8, true),
         ]);
 
-        assert_eq!(
-            "[id:Int32, first_name:Utf8;N]",
-            format!("{}", display_schema(&schema))
-        );
+        assert_snapshot!(display_schema(&schema), @"[id:Int32, first_name:Utf8;N]");
     }
 }

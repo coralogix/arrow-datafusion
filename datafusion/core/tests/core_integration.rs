@@ -21,8 +21,14 @@ mod sql;
 /// Run all tests that are found in the `dataframe` directory
 mod dataframe;
 
+/// Run all tests that are found in the `datasource` directory
+mod datasource;
+
 /// Run all tests that are found in the `macro_hygiene` directory
 mod macro_hygiene;
+
+/// Run all tests that are found in the `execution` directory
+mod execution;
 
 /// Run all tests that are found in the `expr_api` directory
 mod expr_api;
@@ -35,6 +41,24 @@ mod memory_limit;
 
 /// Run all tests that are found in the `custom_sources_cases` directory
 mod custom_sources_cases;
+
+/// Run all tests that are found in the `optimizer` directory
+mod optimizer;
+
+/// Run all tests that are found in the `physical_optimizer` directory
+mod physical_optimizer;
+
+/// Run all tests that are found in the `serde` directory
+mod serde;
+
+/// Run all tests that are found in the `catalog` directory
+mod catalog;
+
+/// Run all tests that are found in the `catalog_listing` directory
+mod catalog_listing;
+
+/// Run all tests that are found in the `tracing` directory
+mod tracing;
 
 #[cfg(test)]
 #[ctor::ctor]

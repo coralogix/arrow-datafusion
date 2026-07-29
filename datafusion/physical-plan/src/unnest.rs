@@ -17,10 +17,14 @@
 
 //! Define a plan for unnesting values in columns that contain a list type.
 
-use std::collections::HashMap;
+use std::cmp::{self, Ordering};
+use std::task::{Poll, ready};
 use std::{any::Any, sync::Arc};
 
-use super::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
+use super::metrics::{
+    self, BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+    RecordOutput,
+};
 use super::{DisplayAs, ExecutionPlanProperties, PlanProperties};
 use crate::{
     DisplayFormatType, Distribution, ExecutionPlan, RecordBatchStream,
@@ -28,43 +32,42 @@ use crate::{
 };
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, FixedSizeListArray, LargeListArray, ListArray,
-    PrimitiveArray,
+    Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
+    LargeListArray, ListArray, PrimitiveArray, Scalar, StructArray, new_null_array,
 };
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
 use arrow::compute::{cast, is_not_null, kernels, sum};
 use arrow::datatypes::{DataType, Int64Type, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Int64Array, Scalar, StructArray};
 use arrow_ord::cmp::lt;
+use async_trait::async_trait;
 use datafusion_common::{
-    exec_datafusion_err, exec_err, internal_err, Result, UnnestOptions,
+    Constraints, HashMap, HashSet, Result, UnnestOptions, exec_datafusion_err, exec_err,
+    internal_err,
 };
 use datafusion_execution::TaskContext;
-use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr::EquivalenceProperties;
-
-use async_trait::async_trait;
+use datafusion_physical_expr::PhysicalExpr;
+use datafusion_physical_expr::equivalence::ProjectionMapping;
+use datafusion_physical_expr::expressions::Column;
 use futures::{Stream, StreamExt};
-use hashbrown::HashSet;
 use log::trace;
 
 /// Unnest the given columns (either with type struct or list)
-/// For list unnesting, each rows is vertically transformed into multiple rows
-/// For struct unnesting, each columns is horizontally transformed into multiple columns,
+/// For list unnesting, each row is vertically transformed into multiple rows
+/// For struct unnesting, each column is horizontally transformed into multiple columns,
 /// Thus the original RecordBatch with dimension (n x m) may have new dimension (n' x m')
 ///
 /// See [`UnnestOptions`] for more details and an example.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UnnestExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
     /// The schema once the unnest is applied
     schema: SchemaRef,
-    /// indices of the list-typed columns in the input schema
-    list_column_indices: Vec<usize>,
-    /// indices of the struct-typed columns in the input schema
+    /// Indices of the list-typed columns in the input schema
+    list_column_indices: Vec<ListUnnest>,
+    /// Indices of the struct-typed columns in the input schema
     struct_column_indices: Vec<usize>,
     /// Options
     options: UnnestOptions,
@@ -78,14 +81,19 @@ impl UnnestExec {
     /// Create a new [UnnestExec].
     pub fn new(
         input: Arc<dyn ExecutionPlan>,
-        list_column_indices: Vec<usize>,
+        list_column_indices: Vec<ListUnnest>,
         struct_column_indices: Vec<usize>,
         schema: SchemaRef,
         options: UnnestOptions,
-    ) -> Self {
-        let cache = Self::compute_properties(&input, schema.clone());
+    ) -> Result<Self> {
+        let cache = Self::compute_properties(
+            &input,
+            &list_column_indices,
+            &struct_column_indices,
+            &schema,
+        )?;
 
-        UnnestExec {
+        Ok(UnnestExec {
             input,
             schema,
             list_column_indices,
@@ -93,21 +101,97 @@ impl UnnestExec {
             options,
             metrics: Default::default(),
             cache,
-        }
+        })
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(
         input: &Arc<dyn ExecutionPlan>,
-        schema: SchemaRef,
-    ) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
+        list_column_indices: &[ListUnnest],
+        struct_column_indices: &[usize],
+        schema: &SchemaRef,
+    ) -> Result<PlanProperties> {
+        // Find out which indices are not unnested, such that they can be copied over from the input plan
+        let input_schema = input.schema();
+        let mut unnested_indices = BooleanBufferBuilder::new(input_schema.fields().len());
+        unnested_indices.append_n(input_schema.fields().len(), false);
+        for list_unnest in list_column_indices {
+            unnested_indices.set_bit(list_unnest.index_in_input_schema, true);
+        }
+        for struct_unnest in struct_column_indices {
+            unnested_indices.set_bit(*struct_unnest, true)
+        }
+        let unnested_indices = unnested_indices.finish();
+        let non_unnested_indices: Vec<usize> = (0..input_schema.fields().len())
+            .filter(|idx| !unnested_indices.value(*idx))
+            .collect();
 
-        PlanProperties::new(
+        // Manually build projection mapping from non-unnested input columns to their positions in the output
+        let input_schema = input.schema();
+        let projection_mapping: ProjectionMapping = non_unnested_indices
+            .iter()
+            .map(|&input_idx| {
+                // Find what index the input column has in the output schema
+                let input_field = input_schema.field(input_idx);
+                let output_idx = schema
+                    .fields()
+                    .iter()
+                    .position(|output_field| output_field.name() == input_field.name())
+                    .ok_or_else(|| {
+                        exec_datafusion_err!(
+                            "Non-unnested column '{}' must exist in output schema",
+                            input_field.name()
+                        )
+                    })?;
+
+                let input_col = Arc::new(Column::new(input_field.name(), input_idx))
+                    as Arc<dyn PhysicalExpr>;
+                let target_col = Arc::new(Column::new(input_field.name(), output_idx))
+                    as Arc<dyn PhysicalExpr>;
+                // Use From<Vec<(Arc<dyn PhysicalExpr>, usize)>> for ProjectionTargets
+                let targets = vec![(target_col, output_idx)].into();
+                Ok((input_col, targets))
+            })
+            .collect::<Result<ProjectionMapping>>()?;
+
+        // Create the unnest's equivalence properties by copying the input plan's equivalence properties
+        // for the unaffected columns. Except for the constraints, which are removed entirely because
+        // the unnest operation invalidates any global uniqueness or primary-key constraints.
+        let input_eq_properties = input.equivalence_properties();
+        let eq_properties = input_eq_properties
+            .project(&projection_mapping, Arc::clone(schema))
+            .with_constraints(Constraints::default());
+
+        // Output partitioning must use the projection mapping
+        let output_partitioning = input
+            .output_partitioning()
+            .project(&projection_mapping, &eq_properties);
+
+        Ok(PlanProperties::new(
             eq_properties,
-            input.output_partitioning().clone(),
-            input.execution_mode(),
-        )
+            output_partitioning,
+            input.pipeline_behavior(),
+            input.boundedness(),
+        ))
+    }
+
+    /// Input execution plan
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    /// Indices of the list-typed columns in the input schema
+    pub fn list_column_indices(&self) -> &[ListUnnest] {
+        &self.list_column_indices
+    }
+
+    /// Indices of the struct-typed columns in the input schema
+    pub fn struct_column_indices(&self) -> &[usize] {
+        &self.struct_column_indices
+    }
+
+    pub fn options(&self) -> &UnnestOptions {
+        &self.options
     }
 }
 
@@ -120,6 +204,9 @@ impl DisplayAs for UnnestExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "UnnestExec")
+            }
+            DisplayFormatType::TreeRender => {
+                write!(f, "")
             }
         }
     }
@@ -147,12 +234,12 @@ impl ExecutionPlan for UnnestExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(UnnestExec::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.list_column_indices.clone(),
             self.struct_column_indices.clone(),
-            self.schema.clone(),
+            Arc::clone(&self.schema),
             self.options.clone(),
-        )))
+        )?))
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -169,7 +256,7 @@ impl ExecutionPlan for UnnestExec {
 
         Ok(Box::pin(UnnestStream {
             input,
-            schema: self.schema.clone(),
+            schema: Arc::clone(&self.schema),
             list_type_columns: self.list_column_indices.clone(),
             struct_column_indices: self.struct_column_indices.iter().copied().collect(),
             options: self.options.clone(),
@@ -184,38 +271,25 @@ impl ExecutionPlan for UnnestExec {
 
 #[derive(Clone, Debug)]
 struct UnnestMetrics {
-    /// total time for column unnesting
-    elapsed_compute: metrics::Time,
+    /// Execution metrics
+    baseline_metrics: BaselineMetrics,
     /// Number of batches consumed
     input_batches: metrics::Count,
     /// Number of rows consumed
     input_rows: metrics::Count,
-    /// Number of batches produced
-    output_batches: metrics::Count,
-    /// Number of rows produced by this operator
-    output_rows: metrics::Count,
 }
 
 impl UnnestMetrics {
     fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
-        let elapsed_compute = MetricBuilder::new(metrics).elapsed_compute(partition);
-
         let input_batches =
             MetricBuilder::new(metrics).counter("input_batches", partition);
 
         let input_rows = MetricBuilder::new(metrics).counter("input_rows", partition);
 
-        let output_batches =
-            MetricBuilder::new(metrics).counter("output_batches", partition);
-
-        let output_rows = MetricBuilder::new(metrics).output_rows(partition);
-
         Self {
+            baseline_metrics: BaselineMetrics::new(metrics, partition),
             input_batches,
             input_rows,
-            output_batches,
-            output_rows,
-            elapsed_compute,
         }
     }
 }
@@ -226,8 +300,10 @@ struct UnnestStream {
     input: SendableRecordBatchStream,
     /// Unnested schema
     schema: Arc<Schema>,
-    /// The unnest columns
-    list_type_columns: Vec<usize>,
+    /// represents all unnest operations to be applied to the input (input index, depth)
+    /// e.g unnest(col1),unnest(unnest(col1)) where col1 has index 1 in original input schema
+    /// then list_type_columns = [ListUnnest{1,1},ListUnnest{1,2}]
+    list_type_columns: Vec<ListUnnest>,
     struct_column_indices: HashSet<usize>,
     /// Options
     options: UnnestOptions,
@@ -237,7 +313,7 @@ struct UnnestStream {
 
 impl RecordBatchStream for UnnestStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
 
@@ -248,7 +324,7 @@ impl Stream for UnnestStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         self.poll_next_impl(cx)
     }
 }
@@ -259,28 +335,32 @@ impl UnnestStream {
     fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<RecordBatch>>> {
-        self.input
-            .poll_next_unpin(cx)
-            .map(|maybe_batch| match maybe_batch {
+    ) -> Poll<Option<Result<RecordBatch>>> {
+        loop {
+            return Poll::Ready(match ready!(self.input.poll_next_unpin(cx)) {
                 Some(Ok(batch)) => {
-                    let timer = self.metrics.elapsed_compute.timer();
+                    let elapsed_compute =
+                        self.metrics.baseline_metrics.elapsed_compute().clone();
+                    let timer = elapsed_compute.timer();
+                    self.metrics.input_batches.add(1);
+                    self.metrics.input_rows.add(batch.num_rows());
                     let result = build_batch(
                         &batch,
                         &self.schema,
                         &self.list_type_columns,
                         &self.struct_column_indices,
                         &self.options,
-                    );
-                    self.metrics.input_batches.add(1);
-                    self.metrics.input_rows.add(batch.num_rows());
-                    if let Ok(ref batch) = result {
-                        timer.done();
-                        self.metrics.output_batches.add(1);
-                        self.metrics.output_rows.add(batch.num_rows());
-                    }
+                    )?;
+                    timer.done();
+                    let Some(result_batch) = result else {
+                        continue;
+                    };
+                    (&result_batch).record_output(&self.metrics.baseline_metrics);
 
-                    Some(result)
+                    // Empty record batches should not be emitted.
+                    // They need to be treated as  [`Option<RecordBatch>`]es and handled separately
+                    debug_assert!(result_batch.num_rows() > 0);
+                    Some(Ok(result_batch))
                 }
                 other => {
                     trace!(
@@ -288,13 +368,14 @@ impl UnnestStream {
                         produced {} output batches containing {} rows in {}",
                         self.metrics.input_batches,
                         self.metrics.input_rows,
-                        self.metrics.output_batches,
-                        self.metrics.output_rows,
-                        self.metrics.elapsed_compute,
+                        self.metrics.baseline_metrics.output_batches(),
+                        self.metrics.baseline_metrics.output_rows(),
+                        self.metrics.baseline_metrics.elapsed_compute(),
                     );
                     other
                 }
-            })
+            });
+        }
     }
 }
 
@@ -330,73 +411,325 @@ fn flatten_struct_cols(
                     data_type
                 ),
             },
-            None => Ok(vec![column_data.clone()]),
+            None => Ok(vec![Arc::clone(column_data)]),
         })
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .flatten()
         .collect();
-    Ok(RecordBatch::try_new(schema.clone(), columns_expanded)?)
+    Ok(RecordBatch::try_new(Arc::clone(schema), columns_expanded)?)
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ListUnnest {
+    pub index_in_input_schema: usize,
+    pub depth: usize,
+}
+
+/// This function is used to execute the unnesting on multiple columns all at once, but
+/// one level at a time, and is called n times, where n is the highest recursion level among
+/// the unnest exprs in the query.
+///
+/// For example giving the following query:
+/// ```sql
+/// select unnest(colA, max_depth:=3) as P1, unnest(colA,max_depth:=2) as P2, unnest(colB, max_depth:=1) as P3 from temp;
+/// ```
+/// Then the total times this function being called is 3
+///
+/// It needs to be aware of which level the current unnesting is, because if there exists
+/// multiple unnesting on the same column, but with different recursion levels, say
+/// **unnest(colA, max_depth:=3)** and **unnest(colA, max_depth:=2)**, then the unnesting
+/// of expr **unnest(colA, max_depth:=3)** will start at level 3, while unnesting for expr
+/// **unnest(colA, max_depth:=2)** has to start at level 2
+///
+/// Set *colA* as a 3-dimension columns and *colB* as an array (1-dimension). As stated,
+/// this function is called with the descending order of recursion depth
+///
+/// Depth = 3
+/// - colA(3-dimension) unnest into temp column temp_P1(2_dimension) (unnesting of P1 starts
+///   from this level)
+/// - colA(3-dimension) having indices repeated by the unnesting operation above
+/// - colB(1-dimension) having indices repeated by the unnesting operation above
+///
+/// Depth = 2
+/// - temp_P1(2-dimension) unnest into temp column temp_P1(1-dimension)
+/// - colA(3-dimension) unnest into temp column temp_P2(2-dimension) (unnesting of P2 starts
+///   from this level)
+/// - colB(1-dimension) having indices repeated by the unnesting operation above
+///
+/// Depth = 1
+/// - temp_P1(1-dimension) unnest into P1
+/// - temp_P2(2-dimension) unnest into P2
+/// - colB(1-dimension) unnest into P3 (unnesting of P3 starts from this level)
+///
+/// The returned array will has the same size as the input batch
+/// and only contains original columns that are not being unnested.
+fn list_unnest_at_level(
+    batch: &[ArrayRef],
+    list_type_unnests: &[ListUnnest],
+    temp_unnested_arrs: &mut HashMap<ListUnnest, ArrayRef>,
+    level_to_unnest: usize,
+    options: &UnnestOptions,
+) -> Result<Option<Vec<ArrayRef>>> {
+    // Extract unnestable columns at this level
+    let (arrs_to_unnest, list_unnest_specs): (Vec<Arc<dyn Array>>, Vec<_>) =
+        list_type_unnests
+            .iter()
+            .filter_map(|unnesting| {
+                if level_to_unnest == unnesting.depth {
+                    return Some((
+                        Arc::clone(&batch[unnesting.index_in_input_schema]),
+                        *unnesting,
+                    ));
+                }
+                // This means the unnesting on this item has started at higher level
+                // and need to continue until depth reaches 1
+                if level_to_unnest < unnesting.depth {
+                    return Some((
+                        Arc::clone(temp_unnested_arrs.get(unnesting).unwrap()),
+                        *unnesting,
+                    ));
+                }
+                None
+            })
+            .unzip();
+
+    // Filter out so that list_arrays only contain column with the highest depth
+    // at the same time, during iteration remove this depth so next time we don't have to unnest them again
+    let longest_length = find_longest_length(&arrs_to_unnest, options)?;
+    let unnested_length = longest_length.as_primitive::<Int64Type>();
+    let total_length = if unnested_length.is_empty() {
+        0
+    } else {
+        sum(unnested_length).ok_or_else(|| {
+            exec_datafusion_err!("Failed to calculate the total unnested length")
+        })? as usize
+    };
+    if total_length == 0 {
+        return Ok(None);
+    }
+
+    // Unnest all the list arrays
+    let unnested_temp_arrays =
+        unnest_list_arrays(arrs_to_unnest.as_ref(), unnested_length, total_length)?;
+
+    // Create the take indices array for other columns
+    let take_indices = create_take_indices(unnested_length, total_length);
+    unnested_temp_arrays
+        .into_iter()
+        .zip(list_unnest_specs.iter())
+        .for_each(|(flatten_arr, unnesting)| {
+            temp_unnested_arrs.insert(*unnesting, flatten_arr);
+        });
+
+    let repeat_mask: Vec<bool> = batch
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            // Check if the column is needed in future levels (levels below the current one)
+            let needed_in_future_levels = list_type_unnests.iter().any(|unnesting| {
+                unnesting.index_in_input_schema == i && unnesting.depth < level_to_unnest
+            });
+
+            // Check if the column is involved in unnesting at any level
+            let is_involved_in_unnesting = list_type_unnests
+                .iter()
+                .any(|unnesting| unnesting.index_in_input_schema == i);
+
+            // Repeat columns needed in future levels or not unnested.
+            needed_in_future_levels || !is_involved_in_unnesting
+        })
+        .collect();
+
+    // Dimension of arrays in batch is untouched, but the values are repeated
+    // as the side effect of unnesting
+    let ret = repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?;
+
+    Ok(Some(ret))
+}
+struct UnnestingResult {
+    arr: ArrayRef,
+    depth: usize,
 }
 
 /// For each row in a `RecordBatch`, some list/struct columns need to be unnested.
 /// - For list columns: We will expand the values in each list into multiple rows,
-/// taking the longest length among these lists, and shorter lists are padded with NULLs.
+///   taking the longest length among these lists, and shorter lists are padded with NULLs.
 /// - For struct columns: We will expand the struct columns into multiple subfield columns.
+///
 /// For columns that don't need to be unnested, repeat their values until reaching the longest length.
+///
+/// Note: unnest has a big difference in behavior between Postgres and DuckDB
+///
+/// Take this example
+///
+/// 1. Postgres
+/// ```ignored
+/// create table temp (
+///     i integer[][][], j integer[]
+/// )
+/// insert into temp values ('{{{1,2},{3,4}},{{5,6},{7,8}}}', '{1,2}');
+/// select unnest(i), unnest(j) from temp;
+/// ```
+///
+/// Result
+/// ```text
+///     1   1
+///     2   2
+///     3
+///     4
+///     5
+///     6
+///     7
+///     8
+/// ```
+/// 2. DuckDB
+/// ```ignore
+///     create table temp (i integer[][][], j integer[]);
+///     insert into temp values ([[[1,2],[3,4]],[[5,6],[7,8]]], [1,2]);
+///     select unnest(i,recursive:=true), unnest(j,recursive:=true) from temp;
+/// ```
+/// Result:
+/// ```text
+///
+///     ┌────────────────────────────────────────────────┬────────────────────────────────────────────────┐
+///     │ unnest(i, "recursive" := CAST('t' AS BOOLEAN)) │ unnest(j, "recursive" := CAST('t' AS BOOLEAN)) │
+///     │                     int32                      │                     int32                      │
+///     ├────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+///     │                                              1 │                                              1 │
+///     │                                              2 │                                              2 │
+///     │                                              3 │                                              1 │
+///     │                                              4 │                                              2 │
+///     │                                              5 │                                              1 │
+///     │                                              6 │                                              2 │
+///     │                                              7 │                                              1 │
+///     │                                              8 │                                              2 │
+///     └────────────────────────────────────────────────┴────────────────────────────────────────────────┘
+/// ```
+///
+/// The following implementation refer to DuckDB's implementation
 fn build_batch(
     batch: &RecordBatch,
     schema: &SchemaRef,
-    list_type_columns: &[usize],
+    list_type_columns: &[ListUnnest],
     struct_column_indices: &HashSet<usize>,
     options: &UnnestOptions,
-) -> Result<RecordBatch> {
+) -> Result<Option<RecordBatch>> {
     let transformed = match list_type_columns.len() {
         0 => flatten_struct_cols(batch.columns(), schema, struct_column_indices),
         _ => {
-            let list_arrays: Vec<ArrayRef> = list_type_columns
+            let mut temp_unnested_result = HashMap::new();
+            let max_recursion = list_type_columns
                 .iter()
-                .map(|index| {
-                    ColumnarValue::Array(batch.column(*index).clone())
-                        .into_array(batch.num_rows())
-                })
-                .collect::<Result<_>>()?;
+                .fold(0, |highest_depth, ListUnnest { depth, .. }| {
+                    cmp::max(highest_depth, *depth)
+                });
 
-            let longest_length = find_longest_length(&list_arrays, options)?;
-            let unnested_length = longest_length.as_primitive::<Int64Type>();
-            let total_length = if unnested_length.is_empty() {
-                0
-            } else {
-                sum(unnested_length).ok_or_else(|| {
-                    exec_datafusion_err!("Failed to calculate the total unnested length")
-                })? as usize
-            };
-            if total_length == 0 {
-                return Ok(RecordBatch::new_empty(schema.clone()));
+            // This arr always has the same column count with the input batch
+            let mut flatten_arrs = vec![];
+
+            // Original batch has the same columns
+            // All unnesting results are written to temp_batch
+            for depth in (1..=max_recursion).rev() {
+                let input = match depth == max_recursion {
+                    true => batch.columns(),
+                    false => &flatten_arrs,
+                };
+                let Some(temp_result) = list_unnest_at_level(
+                    input,
+                    list_type_columns,
+                    &mut temp_unnested_result,
+                    depth,
+                    options,
+                )?
+                else {
+                    return Ok(None);
+                };
+                flatten_arrs = temp_result;
             }
-
-            // Unnest all the list arrays
-            let unnested_arrays =
-                unnest_list_arrays(&list_arrays, unnested_length, total_length)?;
-            let unnested_array_map: HashMap<_, _> = unnested_arrays
-                .into_iter()
-                .zip(list_type_columns.iter())
-                .map(|(array, column)| (*column, array))
+            let unnested_array_map: HashMap<usize, Vec<UnnestingResult>> =
+                temp_unnested_result.into_iter().fold(
+                    HashMap::new(),
+                    |mut acc,
+                     (
+                        ListUnnest {
+                            index_in_input_schema,
+                            depth,
+                        },
+                        flattened_array,
+                    )| {
+                        acc.entry(index_in_input_schema).or_default().push(
+                            UnnestingResult {
+                                arr: flattened_array,
+                                depth,
+                            },
+                        );
+                        acc
+                    },
+                );
+            let output_order: HashMap<ListUnnest, usize> = list_type_columns
+                .iter()
+                .enumerate()
+                .map(|(order, unnest_def)| (*unnest_def, order))
                 .collect();
 
-            // Create the take indices array for other columns
-            let take_indicies = create_take_indicies(unnested_length, total_length);
+            // One original column may be unnested multiple times into separate columns
+            let mut multi_unnested_per_original_index = unnested_array_map
+                .into_iter()
+                .map(
+                    // Each item in unnested_columns is the result of unnesting the same input column
+                    // we need to sort them to conform with the original expression order
+                    // e.g unnest(unnest(col)) must goes before unnest(col)
+                    |(original_index, mut unnested_columns)| {
+                        unnested_columns.sort_by(
+                            |UnnestingResult { depth: depth1, .. },
+                             UnnestingResult { depth: depth2, .. }|
+                             -> Ordering {
+                                output_order
+                                    .get(&ListUnnest {
+                                        depth: *depth1,
+                                        index_in_input_schema: original_index,
+                                    })
+                                    .unwrap()
+                                    .cmp(
+                                        output_order
+                                            .get(&ListUnnest {
+                                                depth: *depth2,
+                                                index_in_input_schema: original_index,
+                                            })
+                                            .unwrap(),
+                                    )
+                            },
+                        );
+                        (
+                            original_index,
+                            unnested_columns
+                                .into_iter()
+                                .map(|result| result.arr)
+                                .collect::<Vec<_>>(),
+                        )
+                    },
+                )
+                .collect::<HashMap<_, _>>();
 
-            // vertical expansion because of list unnest
-            let ret = flatten_list_cols_from_indices(
-                batch,
-                &unnested_array_map,
-                &take_indicies,
-            )?;
+            let ret = flatten_arrs
+                .into_iter()
+                .enumerate()
+                .flat_map(|(col_idx, arr)| {
+                    // Convert original column into its unnested version(s)
+                    // Plural because one column can be unnested with different recursion level
+                    // and into separate output columns
+                    match multi_unnested_per_original_index.remove(&col_idx) {
+                        Some(unnested_arrays) => unnested_arrays,
+                        None => vec![arr],
+                    }
+                })
+                .collect::<Vec<_>>();
+
             flatten_struct_cols(&ret, schema, struct_column_indices)
         }
-    };
-    transformed
+    }?;
+    Ok(Some(transformed))
 }
 
 /// Find the longest list length among the given list arrays for each row.
@@ -420,7 +753,6 @@ fn build_batch(
 /// ```ignore
 /// longest_length: [3, 1, 1, 2]
 /// ```
-///
 fn find_longest_length(
     list_arrays: &[ArrayRef],
     options: &UnnestOptions,
@@ -444,7 +776,7 @@ fn find_longest_length(
         .collect::<Result<_>>()?;
 
     let longest_length = list_lengths.iter().skip(1).try_fold(
-        list_lengths[0].clone(),
+        Arc::clone(&list_lengths[0]),
         |longest, current| {
             let is_lt = lt(&longest, &current)?;
             zip(&is_lt, &current, &longest)
@@ -541,21 +873,20 @@ fn unnest_list_arrays(
 /// ```ignore
 /// [1, null, 2, 3, 4, null, null, 5, null, null]
 /// ```
-///
 fn unnest_list_array(
     list_array: &dyn ListArrayType,
     length_array: &PrimitiveArray<Int64Type>,
     capacity: usize,
 ) -> Result<ArrayRef> {
     let values = list_array.values();
-    let mut take_indicies_builder = PrimitiveArray::<Int64Type>::builder(capacity);
+    let mut take_indices_builder = PrimitiveArray::<Int64Type>::builder(capacity);
     for row in 0..list_array.len() {
         let mut value_length = 0;
         if !list_array.is_null(row) {
             let (start, end) = list_array.value_offsets(row);
             value_length = end - start;
             for i in start..end {
-                take_indicies_builder.append_value(i)
+                take_indices_builder.append_value(i)
             }
         }
         let target_length = length_array.value(row);
@@ -565,17 +896,17 @@ fn unnest_list_array(
         );
         // Pad with NULL values
         for _ in value_length..target_length {
-            take_indicies_builder.append_null();
+            take_indices_builder.append_null();
         }
     }
     Ok(kernels::take::take(
         &values,
-        &take_indicies_builder.finish(),
+        &take_indices_builder.finish(),
         None,
     )?)
 }
 
-/// Creates take indicies that will be used to expand all columns except for the list type
+/// Creates take indices that will be used to expand all columns except for the list type
 /// [`columns`](UnnestExec::list_column_indices) that is being unnested.
 /// Every column value needs to be repeated multiple times according to the length array.
 ///
@@ -584,13 +915,12 @@ fn unnest_list_array(
 /// ```ignore
 /// [2, 3, 1]
 /// ```
-/// Then `create_take_indicies` will return an array like this
+/// Then [`create_take_indices`] will return an array like this
 ///
 /// ```ignore
 /// [0, 0, 1, 1, 1, 2]
 /// ```
-///
-fn create_take_indicies(
+fn create_take_indices(
     length_array: &PrimitiveArray<Int64Type>,
     capacity: usize,
 ) -> PrimitiveArray<Int64Type> {
@@ -608,10 +938,13 @@ fn create_take_indicies(
     builder.finish()
 }
 
-/// Create the final batch given the unnested column arrays and a `indices` array
-/// that is used by the take kernel to copy values.
+/// Create a batch of arrays based on an input `batch` and a `indices` array.
+/// The `indices` array is used by the take kernel to repeat values in the arrays
+/// that are marked with `true` in the `repeat_mask`. Arrays marked with `false`
+/// in the `repeat_mask` will be replaced with arrays filled with nulls of the
+/// appropriate length.
 ///
-/// For example if we have the following `RecordBatch`:
+/// For example if we have the following batch:
 ///
 /// ```ignore
 /// c1: [1], null, [2, 3, 4], null, [5, 6]
@@ -639,29 +972,46 @@ fn create_take_indicies(
 /// c2: 'a', 'b', 'c', 'c', 'c', null, 'd', 'd'
 /// ```
 ///
-fn flatten_list_cols_from_indices(
-    batch: &RecordBatch,
-    unnested_list_arrays: &HashMap<usize, ArrayRef>,
+/// The `repeat_mask` determines whether an array's values are repeated or replaced with nulls.
+/// For example, if the `repeat_mask` is:
+///
+/// ```ignore
+/// [true, false]
+/// ```
+///
+/// The final batch will look like:
+///
+/// ```ignore
+/// c1: 1, null, 2, 3, 4, null, 5, 6  // Repeated using `indices`
+/// c2: null, null, null, null, null, null, null, null  // Replaced with nulls
+fn repeat_arrs_from_indices(
+    batch: &[ArrayRef],
     indices: &PrimitiveArray<Int64Type>,
+    repeat_mask: &[bool],
 ) -> Result<Vec<Arc<dyn Array>>> {
-    let arrays = batch
-        .columns()
+    batch
         .iter()
-        .enumerate()
-        .map(|(col_idx, arr)| match unnested_list_arrays.get(&col_idx) {
-            Some(unnested_array) => Ok(unnested_array.clone()),
-            None => Ok(kernels::take::take(arr, indices, None)?),
+        .zip(repeat_mask.iter())
+        .map(|(arr, &repeat)| {
+            if repeat {
+                Ok(kernels::take::take(arr, indices, None)?)
+            } else {
+                Ok(new_null_array(arr.data_type(), arr.len()))
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(arrays)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::Field;
-    use arrow_array::{GenericListArray, OffsetSizeTrait, StringArray};
-    use arrow_buffer::{BooleanBufferBuilder, NullBuffer, OffsetBuffer};
+    use arrow::array::{
+        GenericListArray, NullBufferBuilder, OffsetSizeTrait, StringArray,
+    };
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
+    use arrow::datatypes::{Field, Int32Type};
+    use datafusion_common::test_util::batches_to_string;
+    use insta::assert_snapshot;
 
     // Create a GenericListArray with the following list values:
     //  [A, B, C], [], NULL, [D], NULL, [NULL, F]
@@ -671,43 +1021,43 @@ mod tests {
     {
         let mut values = vec![];
         let mut offsets: Vec<OffsetSize> = vec![OffsetSize::zero()];
-        let mut valid = BooleanBufferBuilder::new(6);
+        let mut valid = NullBufferBuilder::new(6);
 
         // [A, B, C]
         values.extend_from_slice(&[Some("A"), Some("B"), Some("C")]);
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(true);
+        valid.append_non_null();
 
         // []
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(true);
+        valid.append_non_null();
 
         // NULL with non-zero value length
         // Issue https://github.com/apache/datafusion/issues/9932
         values.push(Some("?"));
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(false);
+        valid.append_null();
 
         // [D]
         values.push(Some("D"));
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(true);
+        valid.append_non_null();
 
         // Another NULL with zero value length
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(false);
+        valid.append_null();
 
         // [NULL, F]
         values.extend_from_slice(&[None, Some("F")]);
         offsets.push(OffsetSize::from_usize(values.len()).unwrap());
-        valid.append(true);
+        valid.append_non_null();
 
-        let field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let field = Arc::new(Field::new_list_field(DataType::Utf8, true));
         GenericListArray::<OffsetSize>::new(
             field,
             OffsetBuffer::new(offsets.into()),
             Arc::new(StringArray::from(values)),
-            Some(NullBuffer::new(valid.finish())),
+            valid.finish(),
         )
     }
 
@@ -728,7 +1078,7 @@ mod tests {
             None,
             None,
         ]));
-        let field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let field = Arc::new(Field::new_list_field(DataType::Utf8, true));
         let valid = NullBuffer::from(vec![true, false, true, false, true, true]);
         FixedSizeListArray::new(field, 2, values, Some(valid))
     }
@@ -737,7 +1087,7 @@ mod tests {
         list_array: &dyn ListArrayType,
         lengths: Vec<i64>,
         expected: Vec<Option<&str>>,
-    ) -> datafusion_common::Result<()> {
+    ) -> Result<()> {
         let length_array = Int64Array::from(lengths);
         let unnested_array = unnest_list_array(list_array, &length_array, 3 * 6)?;
         let strs = unnested_array.as_string::<i32>().iter().collect::<Vec<_>>();
@@ -746,7 +1096,140 @@ mod tests {
     }
 
     #[test]
-    fn test_unnest_list_array() -> datafusion_common::Result<()> {
+    fn test_build_batch_list_arr_recursive() -> Result<()> {
+        // col1                             | col2
+        // [[1,2,3],null,[4,5]]             | ['a','b']
+        // [[7,8,9,10], null, [11,12,13]]   | ['c','d']
+        // null                             | ['e']
+        let list_arr1 = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            None,
+            Some(vec![Some(4), Some(5)]),
+            Some(vec![Some(7), Some(8), Some(9), Some(10)]),
+            None,
+            Some(vec![Some(11), Some(12), Some(13)]),
+        ]);
+
+        let list_arr1_ref = Arc::new(list_arr1) as ArrayRef;
+        let offsets = OffsetBuffer::from_lengths([3, 3, 0]);
+        let mut nulls = NullBufferBuilder::new(3);
+        nulls.append_non_null();
+        nulls.append_non_null();
+        nulls.append_null();
+        // list<list<int32>>
+        let col1_field = Field::new_list_field(
+            DataType::List(Arc::new(Field::new_list_field(
+                list_arr1_ref.data_type().to_owned(),
+                true,
+            ))),
+            true,
+        );
+        let col1 = ListArray::new(
+            Arc::new(Field::new_list_field(
+                list_arr1_ref.data_type().to_owned(),
+                true,
+            )),
+            offsets,
+            list_arr1_ref,
+            nulls.finish(),
+        );
+
+        let list_arr2 = StringArray::from(vec![
+            Some("a"),
+            Some("b"),
+            Some("c"),
+            Some("d"),
+            Some("e"),
+        ]);
+
+        let offsets = OffsetBuffer::from_lengths([2, 2, 1]);
+        let mut nulls = NullBufferBuilder::new(3);
+        nulls.append_n_non_nulls(3);
+        let col2_field = Field::new(
+            "col2",
+            DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
+            true,
+        );
+        let col2 = GenericListArray::<i32>::new(
+            Arc::new(Field::new_list_field(DataType::Utf8, true)),
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(list_arr2),
+            nulls.finish(),
+        );
+        // convert col1 and col2 to a record batch
+        let schema = Arc::new(Schema::new(vec![col1_field, col2_field]));
+        let out_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "col1_unnest_placeholder_depth_1",
+                DataType::List(Arc::new(Field::new_list_field(DataType::Int32, true))),
+                true,
+            ),
+            Field::new("col1_unnest_placeholder_depth_2", DataType::Int32, true),
+            Field::new("col2_unnest_placeholder_depth_1", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(col1) as ArrayRef, Arc::new(col2) as ArrayRef],
+        )
+        .unwrap();
+        let list_type_columns = vec![
+            ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            },
+            ListUnnest {
+                index_in_input_schema: 0,
+                depth: 2,
+            },
+            ListUnnest {
+                index_in_input_schema: 1,
+                depth: 1,
+            },
+        ];
+        let ret = build_batch(
+            &batch,
+            &out_schema,
+            list_type_columns.as_ref(),
+            &HashSet::default(),
+            &UnnestOptions {
+                preserve_nulls: true,
+                recursions: vec![],
+            },
+        )?
+        .unwrap();
+
+        assert_snapshot!(batches_to_string(&[ret]),
+        @r"
+        +---------------------------------+---------------------------------+---------------------------------+
+        | col1_unnest_placeholder_depth_1 | col1_unnest_placeholder_depth_2 | col2_unnest_placeholder_depth_1 |
+        +---------------------------------+---------------------------------+---------------------------------+
+        | [1, 2, 3]                       | 1                               | a                               |
+        |                                 | 2                               | b                               |
+        | [4, 5]                          | 3                               |                                 |
+        | [1, 2, 3]                       |                                 | a                               |
+        |                                 |                                 | b                               |
+        | [4, 5]                          |                                 |                                 |
+        | [1, 2, 3]                       | 4                               | a                               |
+        |                                 | 5                               | b                               |
+        | [4, 5]                          |                                 |                                 |
+        | [7, 8, 9, 10]                   | 7                               | c                               |
+        |                                 | 8                               | d                               |
+        | [11, 12, 13]                    | 9                               |                                 |
+        |                                 | 10                              |                                 |
+        | [7, 8, 9, 10]                   |                                 | c                               |
+        |                                 |                                 | d                               |
+        | [11, 12, 13]                    |                                 |                                 |
+        | [7, 8, 9, 10]                   | 11                              | c                               |
+        |                                 | 12                              | d                               |
+        | [11, 12, 13]                    | 13                              |                                 |
+        |                                 |                                 | e                               |
+        +---------------------------------+---------------------------------+---------------------------------+
+        ");
+        Ok(())
+    }
+
+    #[test]
+    fn test_unnest_list_array() -> Result<()> {
         // [A, B, C], [], NULL, [D], NULL, [NULL, F]
         let list_array = make_generic_array::<i32>();
         verify_unnest_list_array(
@@ -794,8 +1277,11 @@ mod tests {
         list_arrays: &[ArrayRef],
         preserve_nulls: bool,
         expected: Vec<i64>,
-    ) -> datafusion_common::Result<()> {
-        let options = UnnestOptions { preserve_nulls };
+    ) -> Result<()> {
+        let options = UnnestOptions {
+            preserve_nulls,
+            recursions: vec![],
+        };
         let longest_length = find_longest_length(list_arrays, &options)?;
         let expected_array = Int64Array::from(expected);
         assert_eq!(
@@ -809,31 +1295,31 @@ mod tests {
     }
 
     #[test]
-    fn test_longest_list_length() -> datafusion_common::Result<()> {
+    fn test_longest_list_length() -> Result<()> {
         // Test with single ListArray
         //  [A, B, C], [], NULL, [D], NULL, [NULL, F]
         let list_array = Arc::new(make_generic_array::<i32>()) as ArrayRef;
-        verify_longest_length(&[list_array.clone()], false, vec![3, 0, 0, 1, 0, 2])?;
-        verify_longest_length(&[list_array.clone()], true, vec![3, 0, 1, 1, 1, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], false, vec![3, 0, 0, 1, 0, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], true, vec![3, 0, 1, 1, 1, 2])?;
 
         // Test with single LargeListArray
         //  [A, B, C], [], NULL, [D], NULL, [NULL, F]
         let list_array = Arc::new(make_generic_array::<i64>()) as ArrayRef;
-        verify_longest_length(&[list_array.clone()], false, vec![3, 0, 0, 1, 0, 2])?;
-        verify_longest_length(&[list_array.clone()], true, vec![3, 0, 1, 1, 1, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], false, vec![3, 0, 0, 1, 0, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], true, vec![3, 0, 1, 1, 1, 2])?;
 
         // Test with single FixedSizeListArray
         //  [A, B], NULL, [C, D], NULL, [NULL, F], [NULL, NULL]
         let list_array = Arc::new(make_fixed_list()) as ArrayRef;
-        verify_longest_length(&[list_array.clone()], false, vec![2, 0, 2, 0, 2, 2])?;
-        verify_longest_length(&[list_array.clone()], true, vec![2, 1, 2, 1, 2, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], false, vec![2, 0, 2, 0, 2, 2])?;
+        verify_longest_length(&[Arc::clone(&list_array)], true, vec![2, 1, 2, 1, 2, 2])?;
 
         // Test with multiple list arrays
         //  [A, B, C], [], NULL, [D], NULL, [NULL, F]
         //  [A, B], NULL, [C, D], NULL, [NULL, F], [NULL, NULL]
         let list1 = Arc::new(make_generic_array::<i32>()) as ArrayRef;
         let list2 = Arc::new(make_fixed_list()) as ArrayRef;
-        let list_arrays = vec![list1.clone(), list2.clone()];
+        let list_arrays = vec![Arc::clone(&list1), Arc::clone(&list2)];
         verify_longest_length(&list_arrays, false, vec![3, 0, 2, 1, 2, 2])?;
         verify_longest_length(&list_arrays, true, vec![3, 1, 2, 1, 2, 2])?;
 
@@ -841,11 +1327,11 @@ mod tests {
     }
 
     #[test]
-    fn test_create_take_indicies() -> datafusion_common::Result<()> {
+    fn test_create_take_indices() -> Result<()> {
         let length_array = Int64Array::from(vec![2, 3, 1]);
-        let take_indicies = create_take_indicies(&length_array, 6);
+        let take_indices = create_take_indices(&length_array, 6);
         let expected = Int64Array::from(vec![0, 0, 1, 1, 1, 2]);
-        assert_eq!(take_indicies, expected);
+        assert_eq!(take_indices, expected);
         Ok(())
     }
 }

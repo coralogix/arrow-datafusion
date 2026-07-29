@@ -15,17 +15,50 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::Array;
-use arrow::compute::is_not_null;
-use arrow::compute::kernels::zip::zip;
-use arrow::datatypes::DataType;
-use datafusion_common::{exec_err, internal_err, Result};
+use arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion_common::{Result, internal_err, utils::take_function_args};
 use datafusion_expr::{
-    type_coercion::binary::comparison_coercion, ColumnarValue, ScalarUDFImpl, Signature,
-    Volatility,
+    ColumnarValue, Documentation, Expr, ReturnFieldArgs, ScalarFunctionArgs,
+    ScalarUDFImpl, Signature, Volatility,
+    conditional_expressions::CaseBuilder,
+    simplify::{ExprSimplifyResult, SimplifyInfo},
+    type_coercion::binary::comparison_coercion,
 };
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Conditional Functions"),
+    description = "Returns _expression2_ if _expression1_ is not NULL; otherwise it returns _expression3_.",
+    syntax_example = "nvl2(expression1, expression2, expression3)",
+    sql_example = r#"```sql
+> select nvl2(null, 'a', 'b');
++--------------------------------+
+| nvl2(NULL,Utf8("a"),Utf8("b")) |
++--------------------------------+
+| b                              |
++--------------------------------+
+> select nvl2('data', 'a', 'b');
++----------------------------------------+
+| nvl2(Utf8("data"),Utf8("a"),Utf8("b")) |
++----------------------------------------+
+| a                                      |
++----------------------------------------+
+```
+"#,
+    argument(
+        name = "expression1",
+        description = "Expression to test for null. Can be a constant, column, or function, and any combination of operators."
+    ),
+    argument(
+        name = "expression2",
+        description = "Expression to return if expr1 is not null. Can be a constant, column, or function, and any combination of operators."
+    ),
+    argument(
+        name = "expression3",
+        description = "Expression to return if expr1 is null. Can be a constant, column, or function, and any combination of operators."
+    )
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct NVL2Func {
     signature: Signature,
 }
@@ -61,75 +94,60 @@ impl ScalarUDFImpl for NVL2Func {
         Ok(arg_types[1].clone())
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        nvl2_func(args)
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
+        let nullable =
+            args.arg_fields[1].is_nullable() || args.arg_fields[2].is_nullable();
+        let return_type = args.arg_fields[1].data_type().clone();
+        Ok(Field::new(self.name(), return_type, nullable).into())
+    }
+
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        internal_err!("nvl2 should have been simplified to case")
+    }
+
+    fn simplify(
+        &self,
+        args: Vec<Expr>,
+        _info: &dyn SimplifyInfo,
+    ) -> Result<ExprSimplifyResult> {
+        let [test, if_non_null, if_null] = take_function_args(self.name(), args)?;
+
+        let expr = CaseBuilder::new(
+            None,
+            vec![test.is_not_null()],
+            vec![if_non_null],
+            Some(Box::new(if_null)),
+        )
+        .end()?;
+
+        Ok(ExprSimplifyResult::Simplified(expr))
+    }
+
+    fn short_circuits(&self) -> bool {
+        true
     }
 
     fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
-        if arg_types.len() != 3 {
-            return exec_err!(
-                "NVL2 takes exactly three arguments, but got {}",
-                arg_types.len()
-            );
-        }
-        let new_type = arg_types.iter().skip(1).try_fold(
-            arg_types.first().unwrap().clone(),
-            |acc, x| {
-                // The coerced types found by `comparison_coercion` are not guaranteed to be
-                // coercible for the arguments. `comparison_coercion` returns more loose
-                // types that can be coerced to both `acc` and `x` for comparison purpose.
-                // See `maybe_data_types` for the actual coercion.
-                let coerced_type = comparison_coercion(&acc, x);
-                if let Some(coerced_type) = coerced_type {
-                    Ok(coerced_type)
-                } else {
-                    internal_err!("Coercion from {acc:?} to {x:?} failed.")
-                }
-            },
-        )?;
+        let [tested, if_non_null, if_null] = take_function_args(self.name(), arg_types)?;
+        let new_type =
+            [if_non_null, if_null]
+                .iter()
+                .try_fold(tested.clone(), |acc, x| {
+                    // The coerced types found by `comparison_coercion` are not guaranteed to be
+                    // coercible for the arguments. `comparison_coercion` returns more loose
+                    // types that can be coerced to both `acc` and `x` for comparison purpose.
+                    // See `maybe_data_types` for the actual coercion.
+                    let coerced_type = comparison_coercion(&acc, x);
+                    if let Some(coerced_type) = coerced_type {
+                        Ok(coerced_type)
+                    } else {
+                        internal_err!("Coercion from {acc} to {x} failed.")
+                    }
+                })?;
         Ok(vec![new_type; arg_types.len()])
     }
-}
 
-fn nvl2_func(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() != 3 {
-        return internal_err!(
-            "{:?} args were supplied but NVL2 takes exactly three args",
-            args.len()
-        );
-    }
-    let mut len = 1;
-    let mut is_array = false;
-    for arg in args {
-        if let ColumnarValue::Array(array) = arg {
-            len = array.len();
-            is_array = true;
-            break;
-        }
-    }
-    if is_array {
-        let args = args
-            .iter()
-            .map(|arg| match arg {
-                ColumnarValue::Scalar(scalar) => scalar.to_array_of_size(len),
-                ColumnarValue::Array(array) => Ok(array.clone()),
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let to_apply = is_not_null(&args[0])?;
-        let value = zip(&to_apply, &args[1], &args[2])?;
-        Ok(ColumnarValue::Array(value))
-    } else {
-        let mut current_value = &args[1];
-        match &args[0] {
-            ColumnarValue::Array(_) => {
-                internal_err!("except Scalar value, but got Array")
-            }
-            ColumnarValue::Scalar(scalar) => {
-                if scalar.is_null() {
-                    current_value = &args[2];
-                }
-                Ok(current_value.clone())
-            }
-        }
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

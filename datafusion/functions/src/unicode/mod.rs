@@ -23,8 +23,10 @@ use datafusion_expr::ScalarUDF;
 
 pub mod character_length;
 pub mod find_in_set;
+pub mod initcap;
 pub mod left;
 pub mod lpad;
+pub mod planner;
 pub mod reverse;
 pub mod right;
 pub mod rpad;
@@ -34,22 +36,19 @@ pub mod substrindex;
 pub mod translate;
 
 // create UDFs
-make_udf_function!(
-    character_length::CharacterLengthFunc,
-    CHARACTER_LENGTH,
-    character_length
-);
-make_udf_function!(find_in_set::FindInSetFunc, FIND_IN_SET, find_in_set);
-make_udf_function!(left::LeftFunc, LEFT, left);
-make_udf_function!(lpad::LPadFunc, LPAD, lpad);
-make_udf_function!(right::RightFunc, RIGHT, right);
-make_udf_function!(reverse::ReverseFunc, REVERSE, reverse);
-make_udf_function!(rpad::RPadFunc, RPAD, rpad);
-make_udf_function!(strpos::StrposFunc, STRPOS, strpos);
-make_udf_function!(substr::SubstrFunc, SUBSTR, substr);
-make_udf_function!(substr::SubstrFunc, SUBSTRING, substring);
-make_udf_function!(substrindex::SubstrIndexFunc, SUBSTR_INDEX, substr_index);
-make_udf_function!(translate::TranslateFunc, TRANSLATE, translate);
+make_udf_function!(character_length::CharacterLengthFunc, character_length);
+make_udf_function!(find_in_set::FindInSetFunc, find_in_set);
+make_udf_function!(initcap::InitcapFunc, initcap);
+make_udf_function!(left::LeftFunc, left);
+make_udf_function!(lpad::LPadFunc, lpad);
+make_udf_function!(right::RightFunc, right);
+make_udf_function!(reverse::ReverseFunc, reverse);
+make_udf_function!(rpad::RPadFunc, rpad);
+make_udf_function!(strpos::StrposFunc, strpos);
+make_udf_function!(substr::SubstrFunc, substr);
+make_udf_function!(substr::SubstrFunc, substring);
+make_udf_function!(substrindex::SubstrIndexFunc, substr_index);
+make_udf_function!(translate::TranslateFunc, translate);
 
 pub mod expr_fn {
     use datafusion_expr::Expr;
@@ -99,8 +98,12 @@ pub mod expr_fn {
         "returns the first `n` characters in the `string`",
         string n
     ),(
+        initcap,
+        "converts the first letter of each word in `string` in uppercase and the remaining characters in lowercase",
+        string
+    ),(
         find_in_set,
-        "Returns a value in the range of 1 to N if the string str is in the string list strlist consisting of N substrings",
+        "Returns a value in the range of 1 to N if the string `str` is in the string list `strlist` consisting of N substrings",
         string strlist
     ));
 
@@ -125,11 +128,12 @@ pub mod expr_fn {
     }
 }
 
-///   Return a list of all functions in this package
+/// Returns all DataFusion functions defined in this package
 pub fn functions() -> Vec<Arc<ScalarUDF>> {
     vec![
         character_length(),
         find_in_set(),
+        initcap(),
         left(),
         lpad(),
         reverse(),

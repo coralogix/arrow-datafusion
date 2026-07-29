@@ -19,28 +19,33 @@
 //! DataFusion logical plans to be serialized and transmitted between
 //! processes.
 
-use datafusion_common::{TableReference, UnnestOptions};
+use std::collections::HashMap;
+
+use datafusion_common::{NullEquality, TableReference, UnnestOptions};
+use datafusion_expr::WriteOp;
+use datafusion_expr::dml::InsertOp;
 use datafusion_expr::expr::{
-    self, AggregateFunctionDefinition, Alias, Between, BinaryExpr, Cast, GroupingSet,
-    InList, Like, Placeholder, ScalarFunction, Sort, Unnest,
+    self, AggregateFunctionParams, Alias, Between, BinaryExpr, Cast, GroupingSet, InList,
+    Like, NullTreatment, Placeholder, ScalarFunction, Unnest,
 };
 use datafusion_expr::{
-    logical_plan::PlanType, logical_plan::StringifiedPlan, AggregateFunction,
-    BuiltInWindowFunction, Expr, JoinConstraint, JoinType, TryCast, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    Expr, JoinConstraint, JoinType, SortExpr, TryCast, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition, logical_plan::PlanType,
+    logical_plan::StringifiedPlan,
 };
 
+use crate::protobuf::RecursionUnnestOption;
 use crate::protobuf::{
-    self,
+    self, AnalyzedLogicalPlanType, CubeNode, EmptyMessage, GroupingSetNode,
+    LogicalExprList, OptimizedLogicalPlanType, OptimizedPhysicalPlanType,
+    PlaceholderNode, RollupNode, ToProtoError as Error,
     plan_type::PlanTypeEnum::{
         AnalyzedLogicalPlan, FinalAnalyzedLogicalPlan, FinalLogicalPlan,
-        FinalPhysicalPlan, FinalPhysicalPlanWithStats, InitialLogicalPlan,
-        InitialPhysicalPlan, InitialPhysicalPlanWithStats, OptimizedLogicalPlan,
-        OptimizedPhysicalPlan,
+        FinalPhysicalPlan, FinalPhysicalPlanWithSchema, FinalPhysicalPlanWithStats,
+        InitialLogicalPlan, InitialPhysicalPlan, InitialPhysicalPlanWithSchema,
+        InitialPhysicalPlanWithStats, OptimizedLogicalPlan, OptimizedPhysicalPlan,
+        PhysicalPlanError,
     },
-    AnalyzedLogicalPlanType, CubeNode, EmptyMessage, GroupingSetNode, LogicalExprList,
-    OptimizedLogicalPlanType, OptimizedPhysicalPlanType, PlaceholderNode, RollupNode,
-    ToProtoError as Error,
 };
 
 use super::LogicalExtensionCodec;
@@ -49,6 +54,15 @@ impl From<&UnnestOptions> for protobuf::UnnestOptions {
     fn from(opts: &UnnestOptions) -> Self {
         Self {
             preserve_nulls: opts.preserve_nulls,
+            recursions: opts
+                .recursions
+                .iter()
+                .map(|r| RecursionUnnestOption {
+                    input_column: Some((&r.input_column).into()),
+                    output_column: Some((&r.output_column).into()),
+                    depth: r.depth as u32,
+                })
+                .collect(),
         }
     }
 }
@@ -96,43 +110,20 @@ impl From<&StringifiedPlan> for protobuf::StringifiedPlan {
                 PlanType::InitialPhysicalPlanWithStats => Some(protobuf::PlanType {
                     plan_type_enum: Some(InitialPhysicalPlanWithStats(EmptyMessage {})),
                 }),
+                PlanType::InitialPhysicalPlanWithSchema => Some(protobuf::PlanType {
+                    plan_type_enum: Some(InitialPhysicalPlanWithSchema(EmptyMessage {})),
+                }),
                 PlanType::FinalPhysicalPlanWithStats => Some(protobuf::PlanType {
                     plan_type_enum: Some(FinalPhysicalPlanWithStats(EmptyMessage {})),
                 }),
+                PlanType::FinalPhysicalPlanWithSchema => Some(protobuf::PlanType {
+                    plan_type_enum: Some(FinalPhysicalPlanWithSchema(EmptyMessage {})),
+                }),
+                PlanType::PhysicalPlanError => Some(protobuf::PlanType {
+                    plan_type_enum: Some(PhysicalPlanError(EmptyMessage {})),
+                }),
             },
             plan: stringified_plan.plan.to_string(),
-        }
-    }
-}
-
-impl From<&AggregateFunction> for protobuf::AggregateFunction {
-    fn from(value: &AggregateFunction) -> Self {
-        match value {
-            AggregateFunction::Min => Self::Min,
-            AggregateFunction::Max => Self::Max,
-            AggregateFunction::Avg => Self::Avg,
-            AggregateFunction::ArrayAgg => Self::ArrayAgg,
-            AggregateFunction::Correlation => Self::Correlation,
-            AggregateFunction::Grouping => Self::Grouping,
-            AggregateFunction::NthValue => Self::NthValueAgg,
-        }
-    }
-}
-
-impl From<&BuiltInWindowFunction> for protobuf::BuiltInWindowFunction {
-    fn from(value: &BuiltInWindowFunction) -> Self {
-        match value {
-            BuiltInWindowFunction::FirstValue => Self::FirstValue,
-            BuiltInWindowFunction::LastValue => Self::LastValue,
-            BuiltInWindowFunction::NthValue => Self::NthValue,
-            BuiltInWindowFunction::Ntile => Self::Ntile,
-            BuiltInWindowFunction::CumeDist => Self::CumeDist,
-            BuiltInWindowFunction::PercentRank => Self::PercentRank,
-            BuiltInWindowFunction::RowNumber => Self::RowNumber,
-            BuiltInWindowFunction::Rank => Self::Rank,
-            BuiltInWindowFunction::Lag => Self::Lag,
-            BuiltInWindowFunction::Lead => Self::Lead,
-            BuiltInWindowFunction::DenseRank => Self::DenseRank,
         }
     }
 }
@@ -210,6 +201,7 @@ pub fn serialize_expr(
             expr,
             relation,
             name,
+            metadata,
         }) => {
             let alias = Box::new(protobuf::AliasNode {
                 expr: Some(Box::new(serialize_expr(expr.as_ref(), codec)?)),
@@ -218,12 +210,16 @@ pub fn serialize_expr(
                     .map(|r| vec![r.into()])
                     .unwrap_or(vec![]),
                 alias: name.to_owned(),
+                metadata: metadata
+                    .as_ref()
+                    .map(|m| m.to_hashmap())
+                    .unwrap_or(HashMap::new()),
             });
             protobuf::LogicalExprNode {
                 expr_type: Some(ExprType::Alias(alias)),
             }
         }
-        Expr::Literal(value) => {
+        Expr::Literal(value, _) => {
             let pb_value: protobuf::ScalarValue = value.try_into()?;
             protobuf::LogicalExprNode {
                 expr_type: Some(ExprType::Literal(pb_value)),
@@ -308,135 +304,106 @@ pub fn serialize_expr(
                 expr_type: Some(ExprType::SimilarTo(pb)),
             }
         }
-        Expr::WindowFunction(expr::WindowFunction {
-            ref fun,
-            ref args,
-            ref partition_by,
-            ref order_by,
-            ref window_frame,
-            // TODO: support null treatment in proto
-            null_treatment: _,
-        }) => {
+        Expr::WindowFunction(window_fun) => {
+            let expr::WindowFunction {
+                fun,
+                params:
+                    expr::WindowFunctionParams {
+                        args,
+                        partition_by,
+                        order_by,
+                        window_frame,
+                        null_treatment,
+                        distinct,
+                        filter,
+                    },
+            } = window_fun.as_ref();
+            let mut buf = Vec::new();
             let window_function = match fun {
-                WindowFunctionDefinition::AggregateFunction(fun) => {
-                    protobuf::window_expr_node::WindowFunction::AggrFunction(
-                        protobuf::AggregateFunction::from(fun).into(),
-                    )
-                }
-                WindowFunctionDefinition::BuiltInWindowFunction(fun) => {
-                    protobuf::window_expr_node::WindowFunction::BuiltInFunction(
-                        protobuf::BuiltInWindowFunction::from(fun).into(),
-                    )
-                }
                 WindowFunctionDefinition::AggregateUDF(aggr_udf) => {
+                    let _ = codec.try_encode_udaf(aggr_udf, &mut buf);
                     protobuf::window_expr_node::WindowFunction::Udaf(
                         aggr_udf.name().to_string(),
                     )
                 }
                 WindowFunctionDefinition::WindowUDF(window_udf) => {
+                    let _ = codec.try_encode_udwf(window_udf, &mut buf);
                     protobuf::window_expr_node::WindowFunction::Udwf(
                         window_udf.name().to_string(),
                     )
                 }
             };
-            let arg_expr: Option<Box<protobuf::LogicalExprNode>> = if !args.is_empty() {
-                let arg = &args[0];
-                Some(Box::new(serialize_expr(arg, codec)?))
-            } else {
-                None
-            };
+            let fun_definition = (!buf.is_empty()).then_some(buf);
             let partition_by = serialize_exprs(partition_by, codec)?;
-            let order_by = serialize_exprs(order_by, codec)?;
+            let order_by = serialize_sorts(order_by, codec)?;
 
             let window_frame: Option<protobuf::WindowFrame> =
                 Some(window_frame.try_into()?);
-            let window_expr = Box::new(protobuf::WindowExprNode {
-                expr: arg_expr,
+
+            let window_expr = protobuf::WindowExprNode {
+                exprs: serialize_exprs(args, codec)?,
                 window_function: Some(window_function),
                 partition_by,
                 order_by,
                 window_frame,
-            });
+                distinct: *distinct,
+                filter: match filter {
+                    Some(e) => Some(Box::new(serialize_expr(e.as_ref(), codec)?)),
+                    None => None,
+                },
+                null_treatment: null_treatment
+                    .map(|nt| protobuf::NullTreatment::from(nt).into()),
+                fun_definition,
+            };
             protobuf::LogicalExprNode {
-                expr_type: Some(ExprType::WindowExpr(window_expr)),
+                expr_type: Some(ExprType::WindowExpr(Box::new(window_expr))),
             }
         }
         Expr::AggregateFunction(expr::AggregateFunction {
-            ref func_def,
-            ref args,
-            ref distinct,
-            ref filter,
-            ref order_by,
-            null_treatment: _,
-        }) => match func_def {
-            AggregateFunctionDefinition::BuiltIn(fun) => {
-                let aggr_function = match fun {
-                    AggregateFunction::ArrayAgg => protobuf::AggregateFunction::ArrayAgg,
-                    AggregateFunction::Min => protobuf::AggregateFunction::Min,
-                    AggregateFunction::Max => protobuf::AggregateFunction::Max,
-                    AggregateFunction::Avg => protobuf::AggregateFunction::Avg,
-                    AggregateFunction::Correlation => {
-                        protobuf::AggregateFunction::Correlation
-                    }
-                    AggregateFunction::Grouping => protobuf::AggregateFunction::Grouping,
-                    AggregateFunction::NthValue => {
-                        protobuf::AggregateFunction::NthValueAgg
-                    }
-                };
-
-                let aggregate_expr = protobuf::AggregateExprNode {
-                    aggr_function: aggr_function.into(),
-                    expr: serialize_exprs(args, codec)?,
-                    distinct: *distinct,
-                    filter: match filter {
-                        Some(e) => Some(Box::new(serialize_expr(e, codec)?)),
-                        None => None,
-                    },
-                    order_by: match order_by {
-                        Some(e) => serialize_exprs(e, codec)?,
-                        None => vec![],
-                    },
-                };
-                protobuf::LogicalExprNode {
-                    expr_type: Some(ExprType::AggregateExpr(Box::new(aggregate_expr))),
-                }
-            }
-            AggregateFunctionDefinition::UDF(fun) => protobuf::LogicalExprNode {
+            func,
+            params:
+                AggregateFunctionParams {
+                    args,
+                    distinct,
+                    filter,
+                    order_by,
+                    null_treatment,
+                },
+        }) => {
+            let mut buf = Vec::new();
+            let _ = codec.try_encode_udaf(func, &mut buf);
+            protobuf::LogicalExprNode {
                 expr_type: Some(ExprType::AggregateUdfExpr(Box::new(
                     protobuf::AggregateUdfExprNode {
-                        fun_name: fun.name().to_string(),
+                        fun_name: func.name().to_string(),
                         args: serialize_exprs(args, codec)?,
                         distinct: *distinct,
                         filter: match filter {
                             Some(e) => Some(Box::new(serialize_expr(e.as_ref(), codec)?)),
                             None => None,
                         },
-                        order_by: match order_by {
-                            Some(e) => serialize_exprs(e, codec)?,
-                            None => vec![],
-                        },
+                        order_by: serialize_sorts(order_by, codec)?,
+                        fun_definition: (!buf.is_empty()).then_some(buf),
+                        null_treatment: null_treatment
+                            .map(|nt| protobuf::NullTreatment::from(nt).into()),
                     },
                 ))),
-            },
-        },
+            }
+        }
 
         Expr::ScalarVariable(_, _) => {
             return Err(Error::General(
                 "Proto serialization error: Scalar Variable not supported".to_string(),
-            ))
+            ));
         }
         Expr::ScalarFunction(ScalarFunction { func, args }) => {
-            let args = serialize_exprs(args, codec)?;
             let mut buf = Vec::new();
-            let _ = codec.try_encode_udf(func.as_ref(), &mut buf);
-
-            let fun_definition = if buf.is_empty() { None } else { Some(buf) };
-
+            let _ = codec.try_encode_udf(func, &mut buf);
             protobuf::LogicalExprNode {
                 expr_type: Some(ExprType::ScalarUdfExpr(protobuf::ScalarUdfExprNode {
                     fun_name: func.name().to_string(),
-                    fun_definition,
-                    args,
+                    fun_definition: (!buf.is_empty()).then_some(buf),
+                    args: serialize_exprs(args, codec)?,
                 })),
             }
         }
@@ -572,20 +539,6 @@ pub fn serialize_expr(
                 expr_type: Some(ExprType::TryCast(expr)),
             }
         }
-        Expr::Sort(Sort {
-            expr,
-            asc,
-            nulls_first,
-        }) => {
-            let expr = Box::new(protobuf::SortExprNode {
-                expr: Some(Box::new(serialize_expr(expr.as_ref(), codec)?)),
-                asc: *asc,
-                nulls_first: *nulls_first,
-            });
-            protobuf::LogicalExprNode {
-                expr_type: Some(ExprType::Sort(expr)),
-            }
-        }
         Expr::Negative(expr) => {
             let expr = Box::new(protobuf::NegativeNode {
                 expr: Some(Box::new(serialize_expr(expr.as_ref(), codec)?)),
@@ -616,9 +569,10 @@ pub fn serialize_expr(
                 expr_type: Some(ExprType::InList(expr)),
             }
         }
-        Expr::Wildcard { qualifier } => protobuf::LogicalExprNode {
+        #[expect(deprecated)]
+        Expr::Wildcard { qualifier, .. } => protobuf::LogicalExprNode {
             expr_type: Some(ExprType::Wildcard(protobuf::Wildcard {
-                qualifier: qualifier.clone().unwrap_or("".to_string()),
+                qualifier: qualifier.to_owned().map(|x| x.into()),
             })),
         },
         Expr::ScalarSubquery(_)
@@ -653,21 +607,47 @@ pub fn serialize_expr(
                 })),
             }
         }
-        Expr::Placeholder(Placeholder { id, data_type }) => {
-            let data_type = match data_type {
-                Some(data_type) => Some(data_type.try_into()?),
-                None => None,
-            };
-            protobuf::LogicalExprNode {
-                expr_type: Some(ExprType::Placeholder(PlaceholderNode {
-                    id: id.clone(),
-                    data_type,
-                })),
-            }
-        }
+        Expr::Placeholder(Placeholder { id, field }) => protobuf::LogicalExprNode {
+            expr_type: Some(ExprType::Placeholder(PlaceholderNode {
+                id: id.clone(),
+                data_type: match field {
+                    Some(field) => Some(field.data_type().try_into()?),
+                    None => None,
+                },
+                nullable: field.as_ref().map(|f| f.is_nullable()),
+                metadata: field
+                    .as_ref()
+                    .map(|f| f.metadata().clone())
+                    .unwrap_or(HashMap::new()),
+            })),
+        },
     };
 
     Ok(expr_node)
+}
+
+pub fn serialize_sorts<'a, I>(
+    sorts: I,
+    codec: &dyn LogicalExtensionCodec,
+) -> Result<Vec<protobuf::SortExprNode>, Error>
+where
+    I: IntoIterator<Item = &'a SortExpr>,
+{
+    sorts
+        .into_iter()
+        .map(|sort| {
+            let SortExpr {
+                expr,
+                asc,
+                nulls_first,
+            } = sort;
+            Ok(protobuf::SortExprNode {
+                expr: Some(serialize_expr(expr, codec)?),
+                asc: *asc,
+                nulls_first: *nulls_first,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()
 }
 
 impl From<TableReference> for protobuf::TableReference {
@@ -713,6 +693,8 @@ impl From<JoinType> for protobuf::JoinType {
             JoinType::RightSemi => protobuf::JoinType::Rightsemi,
             JoinType::LeftAnti => protobuf::JoinType::Leftanti,
             JoinType::RightAnti => protobuf::JoinType::Rightanti,
+            JoinType::LeftMark => protobuf::JoinType::Leftmark,
+            JoinType::RightMark => protobuf::JoinType::Rightmark,
         }
     }
 }
@@ -722,6 +704,39 @@ impl From<JoinConstraint> for protobuf::JoinConstraint {
         match t {
             JoinConstraint::On => protobuf::JoinConstraint::On,
             JoinConstraint::Using => protobuf::JoinConstraint::Using,
+        }
+    }
+}
+
+impl From<NullEquality> for protobuf::NullEquality {
+    fn from(t: NullEquality) -> Self {
+        match t {
+            NullEquality::NullEqualsNothing => protobuf::NullEquality::NullEqualsNothing,
+            NullEquality::NullEqualsNull => protobuf::NullEquality::NullEqualsNull,
+        }
+    }
+}
+
+impl From<&WriteOp> for protobuf::dml_node::Type {
+    fn from(t: &WriteOp) -> Self {
+        match t {
+            WriteOp::Insert(InsertOp::Append) => protobuf::dml_node::Type::InsertAppend,
+            WriteOp::Insert(InsertOp::Overwrite) => {
+                protobuf::dml_node::Type::InsertOverwrite
+            }
+            WriteOp::Insert(InsertOp::Replace) => protobuf::dml_node::Type::InsertReplace,
+            WriteOp::Delete => protobuf::dml_node::Type::Delete,
+            WriteOp::Update => protobuf::dml_node::Type::Update,
+            WriteOp::Ctas => protobuf::dml_node::Type::Ctas,
+        }
+    }
+}
+
+impl From<NullTreatment> for protobuf::NullTreatment {
+    fn from(t: NullTreatment) -> Self {
+        match t {
+            NullTreatment::RespectNulls => protobuf::NullTreatment::RespectNulls,
+            NullTreatment::IgnoreNulls => protobuf::NullTreatment::IgnoreNulls,
         }
     }
 }

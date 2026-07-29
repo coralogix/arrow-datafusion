@@ -21,22 +21,29 @@ use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, Decimal128Array, Decimal256Array, Float32Array, Float64Array, Int16Array,
-    Int32Array, Int64Array, Int8Array,
+    ArrayRef, Decimal32Array, Decimal64Array, Decimal128Array, Decimal256Array,
+    Float16Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
+    Int64Array,
 };
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
-use datafusion_common::{exec_err, not_impl_err, DataFusionError, Result};
+use datafusion_common::{Result, not_impl_err, utils::take_function_args};
 use datafusion_expr::interval_arithmetic::Interval;
 use datafusion_expr::sort_properties::{ExprProperties, SortProperties};
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    Volatility,
+};
+use datafusion_macros::user_doc;
+use num_traits::sign::Signed;
 
-type MathArrayFunction = fn(&Vec<ArrayRef>) -> Result<ArrayRef>;
+type MathArrayFunction = fn(&ArrayRef) -> Result<ArrayRef>;
 
+#[macro_export]
 macro_rules! make_abs_function {
     ($ARRAY_TYPE:ident) => {{
-        |args: &Vec<ArrayRef>| {
-            let array = downcast_arg!(&args[0], "abs arg", $ARRAY_TYPE);
+        |input: &ArrayRef| {
+            let array = downcast_named_arg!(&input, "abs arg", $ARRAY_TYPE);
             let res: $ARRAY_TYPE = array.unary(|x| x.abs());
             Ok(Arc::new(res) as ArrayRef)
         }
@@ -45,8 +52,8 @@ macro_rules! make_abs_function {
 
 macro_rules! make_try_abs_function {
     ($ARRAY_TYPE:ident) => {{
-        |args: &Vec<ArrayRef>| {
-            let array = downcast_arg!(&args[0], "abs arg", $ARRAY_TYPE);
+        |input: &ArrayRef| {
+            let array = downcast_named_arg!(&input, "abs arg", $ARRAY_TYPE);
             let res: $ARRAY_TYPE = array.try_unary(|x| {
                 x.checked_abs().ok_or_else(|| {
                     ArrowError::ComputeError(format!(
@@ -61,13 +68,14 @@ macro_rules! make_try_abs_function {
     }};
 }
 
-macro_rules! make_decimal_abs_function {
+#[macro_export]
+macro_rules! make_wrapping_abs_function {
     ($ARRAY_TYPE:ident) => {{
-        |args: &Vec<ArrayRef>| {
-            let array = downcast_arg!(&args[0], "abs arg", $ARRAY_TYPE);
+        |input: &ArrayRef| {
+            let array = downcast_named_arg!(&input, "abs arg", $ARRAY_TYPE);
             let res: $ARRAY_TYPE = array
                 .unary(|x| x.wrapping_abs())
-                .with_data_type(args[0].data_type().clone());
+                .with_data_type(input.data_type().clone());
             Ok(Arc::new(res) as ArrayRef)
         }
     }};
@@ -77,6 +85,7 @@ macro_rules! make_decimal_abs_function {
 /// Return different implementations based on input datatype to reduce branches during execution
 fn create_abs_function(input_data_type: &DataType) -> Result<MathArrayFunction> {
     match input_data_type {
+        DataType::Float16 => Ok(make_abs_function!(Float16Array)),
         DataType::Float32 => Ok(make_abs_function!(Float32Array)),
         DataType::Float64 => Ok(make_abs_function!(Float64Array)),
 
@@ -91,16 +100,32 @@ fn create_abs_function(input_data_type: &DataType) -> Result<MathArrayFunction> 
         | DataType::UInt8
         | DataType::UInt16
         | DataType::UInt32
-        | DataType::UInt64 => Ok(|args: &Vec<ArrayRef>| Ok(args[0].clone())),
+        | DataType::UInt64 => Ok(|input: &ArrayRef| Ok(Arc::clone(input))),
 
         // Decimal types
-        DataType::Decimal128(_, _) => Ok(make_decimal_abs_function!(Decimal128Array)),
-        DataType::Decimal256(_, _) => Ok(make_decimal_abs_function!(Decimal256Array)),
+        DataType::Decimal32(_, _) => Ok(make_wrapping_abs_function!(Decimal32Array)),
+        DataType::Decimal64(_, _) => Ok(make_wrapping_abs_function!(Decimal64Array)),
+        DataType::Decimal128(_, _) => Ok(make_wrapping_abs_function!(Decimal128Array)),
+        DataType::Decimal256(_, _) => Ok(make_wrapping_abs_function!(Decimal256Array)),
 
         other => not_impl_err!("Unsupported data type {other:?} for function abs"),
     }
 }
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Math Functions"),
+    description = "Returns the absolute value of a number.",
+    syntax_example = "abs(numeric_expression)",
+    sql_example = r#"```sql
+> SELECT abs(-5);
++----------+
+| abs(-5)  |
++----------+
+| 5        |
++----------+
+```"#,
+    standard_argument(name = "numeric_expression", prefix = "Numeric")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct AbsFunc {
     signature: Signature,
 }
@@ -114,7 +139,7 @@ impl Default for AbsFunc {
 impl AbsFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::any(1, Volatility::Immutable),
+            signature: Signature::numeric(1, Volatility::Immutable),
         }
     }
 }
@@ -123,6 +148,7 @@ impl ScalarUDFImpl for AbsFunc {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
     fn name(&self) -> &str {
         "abs"
     }
@@ -132,42 +158,17 @@ impl ScalarUDFImpl for AbsFunc {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        match arg_types[0] {
-            DataType::Float32 => Ok(DataType::Float32),
-            DataType::Float64 => Ok(DataType::Float64),
-            DataType::Int8 => Ok(DataType::Int8),
-            DataType::Int16 => Ok(DataType::Int16),
-            DataType::Int32 => Ok(DataType::Int32),
-            DataType::Int64 => Ok(DataType::Int64),
-            DataType::Null => Ok(DataType::Null),
-            DataType::UInt8 => Ok(DataType::UInt8),
-            DataType::UInt16 => Ok(DataType::UInt16),
-            DataType::UInt32 => Ok(DataType::UInt32),
-            DataType::UInt64 => Ok(DataType::UInt64),
-            DataType::Decimal128(precision, scale) => {
-                Ok(DataType::Decimal128(precision, scale))
-            }
-            DataType::Decimal256(precision, scale) => {
-                Ok(DataType::Decimal256(precision, scale))
-            }
-            _ => not_impl_err!(
-                "Unsupported data type {} for function abs",
-                arg_types[0].to_string()
-            ),
-        }
+        Ok(arg_types[0].clone())
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        let args = ColumnarValue::values_to_arrays(args)?;
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let args = ColumnarValue::values_to_arrays(&args.args)?;
+        let [input] = take_function_args(self.name(), args)?;
 
-        if args.len() != 1 {
-            return exec_err!("abs function requires 1 argument, got {}", args.len());
-        }
-
-        let input_data_type = args[0].data_type();
+        let input_data_type = input.data_type();
         let abs_fun = create_abs_function(input_data_type)?;
 
-        abs_fun(&args).map(ColumnarValue::Array)
+        abs_fun(&input).map(ColumnarValue::Array)
     }
 
     fn output_ordering(&self, input: &[ExprProperties]) -> Result<SortProperties> {
@@ -176,12 +177,16 @@ impl ScalarUDFImpl for AbsFunc {
         let range = &arg.range;
         let zero_point = Interval::make_zero(&range.lower().data_type())?;
 
-        if range.gt_eq(&zero_point)? == Interval::CERTAINLY_TRUE {
+        if range.gt_eq(&zero_point)? == Interval::TRUE {
             Ok(arg.sort_properties)
-        } else if range.lt_eq(&zero_point)? == Interval::CERTAINLY_TRUE {
+        } else if range.lt_eq(&zero_point)? == Interval::TRUE {
             Ok(-arg.sort_properties)
         } else {
             Ok(SortProperties::Unordered)
         }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

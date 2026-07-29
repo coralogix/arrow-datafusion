@@ -21,36 +21,35 @@
 
 use std::any::Any;
 
+use arrow::datatypes::{
+    DECIMAL32_MAX_PRECISION, DECIMAL32_MAX_SCALE, DECIMAL64_MAX_PRECISION,
+    DECIMAL64_MAX_SCALE, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE,
+    DECIMAL256_MAX_PRECISION, DECIMAL256_MAX_SCALE, DataType, FieldRef,
+};
+
+use datafusion_common::plan_err;
+use datafusion_common::{Result, exec_err, not_impl_err, utils::take_function_args};
+
+use crate::Volatility::Immutable;
+use crate::type_coercion::aggregates::NUMERICS;
 use crate::{
+    Accumulator, AggregateUDFImpl, Expr, GroupsAccumulator, ReversedUDAF, Signature,
     expr::AggregateFunction,
     function::{AccumulatorArgs, StateFieldsArgs},
     utils::AggregateOrderSensitivity,
-    Accumulator, AggregateUDFImpl, Expr, GroupsAccumulator, ReversedUDAF, Signature,
-    Volatility,
 };
-use arrow::datatypes::{
-    DataType, Field, DECIMAL128_MAX_PRECISION, DECIMAL256_MAX_PRECISION,
-};
-use datafusion_common::{exec_err, not_impl_err, Result};
 
 macro_rules! create_func {
     ($UDAF:ty, $AGGREGATE_UDF_FN:ident) => {
         paste::paste! {
-            /// Singleton instance of [$UDAF], ensures the UDAF is only created once
-            /// named STATIC_$(UDAF). For example `STATIC_FirstValue`
-            #[allow(non_upper_case_globals)]
-            static [< STATIC_ $UDAF >]: std::sync::OnceLock<std::sync::Arc<crate::AggregateUDF>> =
-            std::sync::OnceLock::new();
-
-            /// AggregateFunction that returns a [AggregateUDF] for [$UDAF]
-            ///
-            /// [AggregateUDF]: crate::AggregateUDF
+            #[doc = concat!("AggregateFunction that returns a [AggregateUDF](crate::AggregateUDF) for [`", stringify!($UDAF), "`]")]
             pub fn $AGGREGATE_UDF_FN() -> std::sync::Arc<crate::AggregateUDF> {
-                [< STATIC_ $UDAF >]
-                    .get_or_init(|| {
+                // Singleton instance of [$UDAF], ensures the UDAF is only created once
+                static INSTANCE: std::sync::LazyLock<std::sync::Arc<crate::AggregateUDF>> =
+                    std::sync::LazyLock::new(|| {
                         std::sync::Arc::new(crate::AggregateUDF::from(<$UDAF>::default()))
-                    })
-                    .clone()
+                    });
+                std::sync::Arc::clone(&INSTANCE)
             }
         }
     }
@@ -64,7 +63,7 @@ pub fn sum(expr: Expr) -> Expr {
         vec![expr],
         false,
         None,
-        None,
+        vec![],
         None,
     ))
 }
@@ -77,13 +76,26 @@ pub fn count(expr: Expr) -> Expr {
         vec![expr],
         false,
         None,
+        vec![],
         None,
+    ))
+}
+
+create_func!(Avg, avg_udaf);
+
+pub fn avg(expr: Expr) -> Expr {
+    Expr::AggregateFunction(AggregateFunction::new_udf(
+        avg_udaf(),
+        vec![expr],
+        false,
+        None,
+        vec![],
         None,
     ))
 }
 
 /// Stub `sum` used for optimizer testing
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Sum {
     signature: Signature,
 }
@@ -91,7 +103,7 @@ pub struct Sum {
 impl Sum {
     pub fn new() -> Self {
         Self {
-            signature: Signature::user_defined(Volatility::Immutable),
+            signature: Signature::user_defined(Immutable),
         }
     }
 }
@@ -116,9 +128,7 @@ impl AggregateUDFImpl for Sum {
     }
 
     fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
-        if arg_types.len() != 1 {
-            return exec_err!("SUM expects exactly one argument");
-        }
+        let [array] = take_function_args(self.name(), arg_types)?;
 
         // Refer to https://www.postgresql.org/docs/8.2/functions-aggregate.html doc
         // smallint, int, bigint, real, double precision, decimal, or interval.
@@ -128,17 +138,18 @@ impl AggregateUDFImpl for Sum {
                 DataType::Dictionary(_, v) => coerced_type(v),
                 // in the spark, the result type is DECIMAL(min(38,precision+10), s)
                 // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
-                DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => {
-                    Ok(data_type.clone())
-                }
+                DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _) => Ok(data_type.clone()),
                 dt if dt.is_signed_integer() => Ok(DataType::Int64),
                 dt if dt.is_unsigned_integer() => Ok(DataType::UInt64),
                 dt if dt.is_floating() => Ok(DataType::Float64),
-                _ => exec_err!("Sum not supported for {}", data_type),
+                _ => exec_err!("Sum not supported for {data_type}"),
             }
         }
 
-        Ok(vec![coerced_type(&arg_types[0])?])
+        Ok(vec![coerced_type(array)?])
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
@@ -146,6 +157,18 @@ impl AggregateUDFImpl for Sum {
             DataType::Int64 => Ok(DataType::Int64),
             DataType::UInt64 => Ok(DataType::UInt64),
             DataType::Float64 => Ok(DataType::Float64),
+            DataType::Decimal32(precision, scale) => {
+                // in the spark, the result type is DECIMAL(min(38,precision+10), s)
+                // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
+                let new_precision = DECIMAL32_MAX_PRECISION.min(*precision + 10);
+                Ok(DataType::Decimal32(new_precision, *scale))
+            }
+            DataType::Decimal64(precision, scale) => {
+                // in the spark, the result type is DECIMAL(min(38,precision+10), s)
+                // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
+                let new_precision = DECIMAL64_MAX_PRECISION.min(*precision + 10);
+                Ok(DataType::Decimal64(new_precision, *scale))
+            }
             DataType::Decimal128(precision, scale) => {
                 // in the spark, the result type is DECIMAL(min(38,precision+10), s)
                 // ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Sum.scala#L66
@@ -168,12 +191,8 @@ impl AggregateUDFImpl for Sum {
         unreachable!("stub should not have accumulate()")
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         unreachable!("stub should not have state_fields()")
-    }
-
-    fn aliases(&self) -> &[String] {
-        &[]
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
@@ -187,13 +206,6 @@ impl AggregateUDFImpl for Sum {
         unreachable!("stub should not have accumulate()")
     }
 
-    fn create_sliding_accumulator(
-        &self,
-        _args: AccumulatorArgs,
-    ) -> Result<Box<dyn Accumulator>> {
-        unreachable!("stub should not have accumulate()")
-    }
-
     fn reverse_expr(&self) -> ReversedUDAF {
         ReversedUDAF::Identical
     }
@@ -204,6 +216,7 @@ impl AggregateUDFImpl for Sum {
 }
 
 /// Testing stub implementation of COUNT aggregate
+#[derive(PartialEq, Eq, Hash)]
 pub struct Count {
     signature: Signature,
     aliases: Vec<String>,
@@ -228,13 +241,13 @@ impl Count {
     pub fn new() -> Self {
         Self {
             aliases: vec!["count".to_string()],
-            signature: Signature::variadic_any(Volatility::Immutable),
+            signature: Signature::variadic_any(Immutable),
         }
     }
 }
 
 impl AggregateUDFImpl for Count {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -250,7 +263,11 @@ impl AggregateUDFImpl for Count {
         Ok(DataType::Int64)
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn is_nullable(&self) -> bool {
+        false
+    }
+
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         not_impl_err!("no impl for stub")
     }
 
@@ -271,5 +288,274 @@ impl AggregateUDFImpl for Count {
 
     fn reverse_expr(&self) -> ReversedUDAF {
         ReversedUDAF::Identical
+    }
+}
+
+create_func!(Min, min_udaf);
+
+pub fn min(expr: Expr) -> Expr {
+    Expr::AggregateFunction(AggregateFunction::new_udf(
+        min_udaf(),
+        vec![expr],
+        false,
+        None,
+        vec![],
+        None,
+    ))
+}
+
+/// Testing stub implementation of Min aggregate
+#[derive(PartialEq, Eq, Hash)]
+pub struct Min {
+    signature: Signature,
+}
+
+impl std::fmt::Debug for Min {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Min")
+            .field("name", &self.name())
+            .field("signature", &self.signature)
+            .finish()
+    }
+}
+
+impl Default for Min {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Min {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::variadic_any(Immutable),
+        }
+    }
+}
+
+impl AggregateUDFImpl for Min {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "min"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Int64)
+    }
+
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
+    }
+    fn is_descending(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+
+create_func!(Max, max_udaf);
+
+pub fn max(expr: Expr) -> Expr {
+    Expr::AggregateFunction(AggregateFunction::new_udf(
+        max_udaf(),
+        vec![expr],
+        false,
+        None,
+        vec![],
+        None,
+    ))
+}
+
+/// Testing stub implementation of MAX aggregate
+#[derive(PartialEq, Eq, Hash)]
+pub struct Max {
+    signature: Signature,
+}
+
+impl std::fmt::Debug for Max {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Max")
+            .field("name", &self.name())
+            .field("signature", &self.signature)
+            .finish()
+    }
+}
+
+impl Default for Max {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Max {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::variadic_any(Immutable),
+        }
+    }
+}
+
+impl AggregateUDFImpl for Max {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "max"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Int64)
+    }
+
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
+    }
+    fn is_descending(&self) -> Option<bool> {
+        Some(true)
+    }
+}
+
+/// Testing stub implementation of avg aggregate
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct Avg {
+    signature: Signature,
+    aliases: Vec<String>,
+}
+
+impl Avg {
+    pub fn new() -> Self {
+        Self {
+            aliases: vec![String::from("mean")],
+            signature: Signature::uniform(1, NUMERICS.to_vec(), Immutable),
+        }
+    }
+}
+
+impl Default for Avg {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AggregateUDFImpl for Avg {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "avg"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
+        let [args] = take_function_args(self.name(), arg_types)?;
+
+        // Supported types smallint, int, bigint, real, double precision, decimal, or interval
+        // Refer to https://www.postgresql.org/docs/8.2/functions-aggregate.html doc
+        fn coerced_type(data_type: &DataType) -> Result<DataType> {
+            match &data_type {
+                DataType::Decimal32(p, s) => Ok(DataType::Decimal32(*p, *s)),
+                DataType::Decimal64(p, s) => Ok(DataType::Decimal64(*p, *s)),
+                DataType::Decimal128(p, s) => Ok(DataType::Decimal128(*p, *s)),
+                DataType::Decimal256(p, s) => Ok(DataType::Decimal256(*p, *s)),
+                d if d.is_numeric() => Ok(DataType::Float64),
+                DataType::Duration(time_unit) => Ok(DataType::Duration(*time_unit)),
+                DataType::Dictionary(_, v) => coerced_type(v.as_ref()),
+                _ => {
+                    plan_err!("Avg does not support inputs of type {data_type}.")
+                }
+            }
+        }
+        Ok(vec![coerced_type(args)?])
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        match &arg_types[0] {
+            DataType::Decimal32(precision, scale) => {
+                // In the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
+                // Ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
+                let new_precision = DECIMAL32_MAX_PRECISION.min(*precision + 4);
+                let new_scale = DECIMAL32_MAX_SCALE.min(*scale + 4);
+                Ok(DataType::Decimal32(new_precision, new_scale))
+            }
+            DataType::Decimal64(precision, scale) => {
+                // In the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
+                // Ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
+                let new_precision = DECIMAL64_MAX_PRECISION.min(*precision + 4);
+                let new_scale = DECIMAL64_MAX_SCALE.min(*scale + 4);
+                Ok(DataType::Decimal64(new_precision, new_scale))
+            }
+            DataType::Decimal128(precision, scale) => {
+                // In the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
+                // Ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
+                let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 4);
+                let new_scale = DECIMAL128_MAX_SCALE.min(*scale + 4);
+                Ok(DataType::Decimal128(new_precision, new_scale))
+            }
+            DataType::Decimal256(precision, scale) => {
+                // In the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
+                // Ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
+                let new_precision = DECIMAL256_MAX_PRECISION.min(*precision + 4);
+                let new_scale = DECIMAL256_MAX_SCALE.min(*scale + 4);
+                Ok(DataType::Decimal256(new_precision, new_scale))
+            }
+            DataType::Duration(time_unit) => Ok(DataType::Duration(*time_unit)),
+            _ => Ok(DataType::Float64),
+        }
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        not_impl_err!("no impl for stub")
+    }
+
+    fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 }

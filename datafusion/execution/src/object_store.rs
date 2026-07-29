@@ -20,10 +20,12 @@
 //! and query data inside these systems.
 
 use dashmap::DashMap;
-use datafusion_common::{exec_err, DataFusionError, Result};
+use datafusion_common::{
+    DataFusionError, Result, exec_err, internal_datafusion_err, not_impl_err,
+};
+use object_store::ObjectStore;
 #[cfg(not(target_arch = "wasm32"))]
 use object_store::local::LocalFileSystem;
-use object_store::ObjectStore;
 use std::sync::Arc;
 use url::Url;
 
@@ -110,11 +112,11 @@ impl std::fmt::Display for ObjectStoreUrl {
 /// instances. For example DataFusion might be configured so that
 ///
 /// 1. `s3://my_bucket/lineitem/` mapped to the `/lineitem` path on an
-/// AWS S3 object store bound to `my_bucket`
+///    AWS S3 object store bound to `my_bucket`
 ///
 /// 2. `s3://my_other_bucket/lineitem/` mapped to the (same)
-/// `/lineitem` path on a *different* AWS S3 object store bound to
-/// `my_other_bucket`
+///    `/lineitem` path on a *different* AWS S3 object store bound to
+///    `my_other_bucket`
 ///
 /// When given a [`ListingTableUrl`], DataFusion tries to find an
 /// appropriate [`ObjectStore`]. For example
@@ -127,21 +129,21 @@ impl std::fmt::Display for ObjectStoreUrl {
 /// [`ObjectStoreRegistry::get_store`] and one of three things will happen:
 ///
 /// - If an [`ObjectStore`] has been registered with [`ObjectStoreRegistry::register_store`] with
-/// `s3://my_bucket`, that [`ObjectStore`] will be returned
+///   `s3://my_bucket`, that [`ObjectStore`] will be returned
 ///
 /// - If an AWS S3 object store can be ad-hoc discovered by the url `s3://my_bucket/lineitem/`, this
-/// object store will be registered with key `s3://my_bucket` and returned.
+///   object store will be registered with key `s3://my_bucket` and returned.
 ///
 /// - Otherwise an error will be returned, indicating that no suitable [`ObjectStore`] could
-/// be found
+///   be found
 ///
 /// This allows for two different use-cases:
 ///
 /// 1. Systems where object store buckets are explicitly created using DDL, can register these
-/// buckets using [`ObjectStoreRegistry::register_store`]
+///    buckets using [`ObjectStoreRegistry::register_store`]
 ///
 /// 2. Systems relying on ad-hoc discovery, without corresponding DDL, can create [`ObjectStore`]
-/// lazily by providing a custom implementation of [`ObjectStoreRegistry`]
+///    lazily by providing a custom implementation of [`ObjectStoreRegistry`]
 ///
 /// <!-- is in a different crate so normal rustdoc links don't work -->
 /// [`ListingTableUrl`]: https://docs.rs/datafusion/latest/datafusion/datasource/listing/struct.ListingTableUrl.html
@@ -153,6 +155,15 @@ pub trait ObjectStoreRegistry: Send + Sync + std::fmt::Debug + 'static {
         url: &Url,
         store: Arc<dyn ObjectStore>,
     ) -> Option<Arc<dyn ObjectStore>>;
+
+    /// Deregister the store previously registered with the same key. Returns the
+    /// deregistered store if it existed.
+    #[expect(unused_variables)]
+    fn deregister_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
+        not_impl_err!(
+            "ObjectStoreRegistry::deregister_store is not implemented for this ObjectStoreRegistry"
+        )
+    }
 
     /// Get a suitable store for the provided URL. For example:
     ///
@@ -230,15 +241,24 @@ impl ObjectStoreRegistry for DefaultObjectStoreRegistry {
         self.object_stores.insert(s, store)
     }
 
+    fn deregister_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
+        let s = get_url_key(url);
+        let (_, object_store) = self.object_stores
+            .remove(&s)
+            .ok_or_else(|| {
+                internal_datafusion_err!("Failed to deregister object store. No suitable object store found for {url}. See `RuntimeEnv::register_object_store`")
+            })?;
+
+        Ok(object_store)
+    }
+
     fn get_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
         let s = get_url_key(url);
         self.object_stores
             .get(&s)
-            .map(|o| o.value().clone())
+            .map(|o| Arc::clone(o.value()))
             .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "No suitable object store found for {url}. See `RuntimeEnv::register_object_store`"
-                ))
+                internal_datafusion_err!("No suitable object store found for {url}. See `RuntimeEnv::register_object_store`")
             })
     }
 }
@@ -272,17 +292,29 @@ mod tests {
         assert_eq!(err.strip_backtrace(), "External error: invalid port number");
 
         let err = ObjectStoreUrl::parse("s3://bucket?").unwrap_err();
-        assert_eq!(err.strip_backtrace(), "Execution error: ObjectStoreUrl must only contain scheme and authority, got: ?");
+        assert_eq!(
+            err.strip_backtrace(),
+            "Execution error: ObjectStoreUrl must only contain scheme and authority, got: ?"
+        );
 
         let err = ObjectStoreUrl::parse("s3://bucket?foo=bar").unwrap_err();
-        assert_eq!(err.strip_backtrace(), "Execution error: ObjectStoreUrl must only contain scheme and authority, got: ?foo=bar");
+        assert_eq!(
+            err.strip_backtrace(),
+            "Execution error: ObjectStoreUrl must only contain scheme and authority, got: ?foo=bar"
+        );
 
         let err = ObjectStoreUrl::parse("s3://host:123/foo").unwrap_err();
-        assert_eq!(err.strip_backtrace(), "Execution error: ObjectStoreUrl must only contain scheme and authority, got: /foo");
+        assert_eq!(
+            err.strip_backtrace(),
+            "Execution error: ObjectStoreUrl must only contain scheme and authority, got: /foo"
+        );
 
         let err =
             ObjectStoreUrl::parse("s3://username:password@host:123/foo").unwrap_err();
-        assert_eq!(err.strip_backtrace(), "Execution error: ObjectStoreUrl must only contain scheme and authority, got: /foo");
+        assert_eq!(
+            err.strip_backtrace(),
+            "Execution error: ObjectStoreUrl must only contain scheme and authority, got: /foo"
+        );
     }
 
     #[test]

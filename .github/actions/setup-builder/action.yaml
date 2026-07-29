@@ -28,19 +28,35 @@ runs:
     - name: Install Build Dependencies
       shell: bash
       run: |
-        apt-get update
-        apt-get install -y protobuf-compiler
+        RETRY=("ci/scripts/retry" timeout 120)
+        "${RETRY[@]}" apt-get update
+        "${RETRY[@]}" apt-get install -y protobuf-compiler
     - name: Setup Rust toolchain
       shell: bash
       # rustfmt is needed for the substrait build script
       run: |
+        RETRY=("ci/scripts/retry" timeout 120)
         echo "Installing ${{ inputs.rust-version }}"
-        rustup toolchain install ${{ inputs.rust-version }}
-        rustup default ${{ inputs.rust-version }}
-        rustup component add rustfmt
+        "${RETRY[@]}" rustup toolchain install ${{ inputs.rust-version }}
+        "${RETRY[@]}" rustup default ${{ inputs.rust-version }}
+        "${RETRY[@]}" rustup component add rustfmt
     - name: Configure rust runtime env
       uses: ./.github/actions/setup-rust-runtime
     - name: Fixup git permissions
       # https://github.com/actions/checkout/issues/766
       shell: bash
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+    - name: Remove unnecessary preinstalled software
+      shell: bash
+      run: |
+        echo "Disk space before cleanup:"
+        df -h 
+        apt-get clean
+        # remove tool cache: about 8.5GB (github has host /opt/hostedtoolcache mounted as /__t)
+        rm -rf /__t/* || true
+        # remove Haskell runtime: about 6.3GB (host /usr/local/.ghcup)
+        rm -rf /host/usr/local/.ghcup || true
+        # remove Android library: about 7.8GB (host /usr/local/lib/android)
+        rm -rf /host/usr/local/lib/android || true
+        echo "Disk space after cleanup:"
+        df -h

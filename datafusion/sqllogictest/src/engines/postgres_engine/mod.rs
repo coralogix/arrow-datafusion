@@ -15,26 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use async_trait::async_trait;
+use bigdecimal::BigDecimal;
+use bytes::Bytes;
+use datafusion::common::runtime::SpawnedTask;
+use futures::{SinkExt, StreamExt};
+use log::{debug, info};
+use sqllogictest::DBOutput;
 /// Postgres engine implementation for sqllogictest.
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-
-use async_trait::async_trait;
-use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
-use log::debug;
-use sqllogictest::DBOutput;
-use tokio::task::JoinHandle;
+use std::time::Duration;
 
 use super::conversion::*;
+use crate::engines::currently_executed_sql::CurrentlyExecutingSqlTracker;
 use crate::engines::output::{DFColumnType, DFOutput};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use indicatif::ProgressBar;
 use postgres_types::Type;
-use rust_decimal::Decimal;
-use tokio_postgres::{Column, Row};
-use types::PgRegtype;
-
-mod types;
+use tokio::time::Instant;
+use tokio_postgres::{SimpleQueryMessage, SimpleQueryRow};
 
 // default connect string, can be overridden by the `PG_URL` environment variable
 const PG_URI: &str = "postgresql://postgres@127.0.0.1/test";
@@ -51,10 +51,13 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct Postgres {
-    client: tokio_postgres::Client,
-    join_handle: JoinHandle<()>,
+    // None means the connection has been shutdown
+    client: Option<tokio_postgres::Client>,
+    spawned_task: Option<SpawnedTask<()>>,
     /// Relative test file path
     relative_path: PathBuf,
+    pb: ProgressBar,
+    currently_executing_sql_tracker: CurrentlyExecutingSqlTracker,
 }
 
 impl Postgres {
@@ -71,25 +74,25 @@ impl Postgres {
     /// ```
     ///
     /// See https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html#url for format
-    pub async fn connect(relative_path: PathBuf) -> Result<Self> {
-        let uri =
-            std::env::var("PG_URI").map_or(PG_URI.to_string(), std::convert::identity);
+    pub async fn connect(relative_path: PathBuf, pb: ProgressBar) -> Result<Self> {
+        let uri = std::env::var("PG_URI")
+            .map_or_else(|_| PG_URI.to_string(), std::convert::identity);
 
-        debug!("Using posgres connection string: {uri}");
+        info!("Using postgres connection string: {uri}");
 
         let config = tokio_postgres::Config::from_str(&uri)?;
 
         // hint to user what the connection string was
         let res = config.connect(tokio_postgres::NoTls).await;
         if res.is_err() {
-            eprintln!("Error connecting to posgres using PG_URI={uri}");
+            eprintln!("Error connecting to postgres using PG_URI={uri}");
         };
 
         let (client, connection) = res?;
 
-        let join_handle = tokio::spawn(async move {
+        let spawned_task = SpawnedTask::spawn(async move {
             if let Err(e) = connection.await {
-                log::error!("Postgres connection error: {:?}", e);
+                log::error!("Postgres connection error: {e:?}");
             }
         });
 
@@ -110,10 +113,40 @@ impl Postgres {
             .await?;
 
         Ok(Self {
-            client,
-            join_handle,
+            client: Some(client),
+            spawned_task: Some(spawned_task),
             relative_path,
+            pb,
+            currently_executing_sql_tracker: CurrentlyExecutingSqlTracker::default(),
         })
+    }
+
+    /// Creates a runner for executing queries against an existing postgres connection
+    /// with a tracker for currently executing SQL statements.
+    pub async fn connect_with_tracked_sql(
+        relative_path: PathBuf,
+        pb: ProgressBar,
+        currently_executing_sql_tracker: CurrentlyExecutingSqlTracker,
+    ) -> Result<Self> {
+        let conn = Self::connect(relative_path, pb).await?;
+        Ok(conn.with_currently_executing_sql_tracker(currently_executing_sql_tracker))
+    }
+
+    /// Add a tracker that will track the currently executed SQL statement.
+    ///
+    /// This is useful for logging and debugging purposes.
+    pub fn with_currently_executing_sql_tracker(
+        self,
+        currently_executing_sql_tracker: CurrentlyExecutingSqlTracker,
+    ) -> Self {
+        Self {
+            currently_executing_sql_tracker,
+            ..self
+        }
+    }
+
+    fn get_client(&mut self) -> &mut tokio_postgres::Client {
+        self.client.as_mut().expect("client is shutdown")
     }
 
     /// Special COPY command support. "COPY 'filename'" requires the
@@ -166,7 +199,7 @@ impl Postgres {
         debug!("Copying data from file {filename} using sql: {new_sql}");
 
         // start the COPY command and get location to write data to
-        let tx = self.client.transaction().await?;
+        let tx = self.get_client().transaction().await?;
         let sink = tx.copy_in(&new_sql).await?;
         let mut sink = Box::pin(sink);
 
@@ -181,6 +214,22 @@ impl Postgres {
         tx.commit().await?;
         Ok(DBOutput::StatementComplete(0))
     }
+
+    fn update_slow_count(&self) {
+        let msg = self.pb.message();
+        let split: Vec<&str> = msg.split(" ").collect();
+        let mut current_count = 0;
+
+        if split.len() > 2 {
+            // second match will be current slow count
+            current_count += split[2].parse::<i32>().unwrap();
+        }
+
+        current_count += 1;
+
+        self.pb
+            .set_message(format!("{} - {} took > 500 ms", split[0], current_count));
+    }
 }
 
 /// remove single quotes from the start and end of the string
@@ -194,22 +243,12 @@ fn no_quotes(t: &str) -> &str {
 /// return a schema name
 fn schema_name(relative_path: &Path) -> String {
     relative_path
-        .file_name()
-        .map(|name| {
-            name.to_string_lossy()
-                .chars()
-                .filter(|ch| ch.is_ascii_alphabetic())
-                .collect::<String>()
-                .trim_start_matches("pg_")
-                .to_string()
-        })
-        .unwrap_or_else(|| "default_schema".to_string())
-}
-
-impl Drop for Postgres {
-    fn drop(&mut self) {
-        self.join_handle.abort()
-    }
+        .to_string_lossy()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .trim_start_matches("pg_")
+        .to_string()
 }
 
 #[async_trait]
@@ -221,11 +260,13 @@ impl sqllogictest::AsyncDB for Postgres {
         &mut self,
         sql: &str,
     ) -> Result<DBOutput<Self::ColumnType>, Self::Error> {
-        println!(
+        debug!(
             "[{}] Running query: \"{}\"",
             self.relative_path.display(),
             sql
         );
+
+        let tracked_sql = self.currently_executing_sql_tracker.set_sql(sql);
 
         let lower_sql = sql.trim_start().to_ascii_lowercase();
 
@@ -242,37 +283,51 @@ impl sqllogictest::AsyncDB for Postgres {
         };
 
         if lower_sql.starts_with("copy") {
-            return self.run_copy_command(sql).await;
+            self.pb.inc(1);
+            let result = self.run_copy_command(sql).await;
+            self.currently_executing_sql_tracker.remove_sql(tracked_sql);
+
+            return result;
         }
 
         if !is_query_sql {
-            self.client.execute(sql, &[]).await?;
+            self.get_client().execute(sql, &[]).await?;
+            self.currently_executing_sql_tracker.remove_sql(tracked_sql);
+            self.pb.inc(1);
             return Ok(DBOutput::StatementComplete(0));
         }
-        let rows = self.client.query(sql, &[]).await?;
+        // Use a prepared statement to get the output column types
+        let statement = self.get_client().prepare(sql).await?;
+        let types: Vec<Type> = statement
+            .columns()
+            .iter()
+            .map(|c| c.type_().clone())
+            .collect();
 
-        let types: Vec<Type> = if rows.is_empty() {
-            self.client
-                .prepare(sql)
-                .await?
-                .columns()
-                .iter()
-                .map(|c| c.type_().clone())
-                .collect()
-        } else {
-            rows[0]
-                .columns()
-                .iter()
-                .map(|c| c.type_().clone())
-                .collect()
-        };
+        // Run the actual query using the "simple query" protocol that returns all
+        // rows as text. Doing this avoids having to convert values from the binary
+        // format to strings, which is somewhat tricky for numeric types.
+        // See https://github.com/apache/datafusion/pull/19666#discussion_r2668090587
+        let start = Instant::now();
+        let messages = self.get_client().simple_query(sql).await?;
+        let duration = start.elapsed();
+
+        if duration.gt(&Duration::from_millis(500)) {
+            self.update_slow_count();
+        }
+
+        self.pb.inc(1);
+
+        self.currently_executing_sql_tracker.remove_sql(tracked_sql);
+
+        let rows = convert_rows(&types, &messages);
 
         if rows.is_empty() && types.is_empty() {
             Ok(DBOutput::StatementComplete(0))
         } else {
             Ok(DBOutput::Rows {
                 types: convert_types(types),
-                rows: convert_rows(rows),
+                rows,
             })
         }
     }
@@ -280,60 +335,79 @@ impl sqllogictest::AsyncDB for Postgres {
     fn engine_name(&self) -> &str {
         "postgres"
     }
+
+    async fn shutdown(&mut self) {
+        if let Some(client) = self.client.take() {
+            drop(client);
+        }
+        if let Some(spawned_task) = self.spawned_task.take() {
+            spawned_task.join().await.ok();
+        }
+    }
 }
 
-fn convert_rows(rows: Vec<Row>) -> Vec<Vec<String>> {
-    rows.iter()
+fn convert_rows(types: &[Type], messages: &[SimpleQueryMessage]) -> Vec<Vec<String>> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
         .map(|row| {
-            row.columns()
+            types
                 .iter()
                 .enumerate()
-                .map(|(idx, column)| cell_to_string(row, column, idx))
+                .map(|(idx, column_type)| cell_to_string(row, column_type, idx))
                 .collect::<Vec<String>>()
         })
         .collect::<Vec<_>>()
 }
 
-macro_rules! make_string {
-    ($row:ident, $idx:ident, $t:ty) => {{
-        let value: Option<$t> = $row.get($idx);
-        match value {
-            Some(value) => value.to_string(),
-            None => NULL_STR.to_string(),
+fn cell_to_string(row: &SimpleQueryRow, column_type: &Type, idx: usize) -> String {
+    // simple_query returns text values, so we parse by Postgres type to keep
+    // normalization aligned with the DataFusion engine output.
+    let value = row.get(idx);
+    match (column_type, value) {
+        (_, None) => NULL_STR.to_string(),
+        (&Type::CHAR, Some(value)) => value
+            .as_bytes()
+            .first()
+            .map(|byte| (*byte as i8).to_string())
+            .unwrap_or_else(|| NULL_STR.to_string()),
+        (&Type::INT2, Some(value)) => value.parse::<i16>().unwrap().to_string(),
+        (&Type::INT4, Some(value)) => value.parse::<i32>().unwrap().to_string(),
+        (&Type::INT8, Some(value)) => value.parse::<i64>().unwrap().to_string(),
+        (&Type::NUMERIC, Some(value)) => {
+            decimal_to_str(BigDecimal::from_str(value).unwrap())
         }
-    }};
-    ($row:ident, $idx:ident, $t:ty, $convert:ident) => {{
-        let value: Option<$t> = $row.get($idx);
-        match value {
-            Some(value) => $convert(value).to_string(),
-            None => NULL_STR.to_string(),
+        // Parse date/time strings explicitly to avoid locale-specific formatting.
+        (&Type::DATE, Some(value)) => NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .unwrap()
+            .to_string(),
+        (&Type::TIME, Some(value)) => NaiveTime::parse_from_str(value, "%H:%M:%S%.f")
+            .unwrap()
+            .to_string(),
+        (&Type::TIMESTAMP, Some(value)) => {
+            let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+                .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f"))
+                .unwrap();
+            format!("{parsed:?}")
         }
-    }};
-}
-
-fn cell_to_string(row: &Row, column: &Column, idx: usize) -> String {
-    match column.type_().clone() {
-        Type::CHAR => make_string!(row, idx, i8),
-        Type::INT2 => make_string!(row, idx, i16),
-        Type::INT4 => make_string!(row, idx, i32),
-        Type::INT8 => make_string!(row, idx, i64),
-        Type::NUMERIC => make_string!(row, idx, Decimal, decimal_to_str),
-        Type::DATE => make_string!(row, idx, NaiveDate),
-        Type::TIME => make_string!(row, idx, NaiveTime),
-        Type::TIMESTAMP => {
-            let value: Option<NaiveDateTime> = row.get(idx);
-            value
-                .map(|d| format!("{d:?}"))
-                .unwrap_or_else(|| "NULL".to_string())
+        (&Type::BOOL, Some(value)) => {
+            let parsed = match value {
+                "t" | "true" | "TRUE" => true,
+                "f" | "false" | "FALSE" => false,
+                _ => panic!("Unsupported boolean value: {value}"),
+            };
+            bool_to_str(parsed)
         }
-        Type::BOOL => make_string!(row, idx, bool, bool_to_str),
-        Type::BPCHAR | Type::VARCHAR | Type::TEXT => {
-            make_string!(row, idx, &str, varchar_to_str)
+        (&Type::BPCHAR | &Type::VARCHAR | &Type::TEXT, Some(value)) => {
+            varchar_to_str(value)
         }
-        Type::FLOAT4 => make_string!(row, idx, f32, f32_to_str),
-        Type::FLOAT8 => make_string!(row, idx, f64, f64_to_str),
-        Type::REGTYPE => make_string!(row, idx, PgRegtype),
-        _ => unimplemented!("Unsupported type: {}", column.type_().name()),
+        (&Type::FLOAT4, Some(value)) => f32_to_str(value.parse::<f32>().unwrap()),
+        (&Type::FLOAT8, Some(value)) => f64_to_str(value.parse::<f64>().unwrap()),
+        (&Type::REGTYPE, Some(value)) => value.to_string(),
+        _ => unimplemented!("Unsupported type: {}", column_type.name()),
     }
 }
 

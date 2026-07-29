@@ -20,7 +20,7 @@ use std::{
     str::FromStr,
 };
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum PoolType {
     Greedy,
     Fair,
@@ -33,7 +33,7 @@ impl FromStr for PoolType {
         match s {
             "Greedy" | "greedy" => Ok(PoolType::Greedy),
             "Fair" | "fair" => Ok(PoolType::Fair),
-            _ => Err(format!("Invalid memory pool type '{}'", s)),
+            _ => Err(format!("Invalid memory pool type '{s}'")),
         }
     }
 }

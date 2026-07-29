@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! [`VecAllocExt`] and [`RawTableAllocExt`] to help tracking of memory allocations
+//! [`VecAllocExt`] to help tracking of memory allocations
 
-use hashbrown::raw::{Bucket, RawTable};
+use hashbrown::hash_table::HashTable;
+use std::mem::size_of;
 
 /// Extension trait for [`Vec`] to account for allocations.
 pub trait VecAllocExt {
@@ -43,7 +44,9 @@ pub trait VecAllocExt {
     /// assert_eq!(allocated, 16); // no new allocation needed
     ///
     /// // push more data into the vec
-    /// for _ in 0..10 { vec.push_accounted(1, &mut allocated); }
+    /// for _ in 0..10 {
+    ///     vec.push_accounted(1, &mut allocated);
+    /// }
     /// assert_eq!(allocated, 64); // underlying vec has space for 10 u32s
     /// assert_eq!(vec.allocated_size(), 64);
     /// ```
@@ -78,7 +81,9 @@ pub trait VecAllocExt {
     /// assert_eq!(vec.allocated_size(), 16); // no new allocation needed
     ///
     /// // push more data into the vec
-    /// for _ in 0..10 { vec.push(1); }
+    /// for _ in 0..10 {
+    ///     vec.push(1);
+    /// }
     /// assert_eq!(vec.allocated_size(), 64); // space for 64 now
     /// ```
     fn allocated_size(&self) -> usize;
@@ -88,12 +93,12 @@ impl<T> VecAllocExt for Vec<T> {
     type T = T;
 
     fn push_accounted(&mut self, x: Self::T, accounting: &mut usize) {
-        let prev_capacty = self.capacity();
+        let prev_capacity = self.capacity();
         self.push(x);
         let new_capacity = self.capacity();
-        if new_capacity > prev_capacty {
+        if new_capacity > prev_capacity {
             // capacity changed, so we allocated more
-            let bump_size = (new_capacity - prev_capacty) * std::mem::size_of::<T>();
+            let bump_size = (new_capacity - prev_capacity) * size_of::<T>();
             // Note multiplication should never overflow because `push` would
             // have panic'd first, but the checked_add could potentially
             // overflow since accounting could be tracking additional values, and
@@ -102,16 +107,16 @@ impl<T> VecAllocExt for Vec<T> {
         }
     }
     fn allocated_size(&self) -> usize {
-        std::mem::size_of::<T>() * self.capacity()
+        size_of::<T>() * self.capacity()
     }
 }
 
-/// Extension trait for hash browns [`RawTable`] to account for allocations.
-pub trait RawTableAllocExt {
+/// Extension trait for hash browns [`HashTable`] to account for allocations.
+pub trait HashTableAllocExt {
     /// Item type.
     type T;
 
-    /// [Insert](RawTable::insert) new element into table and increase
+    /// Insert new element into table and increase
     /// `accounting` by any newly allocated bytes.
     ///
     /// Returns the bucket where the element was inserted.
@@ -119,9 +124,9 @@ pub trait RawTableAllocExt {
     ///
     /// # Example:
     /// ```
-    /// # use datafusion_common::utils::proxy::RawTableAllocExt;
-    /// # use hashbrown::raw::RawTable;
-    /// let mut table = RawTable::new();
+    /// # use datafusion_common::utils::proxy::HashTableAllocExt;
+    /// # use hashbrown::hash_table::HashTable;
+    /// let mut table = HashTable::new();
     /// let mut allocated = 0;
     /// let hash_fn = |x: &u32| (*x as u64) % 1000;
     /// // pretend 0x3117 is the hash value for 1
@@ -129,7 +134,9 @@ pub trait RawTableAllocExt {
     /// assert_eq!(allocated, 64);
     ///
     /// // insert more values
-    /// for i in 0..100 { table.insert_accounted(i, hash_fn, &mut allocated); }
+    /// for i in 0..100 {
+    ///     table.insert_accounted(i, hash_fn, &mut allocated);
+    /// }
     /// assert_eq!(allocated, 400);
     /// ```
     fn insert_accounted(
@@ -137,10 +144,13 @@ pub trait RawTableAllocExt {
         x: Self::T,
         hasher: impl Fn(&Self::T) -> u64,
         accounting: &mut usize,
-    ) -> Bucket<Self::T>;
+    );
 }
 
-impl<T> RawTableAllocExt for RawTable<T> {
+impl<T> HashTableAllocExt for HashTable<T>
+where
+    T: Eq,
+{
     type T = T;
 
     fn insert_accounted(
@@ -148,26 +158,24 @@ impl<T> RawTableAllocExt for RawTable<T> {
         x: Self::T,
         hasher: impl Fn(&Self::T) -> u64,
         accounting: &mut usize,
-    ) -> Bucket<Self::T> {
+    ) {
         let hash = hasher(&x);
 
-        match self.try_insert_no_grow(hash, x) {
-            Ok(bucket) => bucket,
-            Err(x) => {
-                // need to request more memory
+        // NOTE: `find_entry` does NOT grow!
+        match self.find_entry(hash, |y| y == &x) {
+            Ok(_occupied) => {}
+            Err(_absent) => {
+                if self.len() == self.capacity() {
+                    // need to request more memory
+                    let bump_elements = self.capacity().max(16);
+                    let bump_size = bump_elements * size_of::<T>();
+                    *accounting = (*accounting).checked_add(bump_size).expect("overflow");
 
-                let bump_elements = self.capacity().max(16);
-                let bump_size = bump_elements * std::mem::size_of::<T>();
-                *accounting = (*accounting).checked_add(bump_size).expect("overflow");
-
-                self.reserve(bump_elements, hasher);
+                    self.reserve(bump_elements, &hasher);
+                }
 
                 // still need to insert the element since first try failed
-                // Note: cannot use `.expect` here because `T` may not implement `Debug`
-                match self.try_insert_no_grow(hash, x) {
-                    Ok(bucket) => bucket,
-                    Err(_) => panic!("just grew the container"),
-                }
+                self.entry(hash, |y| y == &x, hasher).insert(x);
             }
         }
     }

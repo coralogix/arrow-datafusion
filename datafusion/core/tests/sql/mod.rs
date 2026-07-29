@@ -24,14 +24,15 @@ use arrow::{
 
 use datafusion::error::Result;
 use datafusion::logical_expr::{Aggregate, LogicalPlan, TableScan};
-use datafusion::physical_plan::collect;
-use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::ExecutionPlanVisitor;
+use datafusion::physical_plan::collect;
+use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::prelude::*;
 use datafusion::test_util;
-use datafusion::{assert_batches_eq, assert_batches_sorted_eq};
 use datafusion::{execution::context::SessionContext, physical_plan::displayable};
+use datafusion_common::test_util::batches_to_sort_string;
+use datafusion_common::utils::get_available_parallelism;
 use datafusion_common::{assert_contains, assert_not_contains};
 use object_store::path::Path;
 use std::fs::File;
@@ -39,19 +40,24 @@ use std::io::Write;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// A macro to assert that some particular line contains two substrings
+/// A macro to assert that some particular line contains the given substrings
 ///
-/// Usage: `assert_metrics!(actual, operator_name, metrics)`
-///
+/// Usage: `assert_metrics!(actual, operator_name, metrics_1, metrics_2, ...)`
 macro_rules! assert_metrics {
-    ($ACTUAL: expr, $OPERATOR_NAME: expr, $METRICS: expr) => {
+    ($ACTUAL: expr, $OPERATOR_NAME: expr, $($METRICS: expr),+) => {
         let found = $ACTUAL
             .lines()
-            .any(|line| line.contains($OPERATOR_NAME) && line.contains($METRICS));
+            .any(|line| line.contains($OPERATOR_NAME) $( && line.contains($METRICS))+);
+
+        let mut metrics = String::new();
+        $(metrics.push_str(format!(" '{}',", $METRICS).as_str());)+
+        // remove the last `,` from the string
+        metrics.pop();
+
         assert!(
             found,
-            "Can not find a line with both '{}' and '{}' in\n\n{}",
-            $OPERATOR_NAME, $METRICS, $ACTUAL
+            "Cannot find a line with operator name '{}' and metrics containing values {} in :\n\n{}",
+            $OPERATOR_NAME, metrics, $ACTUAL
         );
     };
 }
@@ -60,11 +66,14 @@ pub mod aggregates;
 pub mod create_drop;
 pub mod explain_analyze;
 pub mod joins;
+mod path_partition;
+mod runtime_config;
 pub mod select;
 mod sql_api;
+mod unparser;
 
 async fn register_aggregate_csv_by_sql(ctx: &SessionContext) {
-    let testdata = datafusion::test_util::arrow_test_data();
+    let testdata = test_util::arrow_test_data();
 
     let df = ctx
         .sql(&format!(
@@ -102,7 +111,7 @@ async fn register_aggregate_csv_by_sql(ctx: &SessionContext) {
 }
 
 async fn register_aggregate_csv(ctx: &SessionContext) -> Result<()> {
-    let testdata = datafusion::test_util::arrow_test_data();
+    let testdata = test_util::arrow_test_data();
     let schema = test_util::aggr_test_schema();
     ctx.register_csv(
         "aggregate_test_100",
@@ -194,7 +203,7 @@ fn populate_csv_partitions(
     Ok(schema)
 }
 
-/// Specialised String representation
+/// Specialized String representation
 fn col_str(column: &ArrayRef, row_index: usize) -> String {
     // NullArray::is_null() does not work on NullArray.
     // can remove check for DataType::Null when
@@ -226,7 +235,7 @@ fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
 }
 
 async fn register_alltypes_parquet(ctx: &SessionContext) {
-    let testdata = datafusion::test_util::parquet_test_data();
+    let testdata = test_util::parquet_test_data();
     ctx.register_parquet(
         "alltypes_plain",
         &format!("{testdata}/alltypes_plain.parquet"),
@@ -258,7 +267,7 @@ impl ExplainNormalizer {
 
         // convert things like partitioning=RoundRobinBatch(16)
         // to partitioning=RoundRobinBatch(NUM_CORES)
-        let needle = format!("RoundRobinBatch({})", num_cpus::get());
+        let needle = format!("RoundRobinBatch({})", get_available_parallelism());
         replacements.push((needle, "RoundRobinBatch(NUM_CORES)".to_string()));
 
         Self { replacements }
@@ -327,8 +336,7 @@ async fn nyc() -> Result<()> {
     match &optimized_plan {
         LogicalPlan::Aggregate(Aggregate { input, .. }) => match input.as_ref() {
             LogicalPlan::TableScan(TableScan {
-                ref projected_schema,
-                ..
+                projected_schema, ..
             }) => {
                 assert_eq!(2, projected_schema.fields().len());
                 assert_eq!(projected_schema.field(0).name(), "passenger_count");

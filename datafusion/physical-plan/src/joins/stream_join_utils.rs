@@ -19,52 +19,91 @@
 //! related functionality, used both in join calculations and optimization rules.
 
 use std::collections::{HashMap, VecDeque};
+use std::mem::size_of;
 use std::sync::Arc;
 
-use crate::joins::utils::{JoinFilter, JoinHashMapType};
-use crate::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
-use crate::{metrics, ExecutionPlan};
-
-use arrow::compute::concat_batches;
-use arrow_array::{ArrowPrimitiveType, NativeAdapter, PrimitiveArray, RecordBatch};
-use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
-use arrow_schema::{Schema, SchemaRef};
-use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion_common::{
-    arrow_datafusion_err, plan_datafusion_err, DataFusionError, JoinSide, Result,
-    ScalarValue,
+use crate::joins::join_hash_map::{
+    JoinHashMapOffset, get_matched_indices, get_matched_indices_with_limit_offset,
+    update_from_iter,
 };
+use crate::joins::utils::{JoinFilter, JoinHashMapType};
+use crate::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder};
+use crate::{ExecutionPlan, metrics};
+
+use arrow::array::{
+    ArrowPrimitiveType, BooleanBufferBuilder, NativeAdapter, PrimitiveArray, RecordBatch,
+};
+use arrow::compute::concat_batches;
+use arrow::datatypes::{ArrowNativeType, Schema, SchemaRef};
+use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::utils::memory::estimate_memory_size;
+use datafusion_common::{HashSet, JoinSide, Result, ScalarValue, arrow_datafusion_err};
 use datafusion_expr::interval_arithmetic::Interval;
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::intervals::cp_solver::ExprIntervalGraph;
 use datafusion_physical_expr::utils::collect_columns;
 use datafusion_physical_expr::{PhysicalExpr, PhysicalSortExpr};
 
-use hashbrown::raw::RawTable;
-use hashbrown::HashSet;
+use datafusion_physical_expr_common::sort_expr::LexOrdering;
+use hashbrown::HashTable;
 
 /// Implementation of `JoinHashMapType` for `PruningJoinHashMap`.
 impl JoinHashMapType for PruningJoinHashMap {
-    type NextType = VecDeque<u64>;
-
     // Extend with zero
     fn extend_zero(&mut self, len: usize) {
         self.next.resize(self.next.len() + len, 0)
     }
 
-    /// Get mutable references to the hash map and the next.
-    fn get_mut(&mut self) -> (&mut RawTable<(u64, u64)>, &mut Self::NextType) {
-        (&mut self.map, &mut self.next)
+    fn update_from_iter<'a>(
+        &mut self,
+        iter: Box<dyn Iterator<Item = (usize, &'a u64)> + Send + 'a>,
+        deleted_offset: usize,
+    ) {
+        let slice: &mut [u64] = self.next.make_contiguous();
+        update_from_iter::<u64>(&mut self.map, slice, iter, deleted_offset);
     }
 
-    /// Get a reference to the hash map.
-    fn get_map(&self) -> &RawTable<(u64, u64)> {
-        &self.map
+    fn get_matched_indices<'a>(
+        &self,
+        iter: Box<dyn Iterator<Item = (usize, &'a u64)> + 'a>,
+        deleted_offset: Option<usize>,
+    ) -> (Vec<u32>, Vec<u64>) {
+        // Flatten the deque
+        let next: Vec<u64> = self.next.iter().copied().collect();
+        get_matched_indices::<u64>(&self.map, &next, iter, deleted_offset)
     }
 
-    /// Get a reference to the next.
-    fn get_list(&self) -> &Self::NextType {
-        &self.next
+    fn get_matched_indices_with_limit_offset(
+        &self,
+        hash_values: &[u64],
+        limit: usize,
+        offset: JoinHashMapOffset,
+        input_indices: &mut Vec<u32>,
+        match_indices: &mut Vec<u64>,
+    ) -> Option<JoinHashMapOffset> {
+        // Flatten the deque
+        let next: Vec<u64> = self.next.iter().copied().collect();
+        get_matched_indices_with_limit_offset::<u64>(
+            &self.map,
+            &next,
+            hash_values,
+            limit,
+            offset,
+            input_indices,
+            match_indices,
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn contains_hash(&self, hash: u64) -> bool {
+        self.map.find(hash, |(h, _)| *h == hash).is_some()
     }
 }
 
@@ -105,7 +144,7 @@ impl JoinHashMapType for PruningJoinHashMap {
 /// ```
 pub struct PruningJoinHashMap {
     /// Stores hash value to last row index
-    pub map: RawTable<(u64, u64)>,
+    pub map: HashTable<(u64, u64)>,
     /// Stores indices in chained list data structure
     pub next: VecDeque<u64>,
 }
@@ -121,7 +160,7 @@ impl PruningJoinHashMap {
     /// A new instance of `PruningJoinHashMap`.
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         PruningJoinHashMap {
-            map: RawTable::with_capacity(capacity),
+            map: HashTable::with_capacity(capacity),
             next: VecDeque::with_capacity(capacity),
         }
     }
@@ -154,8 +193,11 @@ impl PruningJoinHashMap {
     /// # Returns
     /// The size of the hash map in bytes.
     pub(crate) fn size(&self) -> usize {
-        self.map.allocation_info().1.size()
-            + self.next.capacity() * std::mem::size_of::<u64>()
+        let fixed_size = size_of::<PruningJoinHashMap>();
+
+        // TODO: switch to using [HashTable::allocation_size] when available after upgrading hashbrown to 0.15
+        estimate_memory_size::<(u64, u64)>(self.map.capacity(), fixed_size).unwrap()
+            + self.next.capacity() * size_of::<u64>()
     }
 
     /// Removes hash values from the map and the list based on the given pruning
@@ -177,20 +219,20 @@ impl PruningJoinHashMap {
         self.next.drain(0..prune_length);
 
         // Calculate the keys that should be removed from the map.
-        let removable_keys = unsafe {
-            self.map
-                .iter()
-                .map(|bucket| bucket.as_ref())
-                .filter_map(|(hash, tail_index)| {
-                    (*tail_index < prune_length as u64 + deleting_offset).then_some(*hash)
-                })
-                .collect::<Vec<_>>()
-        };
+        let removable_keys = self
+            .map
+            .iter()
+            .filter_map(|(hash, tail_index)| {
+                (*tail_index < prune_length as u64 + deleting_offset).then_some(*hash)
+            })
+            .collect::<Vec<_>>();
 
         // Remove the keys from the map.
         removable_keys.into_iter().for_each(|hash_value| {
             self.map
-                .remove_entry(hash_value, |(hash, _)| hash_value == *hash);
+                .find_entry(hash_value, |(hash, _)| hash_value == *hash)
+                .unwrap()
+                .remove();
         });
 
         // Shrink the map if necessary.
@@ -254,7 +296,7 @@ pub fn map_origin_col_to_filter_col(
 ///    the [`convert_filter_columns`] function.
 /// 5. Searches for the converted filter expression in the filter expression using the
 ///    [`check_filter_expr_contains_sort_information`] function.
-/// 6. If an exact match is found, returns the converted filter expression as [`Some(Arc<dyn PhysicalExpr>)`].
+/// 6. If an exact match is found, returns the converted filter expression as `Some(Arc<dyn PhysicalExpr>)`.
 /// 7. If all columns are not included or an exact match is not found, returns [`None`].
 ///
 /// Examples:
@@ -270,7 +312,7 @@ pub fn convert_sort_expr_with_filter_schema(
     sort_expr: &PhysicalSortExpr,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
     let column_map = map_origin_col_to_filter_col(filter, schema, side)?;
-    let expr = sort_expr.expr.clone();
+    let expr = Arc::clone(&sort_expr.expr);
     // Get main schema columns:
     let expr_columns = collect_columns(&expr);
     // Calculation is possible with `column_map` since sort exprs belong to a child.
@@ -369,34 +411,40 @@ impl SortedFilterExpr {
         filter_expr: Arc<dyn PhysicalExpr>,
         filter_schema: &Schema,
     ) -> Result<Self> {
-        let dt = &filter_expr.data_type(filter_schema)?;
+        let dt = filter_expr.data_type(filter_schema)?;
         Ok(Self {
             origin_sorted_expr,
             filter_expr,
-            interval: Interval::make_unbounded(dt)?,
+            interval: Interval::make_unbounded(&dt)?,
             node_index: 0,
         })
     }
+
     /// Get origin expr information
     pub fn origin_sorted_expr(&self) -> &PhysicalSortExpr {
         &self.origin_sorted_expr
     }
+
     /// Get filter expr information
     pub fn filter_expr(&self) -> &Arc<dyn PhysicalExpr> {
         &self.filter_expr
     }
+
     /// Get interval information
     pub fn interval(&self) -> &Interval {
         &self.interval
     }
+
     /// Sets interval
     pub fn set_interval(&mut self, interval: Interval) {
         self.interval = interval;
     }
+
     /// Node index in ExprIntervalGraph
     pub fn node_index(&self) -> usize {
         self.node_index
     }
+
     /// Node index setter in ExprIntervalGraph
     pub fn set_node_index(&mut self, node_index: usize) {
         self.node_index = node_index;
@@ -409,41 +457,45 @@ impl SortedFilterExpr {
 /// on the first or the last value of the expression in `build_input_buffer`
 /// and `probe_batch`.
 ///
-/// # Arguments
+/// # Parameters
 ///
 /// * `build_input_buffer` - The [RecordBatch] on the build side of the join.
 /// * `build_sorted_filter_expr` - Build side [SortedFilterExpr] to update.
 /// * `probe_batch` - The `RecordBatch` on the probe side of the join.
 /// * `probe_sorted_filter_expr` - Probe side `SortedFilterExpr` to update.
 ///
-/// ### Note
-/// ```text
+/// ## Note
 ///
-/// Interval arithmetic is used to calculate viable join ranges for build-side
-/// pruning. This is done by first creating an interval for join filter values in
-/// the build side of the join, which spans [-∞, FV] or [FV, ∞] depending on the
-/// ordering (descending/ascending) of the filter expression. Here, FV denotes the
-/// first value on the build side. This range is then compared with the probe side
-/// interval, which either spans [-∞, LV] or [LV, ∞] depending on the ordering
-/// (ascending/descending) of the probe side. Here, LV denotes the last value on
-/// the probe side.
+/// Utilizing interval arithmetic, this function computes feasible join intervals
+/// on the pruning side by evaluating the prospective value ranges that might
+/// emerge in subsequent data batches from the enforcer side. This is done by
+/// first creating an interval for join filter values in the pruning side of the
+/// join, which spans `[-∞, FV]` or `[FV, ∞]` depending on the ordering (descending/
+/// ascending) of the filter expression. Here, `FV` denotes the first value on the
+/// pruning side. This range is then compared with the enforcer side interval,
+/// which either spans `[-∞, LV]` or `[LV, ∞]` depending on the ordering (ascending/
+/// descending) of the probe side. Here, `LV` denotes the last value on the enforcer
+/// side.
 ///
 /// As a concrete example, consider the following query:
 ///
+/// ```text
 ///   SELECT * FROM left_table, right_table
 ///   WHERE
 ///     left_key = right_key AND
 ///     a > b - 3 AND
 ///     a < b + 10
+/// ```
 ///
-/// where columns "a" and "b" come from tables "left_table" and "right_table",
+/// where columns `a` and `b` come from tables `left_table` and `right_table`,
 /// respectively. When a new `RecordBatch` arrives at the right side, the
-/// condition a > b - 3 will possibly indicate a prunable range for the left
+/// condition `a > b - 3` will possibly indicate a prunable range for the left
 /// side. Conversely, when a new `RecordBatch` arrives at the left side, the
-/// condition a < b + 10 will possibly indicate prunability for the right side.
-/// Let’s inspect what happens when a new RecordBatch` arrives at the right
+/// condition `a < b + 10` will possibly indicate prunability for the right side.
+/// Let’s inspect what happens when a new `RecordBatch` arrives at the right
 /// side (i.e. when the left side is the build side):
 ///
+/// ```text
 ///         Build      Probe
 ///       +-------+  +-------+
 ///       | a | z |  | b | y |
@@ -456,13 +508,13 @@ impl SortedFilterExpr {
 ///       |+--|--+|  |+--|--+|
 ///       | 7 | 1 |  | 6 | 3 |
 ///       +-------+  +-------+
+/// ```
 ///
 /// In this case, the interval representing viable (i.e. joinable) values for
-/// column "a" is [1, ∞], and the interval representing possible future values
-/// for column "b" is [6, ∞]. With these intervals at hand, we next calculate
+/// column `a` is `[1, ∞]`, and the interval representing possible future values
+/// for column `b` is `[6, ∞]`. With these intervals at hand, we next calculate
 /// intervals for the whole filter expression and propagate join constraint by
 /// traversing the expression graph.
-/// ```
 pub fn calculate_filter_expr_intervals(
     build_input_buffer: &RecordBatch,
     build_sorted_filter_expr: &mut SortedFilterExpr,
@@ -613,7 +665,6 @@ pub fn combine_two_batches(
 /// * `visited` - A hash set to store the visited indices.
 /// * `offset` - An offset to the indices in the `PrimitiveArray`.
 /// * `indices` - The input `PrimitiveArray` of type `T` which stores the indices to be recorded.
-///
 pub fn record_visited_indices<T: ArrowPrimitiveType>(
     visited: &mut HashSet<usize>,
     offset: usize,
@@ -641,25 +692,25 @@ pub struct StreamJoinMetrics {
     pub(crate) right: StreamJoinSideMetrics,
     /// Memory used by sides in bytes
     pub(crate) stream_memory_usage: metrics::Gauge,
-    /// Number of batches produced by this operator
-    pub(crate) output_batches: metrics::Count,
     /// Number of rows produced by this operator
-    pub(crate) output_rows: metrics::Count,
+    pub(crate) baseline_metrics: BaselineMetrics,
 }
 
 impl StreamJoinMetrics {
     pub fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let input_batches =
-            MetricBuilder::new(metrics).counter("input_batches", partition);
-        let input_rows = MetricBuilder::new(metrics).counter("input_rows", partition);
+            MetricBuilder::new(metrics).counter("left_input_batches", partition);
+        let input_rows =
+            MetricBuilder::new(metrics).counter("left_input_rows", partition);
         let left = StreamJoinSideMetrics {
             input_batches,
             input_rows,
         };
 
         let input_batches =
-            MetricBuilder::new(metrics).counter("input_batches", partition);
-        let input_rows = MetricBuilder::new(metrics).counter("input_rows", partition);
+            MetricBuilder::new(metrics).counter("right_input_batches", partition);
+        let input_rows =
+            MetricBuilder::new(metrics).counter("right_input_rows", partition);
         let right = StreamJoinSideMetrics {
             input_batches,
             input_rows,
@@ -668,17 +719,11 @@ impl StreamJoinMetrics {
         let stream_memory_usage =
             MetricBuilder::new(metrics).gauge("stream_memory_usage", partition);
 
-        let output_batches =
-            MetricBuilder::new(metrics).counter("output_batches", partition);
-
-        let output_rows = MetricBuilder::new(metrics).output_rows(partition);
-
         Self {
             left,
             right,
-            output_batches,
             stream_memory_usage,
-            output_rows,
+            baseline_metrics: BaselineMetrics::new(metrics, partition),
         }
     }
 }
@@ -697,7 +742,7 @@ fn update_sorted_exprs_with_node_indices(
     // Extract filter expressions from the sorted expressions:
     let filter_exprs = sorted_exprs
         .iter()
-        .map(|expr| expr.filter_expr().clone())
+        .map(|expr| Arc::clone(expr.filter_expr()))
         .collect::<Vec<_>>();
 
     // Gather corresponding node indices for the extracted filter expressions from the graph:
@@ -710,13 +755,21 @@ fn update_sorted_exprs_with_node_indices(
     }
 }
 
-/// Prepares and sorts expressions based on a given filter, left and right execution plans, and sort expressions.
+/// Prepares and sorts expressions based on a given filter, left and right schemas,
+/// and sort expressions.
 ///
-/// # Arguments
+/// This function prepares sorted filter expressions for both the left and right
+/// sides of a join operation. It first builds the filter order for each side
+/// based on the provided `ExecutionPlan`. If both sides have valid sorted filter
+/// expressions, the function then constructs an expression interval graph and
+/// updates the sorted expressions with node indices. The final sorted filter
+/// expressions for both sides are then returned.
+///
+/// # Parameters
 ///
 /// * `filter` - The join filter to base the sorting on.
-/// * `left` - The left execution plan.
-/// * `right` - The right execution plan.
+/// * `left` - The `ExecutionPlan` for the left side of the join.
+/// * `right` - The `ExecutionPlan` for the right side of the join.
 /// * `left_sort_exprs` - The expressions to sort on the left side.
 /// * `right_sort_exprs` - The expressions to sort on the right side.
 ///
@@ -727,12 +780,14 @@ pub fn prepare_sorted_exprs(
     filter: &JoinFilter,
     left: &Arc<dyn ExecutionPlan>,
     right: &Arc<dyn ExecutionPlan>,
-    left_sort_exprs: &[PhysicalSortExpr],
-    right_sort_exprs: &[PhysicalSortExpr],
+    left_sort_exprs: &LexOrdering,
+    right_sort_exprs: &LexOrdering,
 ) -> Result<(SortedFilterExpr, SortedFilterExpr, ExprIntervalGraph)> {
-    // Build the filter order for the left side
-    let err = || plan_datafusion_err!("Filter does not include the child order");
+    let err = || {
+        datafusion_common::plan_datafusion_err!("Filter does not include the child order")
+    };
 
+    // Build the filter order for the left side:
     let left_temp_sorted_filter_expr = build_filter_input_order(
         JoinSide::Left,
         filter,
@@ -741,7 +796,7 @@ pub fn prepare_sorted_exprs(
     )?
     .ok_or_else(err)?;
 
-    // Build the filter order for the right side
+    // Build the filter order for the right side:
     let right_temp_sorted_filter_expr = build_filter_input_order(
         JoinSide::Right,
         filter,
@@ -756,7 +811,7 @@ pub fn prepare_sorted_exprs(
 
     // Build the expression interval graph
     let mut graph =
-        ExprIntervalGraph::try_new(filter.expression().clone(), filter.schema())?;
+        ExprIntervalGraph::try_new(Arc::clone(filter.expression()), filter.schema())?;
 
     // Update sorted expressions with node indices
     update_sorted_exprs_with_node_indices(&mut graph, &mut sorted_exprs);
@@ -818,9 +873,9 @@ pub mod tests {
             &intermediate_schema,
         )?;
         let filter_expr = binary(
-            filter_left.clone(),
+            Arc::clone(&filter_left),
             Operator::Gt,
-            filter_right.clone(),
+            Arc::clone(&filter_right),
             &intermediate_schema,
         )?;
         let column_indices = vec![
@@ -837,7 +892,8 @@ pub mod tests {
                 side: JoinSide::Right,
             },
         ];
-        let filter = JoinFilter::new(filter_expr, column_indices, intermediate_schema);
+        let filter =
+            JoinFilter::new(filter_expr, column_indices, Arc::new(intermediate_schema));
 
         let left_sort_filter_expr = build_filter_input_order(
             JoinSide::Left,
@@ -952,63 +1008,72 @@ pub mod tests {
         let filter_expr = complicated_filter(&intermediate_schema)?;
         let column_indices = vec![
             ColumnIndex {
-                index: 0,
+                index: left_schema.index_of("la1")?,
                 side: JoinSide::Left,
             },
             ColumnIndex {
-                index: 4,
+                index: left_schema.index_of("la2")?,
                 side: JoinSide::Left,
             },
             ColumnIndex {
-                index: 0,
+                index: right_schema.index_of("ra1")?,
                 side: JoinSide::Right,
             },
         ];
-        let filter = JoinFilter::new(filter_expr, column_indices, intermediate_schema);
+        let filter =
+            JoinFilter::new(filter_expr, column_indices, Arc::new(intermediate_schema));
 
         let left_schema = Arc::new(left_schema);
         let right_schema = Arc::new(right_schema);
 
-        assert!(build_filter_input_order(
-            JoinSide::Left,
-            &filter,
-            &left_schema,
-            &PhysicalSortExpr {
-                expr: col("la1", left_schema.as_ref())?,
-                options: SortOptions::default(),
-            }
-        )?
-        .is_some());
-        assert!(build_filter_input_order(
-            JoinSide::Left,
-            &filter,
-            &left_schema,
-            &PhysicalSortExpr {
-                expr: col("lt1", left_schema.as_ref())?,
-                options: SortOptions::default(),
-            }
-        )?
-        .is_none());
-        assert!(build_filter_input_order(
-            JoinSide::Right,
-            &filter,
-            &right_schema,
-            &PhysicalSortExpr {
-                expr: col("ra1", right_schema.as_ref())?,
-                options: SortOptions::default(),
-            }
-        )?
-        .is_some());
-        assert!(build_filter_input_order(
-            JoinSide::Right,
-            &filter,
-            &right_schema,
-            &PhysicalSortExpr {
-                expr: col("rb1", right_schema.as_ref())?,
-                options: SortOptions::default(),
-            }
-        )?
-        .is_none());
+        assert!(
+            build_filter_input_order(
+                JoinSide::Left,
+                &filter,
+                &left_schema,
+                &PhysicalSortExpr {
+                    expr: col("la1", left_schema.as_ref())?,
+                    options: SortOptions::default(),
+                }
+            )?
+            .is_some()
+        );
+        assert!(
+            build_filter_input_order(
+                JoinSide::Left,
+                &filter,
+                &left_schema,
+                &PhysicalSortExpr {
+                    expr: col("lt1", left_schema.as_ref())?,
+                    options: SortOptions::default(),
+                }
+            )?
+            .is_none()
+        );
+        assert!(
+            build_filter_input_order(
+                JoinSide::Right,
+                &filter,
+                &right_schema,
+                &PhysicalSortExpr {
+                    expr: col("ra1", right_schema.as_ref())?,
+                    options: SortOptions::default(),
+                }
+            )?
+            .is_some()
+        );
+        assert!(
+            build_filter_input_order(
+                JoinSide::Right,
+                &filter,
+                &right_schema,
+                &PhysicalSortExpr {
+                    expr: col("rb1", right_schema.as_ref())?,
+                    options: SortOptions::default(),
+                }
+            )?
+            .is_none()
+        );
 
         Ok(())
     }
@@ -1036,7 +1101,8 @@ pub mod tests {
                 side: JoinSide::Left,
             },
         ];
-        let filter = JoinFilter::new(filter_expr, column_indices, intermediate_schema);
+        let filter =
+            JoinFilter::new(filter_expr, column_indices, Arc::new(intermediate_schema));
 
         let schema = Schema::new(vec![
             Field::new("a", DataType::Int32, false),
@@ -1071,7 +1137,7 @@ pub mod tests {
         let deleted_part = 3 * data_size / 4;
         // Add elements to the JoinHashMap
         for hash_value in 0..data_size {
-            join_hash_map.map.insert(
+            join_hash_map.map.insert_unique(
                 hash_value,
                 (hash_value, hash_value),
                 |(hash, _)| *hash,
@@ -1085,7 +1151,9 @@ pub mod tests {
         for hash_value in 0..deleted_part {
             join_hash_map
                 .map
-                .remove_entry(hash_value, |(hash, _)| hash_value == *hash);
+                .find_entry(hash_value, |(hash, _)| hash_value == *hash)
+                .unwrap()
+                .remove();
         }
 
         assert_eq!(join_hash_map.map.len(), (data_size - deleted_part) as usize);

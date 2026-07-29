@@ -28,28 +28,41 @@ license = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.docs.rs]
+all-features = true
+
+# Note: add additional linter rules in lib.rs.
+# Rust does not support workspace + new linter rules in subcrates yet
+# https://github.com/rust-lang/cargo/issues/13157
 [lints]
 workspace = true
 
 [lib]
 name = "datafusion_expr"
-path = "src/lib.rs"
 
 [features]
+default = ["sql"]
+recursive_protection = ["dep:recursive"]
+sql = ["sqlparser"]
 
 [dependencies]
-ahash = { workspace = true }
 arrow = { workspace = true }
-arrow-array = { workspace = true }
-arrow-buffer = { workspace = true }
+async-trait = { workspace = true }
 chrono = { workspace = true }
-datafusion-common = { workspace = true, default-features = true }
-paste = "^1.0"
+datafusion-common = { workspace = true, default-features = false }
+datafusion-doc = { workspace = true }
+datafusion-expr-common = { workspace = true }
+datafusion-functions-aggregate-common = { workspace = true }
+datafusion-functions-window-common = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
+indexmap = { workspace = true }
+itertools = { workspace = true }
+paste = { workspace = true }
+recursive = { workspace = true, optional = true }
 serde_json = { workspace = true }
-sqlparser = { workspace = true }
-strum = { version = "0.26.1", features = ["derive"] }
-strum_macros = "0.26.0"
+sqlparser = { workspace = true, optional = true }
 
 [dev-dependencies]
 ctor = { workspace = true }
 env_logger = { workspace = true }
+insta = { workspace = true }

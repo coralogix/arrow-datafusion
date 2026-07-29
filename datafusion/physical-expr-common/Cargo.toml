@@ -28,17 +28,25 @@ license = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.docs.rs]
+all-features = true
+
+# Note: add additional linter rules in lib.rs.
+# Rust does not support workspace + new linter rules in subcrates yet
+# https://github.com/rust-lang/cargo/issues/13157
 [lints]
 workspace = true
 
 [lib]
 name = "datafusion_physical_expr_common"
-path = "src/lib.rs"
 
 [dependencies]
 ahash = { workspace = true }
 arrow = { workspace = true }
-datafusion-common = { workspace = true, default-features = true }
-datafusion-expr = { workspace = true }
+chrono = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr-common = { workspace = true }
 hashbrown = { workspace = true }
-rand = { workspace = true }
+indexmap = { workspace = true }
+itertools = { workspace = true }
+parking_lot = { workspace = true }

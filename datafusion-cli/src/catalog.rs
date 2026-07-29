@@ -18,30 +18,29 @@
 use std::any::Any;
 use std::sync::{Arc, Weak};
 
-use crate::object_storage::{get_object_store, AwsOptions, GcpOptions};
+use crate::object_storage::{AwsOptions, GcpOptions, get_object_store};
 
-use datafusion::catalog::schema::SchemaProvider;
-use datafusion::catalog::{CatalogProvider, CatalogProviderList};
+use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider};
+
 use datafusion::common::plan_datafusion_err;
-use datafusion::datasource::listing::{
-    ListingTable, ListingTableConfig, ListingTableUrl,
-};
 use datafusion::datasource::TableProvider;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::error::Result;
 use datafusion::execution::context::SessionState;
+use datafusion::execution::session_state::SessionStateBuilder;
 
 use async_trait::async_trait;
 use dirs::home_dir;
 use parking_lot::RwLock;
 
-/// Wraps another catalog, automatically creating table providers
-/// for local files if needed
-pub struct DynamicFileCatalog {
+/// Wraps another catalog, automatically register require object stores for the file locations
+#[derive(Debug)]
+pub struct DynamicObjectStoreCatalog {
     inner: Arc<dyn CatalogProviderList>,
     state: Weak<RwLock<SessionState>>,
 }
 
-impl DynamicFileCatalog {
+impl DynamicObjectStoreCatalog {
     pub fn new(
         inner: Arc<dyn CatalogProviderList>,
         state: Weak<RwLock<SessionState>>,
@@ -50,7 +49,7 @@ impl DynamicFileCatalog {
     }
 }
 
-impl CatalogProviderList for DynamicFileCatalog {
+impl CatalogProviderList for DynamicObjectStoreCatalog {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -69,19 +68,20 @@ impl CatalogProviderList for DynamicFileCatalog {
 
     fn catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
         let state = self.state.clone();
-        self.inner
-            .catalog(name)
-            .map(|catalog| Arc::new(DynamicFileCatalogProvider::new(catalog, state)) as _)
+        self.inner.catalog(name).map(|catalog| {
+            Arc::new(DynamicObjectStoreCatalogProvider::new(catalog, state)) as _
+        })
     }
 }
 
 /// Wraps another catalog provider
-struct DynamicFileCatalogProvider {
+#[derive(Debug)]
+struct DynamicObjectStoreCatalogProvider {
     inner: Arc<dyn CatalogProvider>,
     state: Weak<RwLock<SessionState>>,
 }
 
-impl DynamicFileCatalogProvider {
+impl DynamicObjectStoreCatalogProvider {
     pub fn new(
         inner: Arc<dyn CatalogProvider>,
         state: Weak<RwLock<SessionState>>,
@@ -90,7 +90,7 @@ impl DynamicFileCatalogProvider {
     }
 }
 
-impl CatalogProvider for DynamicFileCatalogProvider {
+impl CatalogProvider for DynamicObjectStoreCatalogProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -101,9 +101,9 @@ impl CatalogProvider for DynamicFileCatalogProvider {
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
         let state = self.state.clone();
-        self.inner
-            .schema(name)
-            .map(|schema| Arc::new(DynamicFileSchemaProvider::new(schema, state)) as _)
+        self.inner.schema(name).map(|schema| {
+            Arc::new(DynamicObjectStoreSchemaProvider::new(schema, state)) as _
+        })
     }
 
     fn register_schema(
@@ -115,13 +115,15 @@ impl CatalogProvider for DynamicFileCatalogProvider {
     }
 }
 
-/// Wraps another schema provider
-struct DynamicFileSchemaProvider {
+/// Wraps another schema provider. [DynamicObjectStoreSchemaProvider] is responsible for registering the required
+/// object stores for the file locations.
+#[derive(Debug)]
+struct DynamicObjectStoreSchemaProvider {
     inner: Arc<dyn SchemaProvider>,
     state: Weak<RwLock<SessionState>>,
 }
 
-impl DynamicFileSchemaProvider {
+impl DynamicObjectStoreSchemaProvider {
     pub fn new(
         inner: Arc<dyn SchemaProvider>,
         state: Weak<RwLock<SessionState>>,
@@ -131,7 +133,7 @@ impl DynamicFileSchemaProvider {
 }
 
 #[async_trait]
-impl SchemaProvider for DynamicFileSchemaProvider {
+impl SchemaProvider for DynamicObjectStoreSchemaProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -149,9 +151,11 @@ impl SchemaProvider for DynamicFileSchemaProvider {
     }
 
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
-        let inner_table = self.inner.table(name).await?;
-        if inner_table.is_some() {
-            return Ok(inner_table);
+        let inner_table = self.inner.table(name).await;
+        if inner_table.is_ok()
+            && let Some(inner_table) = inner_table?
+        {
+            return Ok(Some(inner_table));
         }
 
         // if the inner schema provider didn't have a table by
@@ -162,6 +166,7 @@ impl SchemaProvider for DynamicFileSchemaProvider {
             .ok_or_else(|| plan_datafusion_err!("locking error"))?
             .read()
             .clone();
+        let mut builder = SessionStateBuilder::from(state.clone());
         let optimized_name = substitute_tilde(name.to_owned());
         let table_url = ListingTableUrl::parse(optimized_name.as_str())?;
         let scheme = table_url.scheme();
@@ -178,33 +183,30 @@ impl SchemaProvider for DynamicFileSchemaProvider {
                 // to any command options so the only choice is to use an empty collection
                 match scheme {
                     "s3" | "oss" | "cos" => {
-                        state = state.add_table_options_extension(AwsOptions::default());
+                        if let Some(table_options) = builder.table_options() {
+                            table_options.extensions.insert(AwsOptions::default())
+                        }
                     }
                     "gs" | "gcs" => {
-                        state = state.add_table_options_extension(GcpOptions::default())
+                        if let Some(table_options) = builder.table_options() {
+                            table_options.extensions.insert(GcpOptions::default())
+                        }
                     }
                     _ => {}
                 };
+                state = builder.build();
                 let store = get_object_store(
                     &state,
                     table_url.scheme(),
                     url,
                     &state.default_table_options(),
+                    false,
                 )
                 .await?;
                 state.runtime_env().register_object_store(url, store);
             }
         }
-
-        let config = match ListingTableConfig::new(table_url).infer(&state).await {
-            Ok(cfg) => cfg,
-            Err(_) => {
-                // treat as non-existing
-                return Ok(None);
-            }
-        };
-
-        Ok(Some(Arc::new(ListingTable::try_new(config)?)))
+        self.inner.table(name).await
     }
 
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
@@ -215,34 +217,37 @@ impl SchemaProvider for DynamicFileSchemaProvider {
         self.inner.table_exist(name)
     }
 }
-fn substitute_tilde(cur: String) -> String {
-    if let Some(usr_dir_path) = home_dir() {
-        if let Some(usr_dir) = usr_dir_path.to_str() {
-            if cur.starts_with('~') && !usr_dir.is_empty() {
-                return cur.replacen('~', usr_dir, 1);
-            }
-        }
+
+pub fn substitute_tilde(cur: String) -> String {
+    if let Some(usr_dir_path) = home_dir()
+        && let Some(usr_dir) = usr_dir_path.to_str()
+        && cur.starts_with('~')
+        && !usr_dir.is_empty()
+    {
+        return cur.replacen('~', usr_dir, 1);
     }
     cur
 }
-
 #[cfg(test)]
 mod tests {
+    use std::{env, vec};
+
     use super::*;
 
-    use datafusion::catalog::schema::SchemaProvider;
+    use datafusion::catalog::SchemaProvider;
     use datafusion::prelude::SessionContext;
 
     fn setup_context() -> (SessionContext, Arc<dyn SchemaProvider>) {
-        let mut ctx = SessionContext::new();
-        ctx.register_catalog_list(Arc::new(DynamicFileCatalog::new(
-            ctx.state().catalog_list(),
+        let ctx = SessionContext::new();
+        ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
+            ctx.state().catalog_list().clone(),
             ctx.state_weak_ref(),
         )));
 
-        let provider =
-            &DynamicFileCatalog::new(ctx.state().catalog_list(), ctx.state_weak_ref())
-                as &dyn CatalogProviderList;
+        let provider = &DynamicObjectStoreCatalog::new(
+            ctx.state().catalog_list().clone(),
+            ctx.state_weak_ref(),
+        ) as &dyn CatalogProviderList;
         let catalog = provider
             .catalog(provider.catalog_names().first().unwrap())
             .unwrap();
@@ -262,7 +267,7 @@ mod tests {
         let (ctx, schema) = setup_context();
 
         // That's a non registered table so expecting None here
-        let table = schema.table(&location).await.unwrap();
+        let table = schema.table(&location).await?;
         assert!(table.is_none());
 
         // It should still create an object store for the location in the SessionState
@@ -281,12 +286,25 @@ mod tests {
 
     #[tokio::test]
     async fn query_s3_location_test() -> Result<()> {
+        let aws_envs = vec![
+            "AWS_ENDPOINT",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ALLOW_HTTP",
+        ];
+        for aws_env in aws_envs {
+            if env::var(aws_env).is_err() {
+                eprint!("aws envs not set, skipping s3 test");
+                return Ok(());
+            }
+        }
+
         let bucket = "examples3bucket";
         let location = format!("s3://{bucket}/file.parquet");
 
         let (ctx, schema) = setup_context();
 
-        let table = schema.table(&location).await.unwrap();
+        let table = schema.table(&location).await?;
         assert!(table.is_none());
 
         let store = ctx
@@ -308,7 +326,7 @@ mod tests {
 
         let (ctx, schema) = setup_context();
 
-        let table = schema.table(&location).await.unwrap();
+        let table = schema.table(&location).await?;
         assert!(table.is_none());
 
         let store = ctx
@@ -330,41 +348,46 @@ mod tests {
 
         assert!(schema.table(location).await.is_err());
     }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_substitute_tilde() {
-        use std::env;
-        use std::path::MAIN_SEPARATOR;
+        use std::{env, path::PathBuf};
         let original_home = home_dir();
         let test_home_path = if cfg!(windows) {
             "C:\\Users\\user"
         } else {
             "/home/user"
         };
-        env::set_var(
-            if cfg!(windows) { "USERPROFILE" } else { "HOME" },
-            test_home_path,
-        );
+        unsafe {
+            env::set_var(
+                if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+                test_home_path,
+            );
+        }
         let input = "~/Code/datafusion/benchmarks/data/tpch_sf1/part/part-0.parquet";
-        let expected = format!(
-            "{}{}Code{}datafusion{}benchmarks{}data{}tpch_sf1{}part{}part-0.parquet",
-            test_home_path,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR,
-            MAIN_SEPARATOR
-        );
+        let expected = PathBuf::from(test_home_path)
+            .join("Code")
+            .join("datafusion")
+            .join("benchmarks")
+            .join("data")
+            .join("tpch_sf1")
+            .join("part")
+            .join("part-0.parquet")
+            .to_string_lossy()
+            .to_string();
         let actual = substitute_tilde(input.to_string());
         assert_eq!(actual, expected);
-        match original_home {
-            Some(home_path) => env::set_var(
-                if cfg!(windows) { "USERPROFILE" } else { "HOME" },
-                home_path.to_str().unwrap(),
-            ),
-            None => env::remove_var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }),
+        unsafe {
+            match original_home {
+                Some(home_path) => env::set_var(
+                    if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+                    home_path.to_str().unwrap(),
+                ),
+                None => {
+                    env::remove_var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                }
+            }
         }
     }
 }

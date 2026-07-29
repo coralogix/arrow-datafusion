@@ -19,28 +19,30 @@
 
 use std::sync::Arc;
 
-use crate::datasource::file_format::arrow::ArrowFormat;
-use crate::datasource::file_format::file_compression_type::FileCompressionType;
+#[cfg(feature = "avro")]
+use crate::datasource::file_format::avro::AvroFormat;
+
 #[cfg(feature = "parquet")]
 use crate::datasource::file_format::parquet::ParquetFormat;
+
 use crate::datasource::file_format::DEFAULT_SCHEMA_INFER_MAX_RECORD;
+use crate::datasource::file_format::arrow::ArrowFormat;
+use crate::datasource::file_format::file_compression_type::FileCompressionType;
 use crate::datasource::listing::ListingTableUrl;
-use crate::datasource::{
-    file_format::{avro::AvroFormat, csv::CsvFormat, json::JsonFormat},
-    listing::ListingOptions,
-};
+use crate::datasource::{file_format::csv::CsvFormat, listing::ListingOptions};
 use crate::error::Result;
 use crate::execution::context::{SessionConfig, SessionState};
-use crate::logical_expr::Expr;
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
-use datafusion_common::config::TableOptions;
+use datafusion_common::config::{ConfigFileDecryptionProperties, TableOptions};
 use datafusion_common::{
     DEFAULT_ARROW_EXTENSION, DEFAULT_AVRO_EXTENSION, DEFAULT_CSV_EXTENSION,
     DEFAULT_JSON_EXTENSION, DEFAULT_PARQUET_EXTENSION,
 };
 
 use async_trait::async_trait;
+use datafusion_datasource_json::file_format::JsonFormat;
+use datafusion_expr::SortExpr;
 
 /// Options that control the reading of CSV files.
 ///
@@ -59,10 +61,20 @@ pub struct CsvReadOptions<'a> {
     pub delimiter: u8,
     /// An optional quote character. Defaults to `b'"'`.
     pub quote: u8,
+    /// An optional terminator character. Defaults to None (CRLF).
+    pub terminator: Option<u8>,
     /// An optional escape character. Defaults to None.
     pub escape: Option<u8>,
     /// If enabled, lines beginning with this byte are ignored.
     pub comment: Option<u8>,
+    /// Specifies whether newlines in (quoted) values are supported.
+    ///
+    /// Parsing newlines in quoted values may be affected by execution behaviour such as
+    /// parallel file scanning. Setting this to `true` ensures that newlines in values are
+    /// parsed successfully, which may reduce performance.
+    ///
+    /// The default behaviour depends on the `datafusion.catalog.newlines_in_values` setting.
+    pub newlines_in_values: bool,
     /// An optional schema representing the CSV files. If None, CSV reader will try to infer it
     /// based on data in file.
     pub schema: Option<&'a Schema>,
@@ -76,10 +88,17 @@ pub struct CsvReadOptions<'a> {
     /// File compression type
     pub file_compression_type: FileCompressionType,
     /// Indicates how the file is sorted
-    pub file_sort_order: Vec<Vec<Expr>>,
+    pub file_sort_order: Vec<Vec<SortExpr>>,
+    /// Optional regex to match null values
+    pub null_regex: Option<String>,
+    /// Whether to allow truncated rows when parsing.
+    /// By default this is set to false and will error if the CSV rows have different lengths.
+    /// When set to true then it will allow records with less than the expected number of columns and fill the missing columns with nulls.
+    /// If the record’s schema is not nullable, then it will still return an error.
+    pub truncated_rows: bool,
 }
 
-impl<'a> Default for CsvReadOptions<'a> {
+impl Default for CsvReadOptions<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -94,12 +113,16 @@ impl<'a> CsvReadOptions<'a> {
             schema_infer_max_records: DEFAULT_SCHEMA_INFER_MAX_RECORD,
             delimiter: b',',
             quote: b'"',
+            terminator: None,
             escape: None,
+            newlines_in_values: false,
             file_extension: DEFAULT_CSV_EXTENSION,
             table_partition_cols: vec![],
             file_compression_type: FileCompressionType::UNCOMPRESSED,
             file_sort_order: vec![],
             comment: None,
+            null_regex: None,
+            truncated_rows: false,
         }
     }
 
@@ -127,9 +150,27 @@ impl<'a> CsvReadOptions<'a> {
         self
     }
 
+    /// Specify terminator to use for CSV read
+    pub fn terminator(mut self, terminator: Option<u8>) -> Self {
+        self.terminator = terminator;
+        self
+    }
+
     /// Specify delimiter to use for CSV read
     pub fn escape(mut self, escape: u8) -> Self {
         self.escape = Some(escape);
+        self
+    }
+
+    /// Specifies whether newlines in (quoted) values are supported.
+    ///
+    /// Parsing newlines in quoted values may be affected by execution behaviour such as
+    /// parallel file scanning. Setting this to `true` ensures that newlines in values are
+    /// parsed successfully, which may reduce performance.
+    ///
+    /// The default behaviour depends on the `datafusion.catalog.newlines_in_values` setting.
+    pub fn newlines_in_values(mut self, newlines_in_values: bool) -> Self {
+        self.newlines_in_values = newlines_in_values;
         self
     }
 
@@ -178,8 +219,23 @@ impl<'a> CsvReadOptions<'a> {
     }
 
     /// Configure if file has known sort order
-    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<Expr>>) -> Self {
+    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<SortExpr>>) -> Self {
         self.file_sort_order = file_sort_order;
+        self
+    }
+
+    /// Configure the null parsing regex.
+    pub fn null_regex(mut self, null_regex: Option<String>) -> Self {
+        self.null_regex = null_regex;
+        self
+    }
+
+    /// Configure whether to allow truncated rows when parsing.
+    /// By default this is set to false and will error if the CSV rows have different lengths
+    /// When set to true then it will allow records with less than the expected number of columns and fill the missing columns with nulls.
+    /// If the record’s schema is not nullable, then it will still return an error.
+    pub fn truncated_rows(mut self, truncated_rows: bool) -> Self {
+        self.truncated_rows = truncated_rows;
         self
     }
 }
@@ -210,10 +266,14 @@ pub struct ParquetReadOptions<'a> {
     /// based on data in file.
     pub schema: Option<&'a Schema>,
     /// Indicates how the file is sorted
-    pub file_sort_order: Vec<Vec<Expr>>,
+    pub file_sort_order: Vec<Vec<SortExpr>>,
+    /// Properties for decryption of Parquet files that use modular encryption
+    pub file_decryption_properties: Option<ConfigFileDecryptionProperties>,
+    /// Metadata size hint for Parquet files reading (in bytes)
+    pub metadata_size_hint: Option<usize>,
 }
 
-impl<'a> Default for ParquetReadOptions<'a> {
+impl Default for ParquetReadOptions<'_> {
     fn default() -> Self {
         Self {
             file_extension: DEFAULT_PARQUET_EXTENSION,
@@ -222,11 +282,24 @@ impl<'a> Default for ParquetReadOptions<'a> {
             skip_metadata: None,
             schema: None,
             file_sort_order: vec![],
+            file_decryption_properties: None,
+            metadata_size_hint: None,
         }
     }
 }
 
 impl<'a> ParquetReadOptions<'a> {
+    /// Create a new ParquetReadOptions with default values
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Specify file_extension
+    pub fn file_extension(mut self, file_extension: &'a str) -> Self {
+        self.file_extension = file_extension;
+        self
+    }
+
     /// Specify parquet_pruning
     pub fn parquet_pruning(mut self, parquet_pruning: bool) -> Self {
         self.parquet_pruning = Some(parquet_pruning);
@@ -257,8 +330,23 @@ impl<'a> ParquetReadOptions<'a> {
     }
 
     /// Configure if file has known sort order
-    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<Expr>>) -> Self {
+    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<SortExpr>>) -> Self {
         self.file_sort_order = file_sort_order;
+        self
+    }
+
+    /// Configure file decryption properties for reading encrypted Parquet files
+    pub fn file_decryption_properties(
+        mut self,
+        file_decryption_properties: ConfigFileDecryptionProperties,
+    ) -> Self {
+        self.file_decryption_properties = Some(file_decryption_properties);
+        self
+    }
+
+    /// Configure metadata size hint for Parquet files reading (in bytes)
+    pub fn metadata_size_hint(mut self, size_hint: Option<usize>) -> Self {
+        self.metadata_size_hint = size_hint;
         self
     }
 }
@@ -282,7 +370,7 @@ pub struct ArrowReadOptions<'a> {
     pub table_partition_cols: Vec<(String, DataType)>,
 }
 
-impl<'a> Default for ArrowReadOptions<'a> {
+impl Default for ArrowReadOptions<'_> {
     fn default() -> Self {
         Self {
             schema: None,
@@ -327,7 +415,7 @@ pub struct AvroReadOptions<'a> {
     pub table_partition_cols: Vec<(String, DataType)>,
 }
 
-impl<'a> Default for AvroReadOptions<'a> {
+impl Default for AvroReadOptions<'_> {
     fn default() -> Self {
         Self {
             schema: None,
@@ -376,10 +464,10 @@ pub struct NdJsonReadOptions<'a> {
     /// Flag indicating whether this file may be unbounded (as in a FIFO file).
     pub infinite: bool,
     /// Indicates how the file is sorted
-    pub file_sort_order: Vec<Vec<Expr>>,
+    pub file_sort_order: Vec<Vec<SortExpr>>,
 }
 
-impl<'a> Default for NdJsonReadOptions<'a> {
+impl Default for NdJsonReadOptions<'_> {
     fn default() -> Self {
         Self {
             schema: None,
@@ -431,8 +519,14 @@ impl<'a> NdJsonReadOptions<'a> {
     }
 
     /// Configure if file has known sort order
-    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<Expr>>) -> Self {
+    pub fn file_sort_order(mut self, file_sort_order: Vec<Vec<SortExpr>>) -> Self {
         self.file_sort_order = file_sort_order;
+        self
+    }
+
+    /// Specify how many rows to read for schema inference
+    pub fn schema_infer_max_records(mut self, schema_infer_max_records: usize) -> Self {
+        self.schema_infer_max_records = schema_infer_max_records;
         self
     }
 }
@@ -490,12 +584,16 @@ impl ReadOptions<'_> for CsvReadOptions<'_> {
             .with_delimiter(self.delimiter)
             .with_quote(self.quote)
             .with_escape(self.escape)
+            .with_terminator(self.terminator)
+            .with_newlines_in_values(self.newlines_in_values)
             .with_schema_infer_max_rec(self.schema_infer_max_records)
-            .with_file_compression_type(self.file_compression_type.to_owned());
+            .with_file_compression_type(self.file_compression_type.to_owned())
+            .with_null_regex(self.null_regex.clone())
+            .with_truncated_rows(self.truncated_rows);
 
         ListingOptions::new(Arc::new(file_format))
             .with_file_extension(self.file_extension)
-            .with_target_partitions(config.target_partitions())
+            .with_session_config_options(config)
             .with_table_partition_cols(self.table_partition_cols.clone())
             .with_file_sort_order(self.file_sort_order.clone())
     }
@@ -519,7 +617,16 @@ impl ReadOptions<'_> for ParquetReadOptions<'_> {
         config: &SessionConfig,
         table_options: TableOptions,
     ) -> ListingOptions {
-        let mut file_format = ParquetFormat::new().with_options(table_options.parquet);
+        let mut options = table_options.parquet;
+        if let Some(file_decryption_properties) = &self.file_decryption_properties {
+            options.crypto.file_decryption = Some(file_decryption_properties.clone());
+        }
+        // This can be overridden per-read in ParquetReadOptions, if setting.
+        if let Some(metadata_size_hint) = self.metadata_size_hint {
+            options.global.metadata_size_hint = Some(metadata_size_hint);
+        }
+
+        let mut file_format = ParquetFormat::new().with_options(options);
 
         if let Some(parquet_pruning) = self.parquet_pruning {
             file_format = file_format.with_enable_pruning(parquet_pruning)
@@ -530,9 +637,9 @@ impl ReadOptions<'_> for ParquetReadOptions<'_> {
 
         ListingOptions::new(Arc::new(file_format))
             .with_file_extension(self.file_extension)
-            .with_target_partitions(config.target_partitions())
             .with_table_partition_cols(self.table_partition_cols.clone())
             .with_file_sort_order(self.file_sort_order.clone())
+            .with_session_config_options(config)
     }
 
     async fn get_resolved_schema(
@@ -560,7 +667,7 @@ impl ReadOptions<'_> for NdJsonReadOptions<'_> {
 
         ListingOptions::new(Arc::new(file_format))
             .with_file_extension(self.file_extension)
-            .with_target_partitions(config.target_partitions())
+            .with_session_config_options(config)
             .with_table_partition_cols(self.table_partition_cols.clone())
             .with_file_sort_order(self.file_sort_order.clone())
     }
@@ -576,6 +683,7 @@ impl ReadOptions<'_> for NdJsonReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "avro")]
 #[async_trait]
 impl ReadOptions<'_> for AvroReadOptions<'_> {
     fn to_listing_options(
@@ -587,7 +695,7 @@ impl ReadOptions<'_> for AvroReadOptions<'_> {
 
         ListingOptions::new(Arc::new(file_format))
             .with_file_extension(self.file_extension)
-            .with_target_partitions(config.target_partitions())
+            .with_session_config_options(config)
             .with_table_partition_cols(self.table_partition_cols.clone())
     }
 
@@ -613,7 +721,7 @@ impl ReadOptions<'_> for ArrowReadOptions<'_> {
 
         ListingOptions::new(Arc::new(file_format))
             .with_file_extension(self.file_extension)
-            .with_target_partitions(config.target_partitions())
+            .with_session_config_options(config)
             .with_table_partition_cols(self.table_partition_cols.clone())
     }
 

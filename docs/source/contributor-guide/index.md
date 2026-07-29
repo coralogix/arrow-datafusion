@@ -30,13 +30,23 @@ In addition to submitting new PRs, we have a healthy tradition of community
 members reviewing each other's PRs. Doing so is a great way to help the
 community as well as get more familiar with Rust and the relevant codebases.
 
+## Development Environment
+
+Setup your development environment [here](development_environment.md), and learn
+how to test the code [here](testing.md).
+
 ## Finding and Creating Issues to Work On
 
 You can find a curated [good-first-issue] list to help you get started.
+You can read about how we plan larger projects in the [Roadmap and Improvement Proposals](roadmap.md) section.
+
+[good-first-issue]: https://github.com/apache/datafusion/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+
+### Open Contribution and Assigning tickets
 
 DataFusion is an open contribution project, and thus there is no particular
-project imposed deadline for completing any issue or any restriction on who can
-work on an issue, nor how many people can work on an issue at the same time.
+project imposed deadline for completing issues or restrictions on who can
+work on an issue, nor limits to how many people can work on an issue at the same time.
 
 Contributors drive the project forward based on their own priorities and
 interests and thus you are free to work on any issue that interests you.
@@ -50,17 +60,8 @@ If you want to work on an issue which is not already assigned to someone else
 and there are no comment indicating that someone is already working on that
 issue then you can assign the issue to yourself by submitting a single word
 comment `take`. This will assign the issue to yourself. However, if you are
-unable to make progress you should unassign the issue by using the `unassign me`
-link at the top of the issue page (and ask for help if are stuck) so that
-someone else can get involved in the work.
-
-If you plan to work on a new feature that doesn't have an existing ticket, it is
-a good idea to open a ticket to discuss the feature. Advanced discussion often
-helps avoid wasted effort by determining early if the feature is a good fit for
-DataFusion before too much time is invested. It also often helps to discuss your
-ideas with the community to get feedback on implementation.
-
-[good-first-issue]: https://github.com/apache/datafusion/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+unable to make progress you should unassign the issue by commenting a single
+word `untake`.
 
 # Developer's guide
 
@@ -88,7 +89,7 @@ committer who approved your PR to help remind them to merge it.
 
 ## Creating Pull Requests
 
-We recommend splitting your contributions into multiple smaller focused PRs rather than large PRs (500+ lines) because:
+When possible, we recommend splitting your contributions into multiple smaller focused PRs rather than large PRs (500+ lines) because:
 
 1. The PR is more likely to be reviewed quickly -- our reviewers struggle to find the contiguous time needed to review large PRs.
 2. The PR discussions tend to be more focused and less likely to get lost among several different threads.
@@ -96,26 +97,66 @@ We recommend splitting your contributions into multiple smaller focused PRs rath
 
 If you are concerned that a larger design will be lost in a string of small PRs, creating a large draft PR that shows how they all work together can help.
 
-Note all commits in a PR are squashed when merged to the `main` branch so there is one commit per PR.
+Note all commits in a PR are squashed when merged to the `main` branch so there is one commit per PR after merge.
 
-# Reviewing Pull Requests
+## Conventional Commits & Labeling PRs
+
+We generate change logs for each release using an automated process that will categorize PRs based on the title
+and/or the GitHub labels attached to the PR.
+
+We follow the [Conventional Commits] specification to categorize PRs based on the title. This most often simply means
+looking for titles starting with prefixes such as `fix:`, `feat:`, `docs:`, or `chore:`. We do not enforce this
+convention but encourage its use if you want your PR to feature in the correct section of the changelog.
+
+The change log generator will also look at GitHub labels such as `bug`, `enhancement`, or `api change`, and labels
+do take priority over the conventional commit approach, allowing maintainers to re-categorize PRs after they have been merged.
+
+[conventional commits]: https://www.conventionalcommits.org/en/v1.0.0/
+
+## Reviewing Pull Requests
 
 Some helpful links:
 
-- [PRs Waiting for Review]
-- [Approved PRs Waiting for Merge]
+- [PRs Waiting for Review] on GitHub
+- [Approved PRs Waiting for Merge] on GitHub
 
 [prs waiting for review]: https://github.com/apache/datafusion/pulls?q=is%3Apr+is%3Aopen+-review%3Aapproved+-is%3Adraft+
 [approved prs waiting for merge]: https://github.com/apache/datafusion/pulls?q=is%3Apr+is%3Aopen+review%3Aapproved+-is%3Adraft
 
-When reviewing PRs, please remember our primary goal is to improve DataFusion and its community together. PR feedback should be constructive with the aim to help improve the code as well as the understanding of the contributor.
+When reviewing PRs, our primary goal is to improve DataFusion and its community together. PR feedback should be constructive with the aim to help improve the code as well as the understanding of the contributor.
 
 Please ensure any issues you raise contains a rationale and suggested alternative -- it is frustrating to be told "don't do it this way" without any clear reason or alternate provided.
 
 Some things to specifically check:
 
-1. Is the feature or fix covered sufficiently with tests (see `Test Organization` below)?
+1. Is the feature or fix covered sufficiently with tests (see the [Testing](testing.md) section)?
 2. Is the code clear, and fits the style of the existing codebase?
+
+## Performance Improvements
+
+Performance improvements are always welcome: performance is a key DataFusion
+feature.
+
+In general, the performance improvement from a change should be "enough" to
+justify any added code complexity. How much is "enough" is a judgement made by
+the committers, but generally means that the improvement should be noticeable in
+a real-world scenario and is greater than the noise of the benchmarking system.
+
+To help committers evaluate the potential improvement, performance PRs should
+in general be accompanied by benchmark results that demonstrate the improvement.
+
+The best way to demonstrate a performance improvement is with the existing
+benchmarks:
+
+- [System level SQL Benchmarks](https://github.com/apache/datafusion/tree/main/benchmarks)
+- Microbenchmarks such as those in [functions/benches](https://github.com/apache/datafusion/tree/main/datafusion/functions/benches)
+
+If there is no suitable existing benchmark, you can create a new one. It helps
+to isolate the effects of your change by creating a separate PR with the
+benchmark, and then a PR with the code change that improves the benchmark.
+
+[system level sql benchmarks]: https://github.com/apache/datafusion/tree/main/benchmarks
+[functions/benches]: https://github.com/apache/datafusion/tree/main/datafusion/functions/benches
 
 ## "Major" and "Minor" PRs
 
@@ -135,18 +176,26 @@ The good thing about open code and open development is that any issues in one ch
 Pull requests will be marked with a `stale` label after 60 days of inactivity and then closed 7 days after that.
 Commenting on the PR will remove the `stale` label.
 
-## Specifications
+## AI-Assisted contributions
 
-We formalize some DataFusion semantics and behaviors through specification
-documents. These specifications are useful to be used as references to help
-resolve ambiguities during development or code reviews.
+DataFusion has the following policy for AI-assisted PRs:
 
-You are also welcome to propose changes to existing specifications or create
-new specifications as you see fit.
+- The PR author should **understand the core ideas** behind the implementation **end-to-end**, and be able to justify the design and code during review.
+- **Calls out unknowns and assumptions**. It's okay to not fully understand some bits of AI generated code. You should comment on these cases and point them out to reviewers so that they can use their knowledge of the codebase to clear up any concerns. For example, you might comment "calling this function here seems to work but I'm not familiar with how it works internally, I wonder if there's a race condition if it is called concurrently".
 
-Here is the list current active specifications:
+### Why fully AI-generated PRs without understanding are not helpful
 
-- [Output field name semantic](https://datafusion.apache.org/contributor-guide/specification/output-field-name-semantic.html)
-- [Invariants](https://datafusion.apache.org/contributor-guide/specification/invariants.html)
+Today, AI tools cannot reliably make complex changes to DataFusion on their own, which is why we rely on pull requests and code review.
 
-All specifications are stored in the `docs/source/specification` folder.
+The purposes of code review are:
+
+1. Finish the intended task.
+2. Share knowledge between authors and reviewers, as a long-term investment in the project. For this reason, even if someone familiar with the codebase can finish a task quickly, we're still happy to help a new contributor work on it even if it takes longer.
+
+An AI dump for an issue doesn’t meet these purposes. Maintainers could finish the task faster by using AI directly, and the submitters gain little knowledge if they act only as a pass through AI proxy without understanding.
+
+Please understand the reviewing capacity is **very limited** for the project, so large PRs which appear to not have the requisite understanding might not get reviewed, and eventually closed or redirected.
+
+### Better ways to contribute than an “AI dump”
+
+It's recommended to write a high-quality issue with a clear problem statement and a minimal, reproducible example. This can make it easier for others to contribute.

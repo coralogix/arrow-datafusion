@@ -15,6 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg"
+)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// Make sure fast / cheap clones on Arc are explicit:
+// https://github.com/apache/datafusion/issues/11143
+#![deny(clippy::clone_on_ref_ptr)]
+#![cfg_attr(test, allow(clippy::needless_pass_by_value))]
+// https://github.com/apache/datafusion/issues/18881
+#![deny(clippy::allow_attributes)]
+
 //! Function packages for [DataFusion].
 //!
 //! This crate contains a collection of various function packages for DataFusion,
@@ -74,7 +86,7 @@
 //! 3. Add a new feature to `Cargo.toml`, with any optional dependencies
 //!
 //! 4. Use the `make_package!` macro to expose the module when the
-//! feature is enabled.
+//!    feature is enabled.
 //!
 //! [`ScalarUDF`]: datafusion_expr::ScalarUDF
 use datafusion_common::Result;
@@ -91,10 +103,8 @@ pub mod string;
 make_stub_package!(string, "string_expressions");
 
 /// Core datafusion expressions
-/// Enabled via feature flag `core_expressions`
-#[cfg(feature = "core_expressions")]
+/// These are always available and not controlled by a feature flag
 pub mod core;
-make_stub_package!(core, "core_expressions");
 
 /// Date and time expressions.
 /// Contains functions such as to_timestamp
@@ -130,11 +140,15 @@ make_stub_package!(crypto, "crypto_expressions");
 pub mod unicode;
 make_stub_package!(unicode, "unicode_expressions");
 
-mod utils;
+#[cfg(any(feature = "datetime_expressions", feature = "unicode_expressions"))]
+pub mod planner;
+
+pub mod strings;
+
+pub mod utils;
 
 /// Fluent-style API for creating `Expr`s
 pub mod expr_fn {
-    #[cfg(feature = "core_expressions")]
     pub use super::core::expr_fn::*;
     #[cfg(feature = "crypto_expressions")]
     pub use super::crypto::expr_fn::*;
@@ -181,6 +195,13 @@ pub fn register_all(registry: &mut dyn FunctionRegistry) -> Result<()> {
 }
 
 #[cfg(test)]
+#[ctor::ctor]
+fn init() {
+    // Enable RUST_LOG logging configuration for test
+    let _ = env_logger::try_init();
+}
+
+#[cfg(test)]
 mod tests {
     use crate::all_default_functions;
     use datafusion_common::Result;
@@ -198,8 +219,7 @@ mod tests {
             for alias in func.aliases() {
                 assert!(
                     names.insert(alias.to_string().to_lowercase()),
-                    "duplicate function name: {}",
-                    alias
+                    "duplicate function name: {alias}"
                 );
             }
         }

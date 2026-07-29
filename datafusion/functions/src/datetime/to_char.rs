@@ -19,7 +19,8 @@ use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::cast::AsArray;
-use arrow::array::{new_null_array, Array, ArrayRef, StringArray};
+use arrow::array::{Array, ArrayRef, StringArray, new_null_array};
+use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use arrow::datatypes::DataType::{
     Date32, Date64, Duration, Time32, Time64, Timestamp, Utf8,
@@ -27,14 +28,42 @@ use arrow::datatypes::DataType::{
 use arrow::datatypes::TimeUnit::{Microsecond, Millisecond, Nanosecond, Second};
 use arrow::error::ArrowError;
 use arrow::util::display::{ArrayFormatter, DurationFormat, FormatOptions};
-
-use datafusion_common::{exec_err, Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue, exec_err, utils::take_function_args};
 use datafusion_expr::TypeSignature::Exact;
 use datafusion_expr::{
-    ColumnarValue, ScalarUDFImpl, Signature, Volatility, TIMEZONE_WILDCARD,
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, TIMEZONE_WILDCARD, Volatility,
 };
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Time and Date Functions"),
+    description = "Returns a string representation of a date, time, timestamp or duration based on a [Chrono format](https://docs.rs/chrono/latest/chrono/format/strftime/index.html). Unlike the PostgreSQL equivalent of this function numerical formatting is not supported.",
+    syntax_example = "to_char(expression, format)",
+    sql_example = r#"```sql
+> select to_char('2023-03-01'::date, '%d-%m-%Y');
++----------------------------------------------+
+| to_char(Utf8("2023-03-01"),Utf8("%d-%m-%Y")) |
++----------------------------------------------+
+| 01-03-2023                                   |
++----------------------------------------------+
+```
+
+Additional examples can be found [here](https://github.com/apache/datafusion/blob/main/datafusion-examples/examples/builtin_functions/date_time.rs)
+"#,
+    argument(
+        name = "expression",
+        description = "Expression to operate on. Can be a constant, column, or function that results in a date, time, timestamp or duration."
+    ),
+    argument(
+        name = "format",
+        description = "A [Chrono format](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) string to use to convert the expression."
+    ),
+    argument(
+        name = "day",
+        description = "Day to use when making the date. Can be a constant, column or function, and any combination of arithmetic operators."
+    )
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToCharFunc {
     signature: Signature,
     aliases: Vec<String>,
@@ -53,34 +82,34 @@ impl ToCharFunc {
                 vec![
                     Exact(vec![Date32, Utf8]),
                     Exact(vec![Date64, Utf8]),
+                    Exact(vec![Time64(Nanosecond), Utf8]),
+                    Exact(vec![Time64(Microsecond), Utf8]),
                     Exact(vec![Time32(Millisecond), Utf8]),
                     Exact(vec![Time32(Second), Utf8]),
-                    Exact(vec![Time64(Microsecond), Utf8]),
-                    Exact(vec![Time64(Nanosecond), Utf8]),
-                    Exact(vec![Timestamp(Second, None), Utf8]),
-                    Exact(vec![
-                        Timestamp(Second, Some(TIMEZONE_WILDCARD.into())),
-                        Utf8,
-                    ]),
-                    Exact(vec![Timestamp(Millisecond, None), Utf8]),
-                    Exact(vec![
-                        Timestamp(Millisecond, Some(TIMEZONE_WILDCARD.into())),
-                        Utf8,
-                    ]),
-                    Exact(vec![Timestamp(Microsecond, None), Utf8]),
-                    Exact(vec![
-                        Timestamp(Microsecond, Some(TIMEZONE_WILDCARD.into())),
-                        Utf8,
-                    ]),
-                    Exact(vec![Timestamp(Nanosecond, None), Utf8]),
                     Exact(vec![
                         Timestamp(Nanosecond, Some(TIMEZONE_WILDCARD.into())),
                         Utf8,
                     ]),
-                    Exact(vec![Duration(Second), Utf8]),
-                    Exact(vec![Duration(Millisecond), Utf8]),
-                    Exact(vec![Duration(Microsecond), Utf8]),
+                    Exact(vec![Timestamp(Nanosecond, None), Utf8]),
+                    Exact(vec![
+                        Timestamp(Microsecond, Some(TIMEZONE_WILDCARD.into())),
+                        Utf8,
+                    ]),
+                    Exact(vec![Timestamp(Microsecond, None), Utf8]),
+                    Exact(vec![
+                        Timestamp(Millisecond, Some(TIMEZONE_WILDCARD.into())),
+                        Utf8,
+                    ]),
+                    Exact(vec![Timestamp(Millisecond, None), Utf8]),
+                    Exact(vec![
+                        Timestamp(Second, Some(TIMEZONE_WILDCARD.into())),
+                        Utf8,
+                    ]),
+                    Exact(vec![Timestamp(Second, None), Utf8]),
                     Exact(vec![Duration(Nanosecond), Utf8]),
+                    Exact(vec![Duration(Microsecond), Utf8]),
+                    Exact(vec![Duration(Millisecond), Utf8]),
+                    Exact(vec![Duration(Second), Utf8]),
                 ],
                 Volatility::Immutable,
             ),
@@ -106,29 +135,26 @@ impl ScalarUDFImpl for ToCharFunc {
         Ok(Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
-            return exec_err!(
-                "to_char function requires 2 arguments, got {}",
-                args.len()
-            );
-        }
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> Result<ColumnarValue> {
+        let args = args.args;
+        let [date_time, format] = take_function_args(self.name(), &args)?;
 
-        match &args[1] {
+        match format {
             ColumnarValue::Scalar(ScalarValue::Utf8(None))
-            | ColumnarValue::Scalar(ScalarValue::Null) => {
-                _to_char_scalar(args[0].clone(), None)
-            }
+            | ColumnarValue::Scalar(ScalarValue::Null) => to_char_scalar(date_time, None),
             // constant format
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(format))) => {
                 // invoke to_char_scalar with the known string, without converting to array
-                _to_char_scalar(args[0].clone(), Some(format))
+                to_char_scalar(date_time, Some(format))
             }
-            ColumnarValue::Array(_) => _to_char_array(args),
+            ColumnarValue::Array(_) => to_char_array(&args),
             _ => {
                 exec_err!(
                     "Format for `to_char` must be non-null Utf8, received {:?}",
-                    args[1].data_type()
+                    format.data_type()
                 )
             }
         }
@@ -137,9 +163,13 @@ impl ScalarUDFImpl for ToCharFunc {
     fn aliases(&self) -> &[String] {
         &self.aliases
     }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
+    }
 }
 
-fn _build_format_options<'a>(
+fn build_format_options<'a>(
     data_type: &DataType,
     format: Option<&'a str>,
 ) -> Result<FormatOptions<'a>, Result<ColumnarValue>> {
@@ -147,7 +177,9 @@ fn _build_format_options<'a>(
         return Ok(FormatOptions::new());
     };
     let format_options = match data_type {
-        Date32 => FormatOptions::new().with_date_format(Some(format)),
+        Date32 => FormatOptions::new()
+            .with_date_format(Some(format))
+            .with_datetime_format(Some(format)),
         Date64 => FormatOptions::new().with_datetime_format(Some(format)),
         Time32(_) => FormatOptions::new().with_time_format(Some(format)),
         Time64(_) => FormatOptions::new().with_time_format(Some(format)),
@@ -171,53 +203,62 @@ fn _build_format_options<'a>(
 }
 
 /// Special version when arg\[1] is a scalar
-fn _to_char_scalar(
-    expression: ColumnarValue,
+fn to_char_scalar(
+    expression: &ColumnarValue,
     format: Option<&str>,
 ) -> Result<ColumnarValue> {
     // it's possible that the expression is a scalar however because
     // of the implementation in arrow-rs we need to convert it to an array
     let data_type = &expression.data_type();
     let is_scalar_expression = matches!(&expression, ColumnarValue::Scalar(_));
-    let array = expression.into_array(1)?;
+    let array = expression.clone().into_array(1)?;
 
     if format.is_none() {
-        if is_scalar_expression {
-            return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
+        return if is_scalar_expression {
+            Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
         } else {
-            return Ok(ColumnarValue::Array(new_null_array(
-                &DataType::Utf8,
-                array.len(),
-            )));
-        }
+            Ok(ColumnarValue::Array(new_null_array(&Utf8, array.len())))
+        };
     }
 
-    let format_options = match _build_format_options(data_type, format) {
+    let format_options = match build_format_options(data_type, format) {
         Ok(value) => value,
         Err(value) => return value,
     };
 
     let formatter = ArrayFormatter::try_new(array.as_ref(), &format_options)?;
-    let formatted: Result<Vec<_>, ArrowError> = (0..array.len())
-        .map(|i| formatter.value(i).try_to_string())
+    let formatted: Result<Vec<Option<String>>, ArrowError> = (0..array.len())
+        .map(|i| {
+            if array.is_null(i) {
+                Ok(None)
+            } else {
+                formatter.value(i).try_to_string().map(Some)
+            }
+        })
         .collect();
 
     if let Ok(formatted) = formatted {
         if is_scalar_expression {
-            Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                formatted.first().unwrap().to_string(),
-            ))))
+            Ok(ColumnarValue::Scalar(ScalarValue::Utf8(
+                formatted.first().unwrap().clone(),
+            )))
         } else {
             Ok(ColumnarValue::Array(
                 Arc::new(StringArray::from(formatted)) as ArrayRef
             ))
         }
     } else {
+        // if the data type was a Date32, formatting could have failed because the format string
+        // contained datetime specifiers, so we'll retry by casting the date array as a timestamp array
+        if data_type == &Date32 {
+            return to_char_scalar(&expression.cast_to(&Date64, None)?, format);
+        }
+
         exec_err!("{}", formatted.unwrap_err())
     }
 }
 
-fn _to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+fn to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     let arrays = ColumnarValue::values_to_arrays(args)?;
     let mut results: Vec<Option<String>> = vec![];
     let format_array = arrays[1].as_string::<i32>();
@@ -233,7 +274,7 @@ fn _to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
             results.push(None);
             continue;
         }
-        let format_options = match _build_format_options(data_type, format) {
+        let format_options = match build_format_options(data_type, format) {
             Ok(value) => value,
             Err(value) => return value,
         };
@@ -243,7 +284,25 @@ fn _to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         let result = formatter.value(idx).try_to_string();
         match result {
             Ok(value) => results.push(Some(value)),
-            Err(e) => return exec_err!("{}", e),
+            Err(e) => {
+                // if the data type was a Date32, formatting could have failed because the format string
+                // contained datetime specifiers, so we'll treat this specific date element as a timestamp
+                if data_type == &Date32 {
+                    let failed_date_value = arrays[0].slice(idx, 1);
+
+                    match retry_date_as_timestamp(&failed_date_value, &format_options) {
+                        Ok(value) => {
+                            results.push(Some(value));
+                            continue;
+                        }
+                        Err(e) => {
+                            return exec_err!("{}", e);
+                        }
+                    }
+                }
+
+                return exec_err!("{}", e);
+            }
         }
     }
 
@@ -260,6 +319,19 @@ fn _to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     }
 }
 
+fn retry_date_as_timestamp(
+    array_ref: &ArrayRef,
+    format_options: &FormatOptions,
+) -> Result<String> {
+    let target_data_type = Date64;
+
+    let date_value = cast(&array_ref, &target_data_type)?;
+    let formatter = ArrayFormatter::try_new(date_value.as_ref(), format_options)?;
+    let result = formatter.value(0).try_to_string()?;
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::datetime::to_char::ToCharFunc;
@@ -269,10 +341,51 @@ mod tests {
         TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
         TimestampSecondArray,
     };
+    use arrow::datatypes::{DataType, Field, TimeUnit};
     use chrono::{NaiveDateTime, Timelike};
     use datafusion_common::ScalarValue;
+    use datafusion_common::config::ConfigOptions;
     use datafusion_expr::{ColumnarValue, ScalarUDFImpl};
     use std::sync::Arc;
+
+    #[test]
+    fn test_array_array() {
+        let array_array_data = vec![(
+            Arc::new(Date32Array::from(vec![18506, 18507])) as ArrayRef,
+            StringArray::from(vec!["%Y::%m::%d", "%Y::%m::%d %S::%M::%H %f"]),
+            StringArray::from(vec!["2020::09::01", "2020::09::02 00::00::00 000000000"]),
+        )];
+
+        for (value, format, expected) in array_array_data {
+            let batch_len = value.len();
+            let value_data_type = value.data_type().clone();
+            let format_data_type = format.data_type().clone();
+
+            let args = datafusion_expr::ScalarFunctionArgs {
+                args: vec![
+                    ColumnarValue::Array(value),
+                    ColumnarValue::Array(Arc::new(format) as ArrayRef),
+                ],
+                arg_fields: vec![
+                    Field::new("a", value_data_type, true).into(),
+                    Field::new("b", format_data_type, true).into(),
+                ],
+                number_rows: batch_len,
+                return_field: Field::new("f", DataType::Utf8, true).into(),
+                config_options: Arc::clone(&Arc::new(ConfigOptions::default())),
+            };
+            let result = ToCharFunc::new()
+                .invoke_with_args(args)
+                .expect("that to_char parsed values without error");
+
+            if let ColumnarValue::Array(result) = result {
+                assert_eq!(result.len(), 2);
+                assert_eq!(&expected as &dyn Array, result.as_ref());
+            } else {
+                panic!("Expected an array value")
+            }
+        }
+    }
 
     #[test]
     fn test_to_char() {
@@ -292,6 +405,11 @@ mod tests {
                 ScalarValue::Date32(Some(18506)),
                 ScalarValue::Utf8(Some("%Y::%m::%d".to_string())),
                 "2020::09::01".to_string(),
+            ),
+            (
+                ScalarValue::Date32(Some(18506)),
+                ScalarValue::Utf8(Some("%Y::%m::%d %S::%M::%H %f".to_string())),
+                "2020::09::01 00::00::00 000000000".to_string(),
             ),
             (
                 ScalarValue::Date64(Some(date.and_utc().timestamp_millis())),
@@ -350,8 +468,19 @@ mod tests {
         ];
 
         for (value, format, expected) in scalar_data {
+            let arg_fields = vec![
+                Field::new("a", value.data_type(), false).into(),
+                Field::new("a", format.data_type(), false).into(),
+            ];
+            let args = datafusion_expr::ScalarFunctionArgs {
+                args: vec![ColumnarValue::Scalar(value), ColumnarValue::Scalar(format)],
+                arg_fields,
+                number_rows: 1,
+                return_field: Field::new("f", DataType::Utf8, true).into(),
+                config_options: Arc::new(ConfigOptions::default()),
+            };
             let result = ToCharFunc::new()
-                .invoke(&[ColumnarValue::Scalar(value), ColumnarValue::Scalar(format)])
+                .invoke_with_args(args)
                 .expect("that to_char parsed values without error");
 
             if let ColumnarValue::Scalar(ScalarValue::Utf8(date)) = result {
@@ -366,6 +495,11 @@ mod tests {
                 ScalarValue::Date32(Some(18506)),
                 StringArray::from(vec!["%Y::%m::%d".to_string()]),
                 "2020::09::01".to_string(),
+            ),
+            (
+                ScalarValue::Date32(Some(18506)),
+                StringArray::from(vec!["%Y::%m::%d %S::%M::%H %f".to_string()]),
+                "2020::09::01 00::00::00 000000000".to_string(),
             ),
             (
                 ScalarValue::Date64(Some(date.and_utc().timestamp_millis())),
@@ -424,11 +558,23 @@ mod tests {
         ];
 
         for (value, format, expected) in scalar_array_data {
-            let result = ToCharFunc::new()
-                .invoke(&[
+            let batch_len = format.len();
+            let arg_fields = vec![
+                Field::new("a", value.data_type(), false).into(),
+                Field::new("a", format.data_type().to_owned(), false).into(),
+            ];
+            let args = datafusion_expr::ScalarFunctionArgs {
+                args: vec![
                     ColumnarValue::Scalar(value),
                     ColumnarValue::Array(Arc::new(format) as ArrayRef),
-                ])
+                ],
+                arg_fields,
+                number_rows: batch_len,
+                return_field: Field::new("f", DataType::Utf8, true).into(),
+                config_options: Arc::new(ConfigOptions::default()),
+            };
+            let result = ToCharFunc::new()
+                .invoke_with_args(args)
                 .expect("that to_char parsed values without error");
 
             if let ColumnarValue::Scalar(ScalarValue::Utf8(date)) = result {
@@ -445,6 +591,14 @@ mod tests {
                 StringArray::from(vec!["2020::09::01", "2020::09::02"]),
             ),
             (
+                Arc::new(Date32Array::from(vec![18506, 18507])) as ArrayRef,
+                ScalarValue::Utf8(Some("%Y::%m::%d %S::%M::%H %f".to_string())),
+                StringArray::from(vec![
+                    "2020::09::01 00::00::00 000000000",
+                    "2020::09::02 00::00::00 000000000",
+                ]),
+            ),
+            (
                 Arc::new(Date64Array::from(vec![
                     date.and_utc().timestamp_millis(),
                     date2.and_utc().timestamp_millis(),
@@ -459,6 +613,25 @@ mod tests {
                 Arc::new(Date32Array::from(vec![18506, 18507])) as ArrayRef,
                 StringArray::from(vec!["%Y::%m::%d", "%d::%m::%Y"]),
                 StringArray::from(vec!["2020::09::01", "02::09::2020"]),
+            ),
+            (
+                Arc::new(Date32Array::from(vec![18506, 18507])) as ArrayRef,
+                StringArray::from(vec![
+                    "%Y::%m::%d %S::%M::%H %f",
+                    "%Y::%m::%d %S::%M::%H %f",
+                ]),
+                StringArray::from(vec![
+                    "2020::09::01 00::00::00 000000000",
+                    "2020::09::02 00::00::00 000000000",
+                ]),
+            ),
+            (
+                Arc::new(Date32Array::from(vec![18506, 18507])) as ArrayRef,
+                StringArray::from(vec!["%Y::%m::%d", "%Y::%m::%d %S::%M::%H %f"]),
+                StringArray::from(vec![
+                    "2020::09::01",
+                    "2020::09::02 00::00::00 000000000",
+                ]),
             ),
             (
                 Arc::new(Date64Array::from(vec![
@@ -549,11 +722,23 @@ mod tests {
         ];
 
         for (value, format, expected) in array_scalar_data {
-            let result = ToCharFunc::new()
-                .invoke(&[
+            let batch_len = value.len();
+            let arg_fields = vec![
+                Field::new("a", value.data_type().clone(), false).into(),
+                Field::new("a", format.data_type(), false).into(),
+            ];
+            let args = datafusion_expr::ScalarFunctionArgs {
+                args: vec![
                     ColumnarValue::Array(value as ArrayRef),
                     ColumnarValue::Scalar(format),
-                ])
+                ],
+                arg_fields,
+                number_rows: batch_len,
+                return_field: Field::new("f", DataType::Utf8, true).into(),
+                config_options: Arc::new(ConfigOptions::default()),
+            };
+            let result = ToCharFunc::new()
+                .invoke_with_args(args)
                 .expect("that to_char parsed values without error");
 
             if let ColumnarValue::Array(result) = result {
@@ -565,11 +750,23 @@ mod tests {
         }
 
         for (value, format, expected) in array_array_data {
-            let result = ToCharFunc::new()
-                .invoke(&[
+            let batch_len = value.len();
+            let arg_fields = vec![
+                Field::new("a", value.data_type().clone(), false).into(),
+                Field::new("a", format.data_type().clone(), false).into(),
+            ];
+            let args = datafusion_expr::ScalarFunctionArgs {
+                args: vec![
                     ColumnarValue::Array(value),
                     ColumnarValue::Array(Arc::new(format) as ArrayRef),
-                ])
+                ],
+                arg_fields,
+                number_rows: batch_len,
+                return_field: Field::new("f", DataType::Utf8, true).into(),
+                config_options: Arc::new(ConfigOptions::default()),
+            };
+            let result = ToCharFunc::new()
+                .invoke_with_args(args)
                 .expect("that to_char parsed values without error");
 
             if let ColumnarValue::Array(result) = result {
@@ -585,18 +782,36 @@ mod tests {
         //
 
         // invalid number of arguments
-        let result = ToCharFunc::new()
-            .invoke(&[ColumnarValue::Scalar(ScalarValue::Int32(Some(1)))]);
+        let arg_field = Field::new("a", DataType::Int32, true).into();
+        let args = datafusion_expr::ScalarFunctionArgs {
+            args: vec![ColumnarValue::Scalar(ScalarValue::Int32(Some(1)))],
+            arg_fields: vec![arg_field],
+            number_rows: 1,
+            return_field: Field::new("f", DataType::Utf8, true).into(),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+        let result = ToCharFunc::new().invoke_with_args(args);
         assert_eq!(
             result.err().unwrap().strip_backtrace(),
             "Execution error: to_char function requires 2 arguments, got 1"
         );
 
         // invalid type
-        let result = ToCharFunc::new().invoke(&[
-            ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
-            ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(Some(1), None)),
-        ]);
+        let arg_fields = vec![
+            Field::new("a", DataType::Utf8, true).into(),
+            Field::new("a", DataType::Timestamp(TimeUnit::Nanosecond, None), true).into(),
+        ];
+        let args = datafusion_expr::ScalarFunctionArgs {
+            args: vec![
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+                ColumnarValue::Scalar(ScalarValue::TimestampNanosecond(Some(1), None)),
+            ],
+            arg_fields,
+            number_rows: 1,
+            return_field: Field::new("f", DataType::Utf8, true).into(),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+        let result = ToCharFunc::new().invoke_with_args(args);
         assert_eq!(
             result.err().unwrap().strip_backtrace(),
             "Execution error: Format for `to_char` must be non-null Utf8, received Timestamp(Nanosecond, None)"

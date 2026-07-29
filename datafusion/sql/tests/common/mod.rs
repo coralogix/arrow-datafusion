@@ -15,41 +15,89 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::any::Any;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::fmt::{Debug, Display};
 use std::{sync::Arc, vec};
 
-use arrow_schema::*;
+use arrow::datatypes::*;
 use datafusion_common::config::ConfigOptions;
-use datafusion_common::{plan_err, Result, TableReference};
-use datafusion_expr::{AggregateUDF, ScalarUDF, TableSource, WindowUDF};
+use datafusion_common::file_options::file_type::FileType;
+use datafusion_common::{DFSchema, GetExt, Result, TableReference, plan_err};
+use datafusion_expr::planner::{ExprPlanner, PlannerResult, TypePlanner};
+use datafusion_expr::{AggregateUDF, Expr, ScalarUDF, TableSource, WindowUDF};
+use datafusion_functions_nested::expr_fn::make_array;
 use datafusion_sql::planner::ContextProvider;
 
-#[derive(Default)]
-pub(crate) struct MockContextProvider {
-    options: ConfigOptions,
-    udfs: HashMap<String, Arc<ScalarUDF>>,
-    udafs: HashMap<String, Arc<AggregateUDF>>,
+struct MockCsvType {}
+
+impl GetExt for MockCsvType {
+    fn get_ext(&self) -> String {
+        "csv".to_string()
+    }
 }
 
-impl MockContextProvider {
-    // Surpressing dead code warning, as this is used in integration test crates
-    #[allow(dead_code)]
-    pub(crate) fn options_mut(&mut self) -> &mut ConfigOptions {
-        &mut self.options
+impl FileType for MockCsvType {
+    fn as_any(&self) -> &dyn Any {
+        self
     }
+}
 
-    #[allow(dead_code)]
-    pub(crate) fn with_udf(mut self, udf: ScalarUDF) -> Self {
-        self.udfs.insert(udf.name().to_string(), Arc::new(udf));
+impl Display for MockCsvType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_ext())
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct MockSessionState {
+    scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    expr_planners: Vec<Arc<dyn ExprPlanner>>,
+    type_planner: Option<Arc<dyn TypePlanner>>,
+    window_functions: HashMap<String, Arc<WindowUDF>>,
+    pub config_options: ConfigOptions,
+}
+
+impl MockSessionState {
+    pub fn with_expr_planner(mut self, expr_planner: Arc<dyn ExprPlanner>) -> Self {
+        self.expr_planners.push(expr_planner);
         self
     }
 
-    pub(crate) fn with_udaf(mut self, udaf: Arc<AggregateUDF>) -> Self {
+    pub fn with_type_planner(mut self, type_planner: Arc<dyn TypePlanner>) -> Self {
+        self.type_planner = Some(type_planner);
+        self
+    }
+
+    pub fn with_scalar_function(mut self, scalar_function: Arc<ScalarUDF>) -> Self {
+        self.scalar_functions
+            .insert(scalar_function.name().to_string(), scalar_function);
+        self
+    }
+
+    pub fn with_aggregate_function(
+        mut self,
+        aggregate_function: Arc<AggregateUDF>,
+    ) -> Self {
         // TODO: change to to_string() if all the function name is converted to lowercase
-        self.udafs.insert(udaf.name().to_lowercase(), udaf);
+        self.aggregate_functions.insert(
+            aggregate_function.name().to_string().to_lowercase(),
+            aggregate_function,
+        );
         self
     }
+
+    pub fn with_window_function(mut self, window_function: Arc<WindowUDF>) -> Self {
+        self.window_functions
+            .insert(window_function.name().to_string(), window_function);
+        self
+    }
+}
+
+pub(crate) struct MockContextProvider {
+    pub(crate) state: MockSessionState,
 }
 
 impl ContextProvider for MockContextProvider {
@@ -103,6 +151,14 @@ impl ContextProvider for MockContextProvider {
                 ),
                 Field::new("😀", DataType::Int32, false),
             ])),
+            "person_with_uuid_extension" => Ok(Schema::new(vec![
+                Field::new("id", DataType::FixedSizeBinary(16), false).with_metadata(
+                    [("ARROW:extension:name".to_string(), "arrow.uuid".to_string())]
+                        .into(),
+                ),
+                Field::new("first_name", DataType::Utf8, false),
+                Field::new("last_name", DataType::Utf8, false),
+            ])),
             "orders" => Ok(Schema::new(vec![
                 Field::new("order_id", DataType::UInt32, false),
                 Field::new("customer_id", DataType::UInt32, false),
@@ -114,12 +170,18 @@ impl ContextProvider for MockContextProvider {
             "array" => Ok(Schema::new(vec![
                 Field::new(
                     "left",
-                    DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                    DataType::List(Arc::new(Field::new_list_field(
+                        DataType::Int64,
+                        true,
+                    ))),
                     false,
                 ),
                 Field::new(
                     "right",
-                    DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                    DataType::List(Arc::new(Field::new_list_field(
+                        DataType::Int64,
+                        true,
+                    ))),
                     false,
                 ),
             ])),
@@ -150,7 +212,10 @@ impl ContextProvider for MockContextProvider {
             "unnest_table" => Ok(Schema::new(vec![
                 Field::new(
                     "array_col",
-                    DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                    DataType::List(Arc::new(Field::new_list_field(
+                        DataType::Int64,
+                        true,
+                    ))),
                     false,
                 ),
                 Field::new(
@@ -172,23 +237,27 @@ impl ContextProvider for MockContextProvider {
     }
 
     fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarUDF>> {
-        self.udfs.get(name).cloned()
+        self.state.scalar_functions.get(name).cloned()
     }
 
     fn get_aggregate_meta(&self, name: &str) -> Option<Arc<AggregateUDF>> {
-        self.udafs.get(name).cloned()
+        self.state.aggregate_functions.get(name).cloned()
     }
 
     fn get_variable_type(&self, _: &[String]) -> Option<DataType> {
         unimplemented!()
     }
 
-    fn get_window_meta(&self, _name: &str) -> Option<Arc<WindowUDF>> {
-        None
+    fn get_window_meta(&self, name: &str) -> Option<Arc<WindowUDF>> {
+        self.state.window_functions.get(name).cloned()
     }
 
     fn options(&self) -> &ConfigOptions {
-        &self.options
+        &self.state.config_options
+    }
+
+    fn get_file_type(&self, _ext: &str) -> Result<Arc<dyn FileType>> {
+        Ok(Arc::new(MockCsvType {}))
     }
 
     fn create_cte_work_table(
@@ -200,15 +269,27 @@ impl ContextProvider for MockContextProvider {
     }
 
     fn udf_names(&self) -> Vec<String> {
-        self.udfs.keys().cloned().collect()
+        self.state.scalar_functions.keys().cloned().collect()
     }
 
     fn udaf_names(&self) -> Vec<String> {
-        self.udafs.keys().cloned().collect()
+        self.state.aggregate_functions.keys().cloned().collect()
     }
 
     fn udwf_names(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    fn get_expr_planners(&self) -> &[Arc<dyn ExprPlanner>] {
+        &self.state.expr_planners
+    }
+
+    fn get_type_planner(&self) -> Option<Arc<dyn TypePlanner>> {
+        if let Some(type_planner) = &self.state.type_planner {
+            Some(Arc::clone(type_planner))
+        } else {
+            None
+        }
     }
 }
 
@@ -223,11 +304,45 @@ impl EmptyTable {
 }
 
 impl TableSource for EmptyTable {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn schema(&self) -> SchemaRef {
-        self.table_schema.clone()
+        Arc::clone(&self.table_schema)
+    }
+}
+
+#[derive(Debug)]
+pub struct CustomTypePlanner {}
+
+impl TypePlanner for CustomTypePlanner {
+    fn plan_type(&self, sql_type: &sqlparser::ast::DataType) -> Result<Option<DataType>> {
+        match sql_type {
+            sqlparser::ast::DataType::Datetime(precision) => {
+                let precision = match precision {
+                    Some(0) => TimeUnit::Second,
+                    Some(3) => TimeUnit::Millisecond,
+                    Some(6) => TimeUnit::Microsecond,
+                    None | Some(9) => TimeUnit::Nanosecond,
+                    _ => unreachable!(),
+                };
+                Ok(Some(DataType::Timestamp(precision, None)))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CustomExprPlanner {}
+
+impl ExprPlanner for CustomExprPlanner {
+    fn plan_array_literal(
+        &self,
+        exprs: Vec<Expr>,
+        _schema: &DFSchema,
+    ) -> Result<PlannerResult<Vec<Expr>>> {
+        Ok(PlannerResult::Planned(make_array(exprs)))
     }
 }

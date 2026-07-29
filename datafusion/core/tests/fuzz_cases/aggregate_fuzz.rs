@@ -17,33 +17,255 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Int64Array};
-use arrow::compute::{concat_batches, SortOptions};
-use arrow::datatypes::DataType;
-use arrow::record_batch::RecordBatch;
-use arrow::util::pretty::pretty_format_batches;
-use arrow_array::types::Int64Type;
-use datafusion::common::Result;
-use datafusion::datasource::MemTable;
-use datafusion::physical_plan::aggregates::{
-    AggregateExec, AggregateMode, PhysicalGroupBy,
+use super::record_batch_generator::get_supported_types_columns;
+use crate::fuzz_cases::aggregation_fuzzer::query_builder::QueryBuilder;
+use crate::fuzz_cases::aggregation_fuzzer::{
+    AggregationFuzzerBuilder, DatasetGeneratorConfig,
 };
-use datafusion::physical_plan::memory::MemoryExec;
-use datafusion::physical_plan::{collect, displayable, ExecutionPlan};
+
+use arrow::array::{
+    Array, ArrayRef, AsArray, Int32Array, Int64Array, RecordBatch, StringArray,
+    types::Int64Type,
+};
+use arrow::compute::concat_batches;
+use arrow::datatypes::DataType;
+use arrow::util::pretty::pretty_format_batches;
+use arrow_schema::{Field, Schema, SchemaRef};
+use datafusion::datasource::MemTable;
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::prelude::{DataFrame, SessionConfig, SessionContext};
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion_common::{HashMap, Result};
+use datafusion_common_runtime::JoinSet;
 use datafusion_functions_aggregate::sum::sum_udaf;
-use datafusion_physical_expr::expressions::col;
 use datafusion_physical_expr::PhysicalSortExpr;
-use datafusion_physical_plan::udaf::create_aggregate_expr;
+use datafusion_physical_expr::expressions::{Column, col, lit};
 use datafusion_physical_plan::InputOrderMode;
-use test_utils::{add_empty_batches, StringBatchGenerator};
+use test_utils::{StringBatchGenerator, add_empty_batches};
 
-use hashbrown::HashMap;
+use datafusion_execution::TaskContext;
+use datafusion_execution::memory_pool::FairSpillPool;
+use datafusion_execution::runtime_env::RuntimeEnvBuilder;
+use datafusion_physical_expr::aggregate::AggregateExprBuilder;
+use datafusion_physical_plan::aggregates::{
+    AggregateExec, AggregateMode, PhysicalGroupBy,
+};
+use datafusion_physical_plan::metrics::MetricValue;
+use datafusion_physical_plan::{ExecutionPlan, collect, displayable};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use tokio::task::JoinSet;
+use rand::{Rng, SeedableRng, random, rng};
 
+// ========================================================================
+//  The new aggregation fuzz tests based on [`AggregationFuzzer`]
+// ========================================================================
+//
+// Notes on tests:
+//
+// Since the supported types differ for each aggregation function, the tests
+// below are structured so they enumerate each different aggregate function.
+//
+// The test framework handles varying combinations of arguments (data types),
+// sortedness, and grouping parameters
+//
+// TODO: Test floating point values (where output needs to be compared with some
+// acceptable range due to floating point rounding)
+//
+// TODO: test other aggregate functions
+// - AVG (unstable given the wide range of inputs)
+#[tokio::test(flavor = "multi_thread")]
+async fn test_min() {
+    let data_gen_config = baseline_config();
+
+    // Queries like SELECT min(a) FROM fuzz_table GROUP BY b
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("min")
+        // min works on all column types
+        .with_aggregate_arguments(data_gen_config.all_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_first_val() {
+    let mut data_gen_config: DatasetGeneratorConfig = baseline_config();
+
+    for i in 0..data_gen_config.columns.len() {
+        if data_gen_config.columns[i].get_max_num_distinct().is_none() {
+            data_gen_config.columns[i] = data_gen_config.columns[i]
+                .clone()
+                // Minimize the chance of identical values in the order by columns to make the test more stable
+                .with_max_num_distinct(usize::MAX);
+        }
+    }
+
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("first_value")
+        .with_aggregate_arguments(data_gen_config.all_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_last_val() {
+    let mut data_gen_config = baseline_config();
+
+    for i in 0..data_gen_config.columns.len() {
+        if data_gen_config.columns[i].get_max_num_distinct().is_none() {
+            data_gen_config.columns[i] = data_gen_config.columns[i]
+                .clone()
+                // Minimize the chance of identical values in the order by columns to make the test more stable
+                .with_max_num_distinct(usize::MAX);
+        }
+    }
+
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("last_value")
+        .with_aggregate_arguments(data_gen_config.all_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_max() {
+    let data_gen_config = baseline_config();
+
+    // Queries like SELECT max(a) FROM fuzz_table GROUP BY b
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("max")
+        // max works on all column types
+        .with_aggregate_arguments(data_gen_config.all_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sum() {
+    let data_gen_config = baseline_config();
+
+    // Queries like SELECT sum(a), sum(distinct) FROM fuzz_table GROUP BY b
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("sum")
+        .with_distinct_aggregate_function("sum")
+        // sum only works on numeric columns
+        .with_aggregate_arguments(data_gen_config.numeric_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_count() {
+    let data_gen_config = baseline_config();
+
+    // Queries like SELECT count(a), count(distinct) FROM fuzz_table GROUP BY b
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("count")
+        .with_distinct_aggregate_function("count")
+        // count work for all arguments
+        .with_aggregate_arguments(data_gen_config.all_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_median() {
+    let data_gen_config = baseline_config();
+
+    // Queries like SELECT median(a), median(distinct) FROM fuzz_table GROUP BY b
+    let query_builder = QueryBuilder::new()
+        .with_table_name("fuzz_table")
+        .with_aggregate_function("median")
+        .with_distinct_aggregate_function("median")
+        // median only works on numeric columns
+        .with_aggregate_arguments(data_gen_config.numeric_columns())
+        .with_dataset_sort_keys(data_gen_config.sort_keys_set.clone())
+        .set_group_by_columns(data_gen_config.all_columns());
+
+    AggregationFuzzerBuilder::from(data_gen_config)
+        .add_query_builder(query_builder)
+        .build()
+        .run()
+        .await;
+}
+
+/// Return a standard set of columns for testing data generation
+///
+/// Includes numeric and string types
+///
+/// Does not include:
+/// 1. Floating point numbers
+/// 1. structured types
+fn baseline_config() -> DatasetGeneratorConfig {
+    let mut rng = rng();
+    let columns = get_supported_types_columns(rng.random());
+
+    let min_num_rows = 512;
+    let max_num_rows = 1024;
+
+    DatasetGeneratorConfig {
+        columns,
+        rows_num_range: (min_num_rows, max_num_rows),
+        sort_keys_set: vec![
+            // low cardinality to try and get many repeated runs
+            vec![String::from("u8_low")],
+            vec![String::from("utf8_low"), String::from("u8_low")],
+            vec![String::from("dictionary_utf8_low")],
+            vec![
+                String::from("dictionary_utf8_low"),
+                String::from("utf8_low"),
+                String::from("u8_low"),
+            ],
+        ],
+    }
+}
+
+// ========================================================================
+//  The old aggregation fuzz tests
+// ========================================================================
+
+/// Tracks if this stream is generating input or output
 /// Tests that streaming aggregate and batch (non streaming) aggregate produce
 /// same results
 #[tokio::test(flavor = "multi_thread")]
@@ -58,7 +280,7 @@ async fn streaming_aggregate_test() {
         vec!["d", "c", "a"],
         vec!["d", "c", "b", "a"],
     ];
-    let n = 300;
+    let n = 10;
     let distincts = vec![10, 20];
     for distinct in distincts {
         let mut join_set = JoinSet::new();
@@ -84,40 +306,37 @@ async fn run_aggregate_test(input1: Vec<RecordBatch>, group_by_columns: Vec<&str
     let schema = input1[0].schema();
     let session_config = SessionConfig::new().with_batch_size(50);
     let ctx = SessionContext::new_with_config(session_config);
-    let mut sort_keys = vec![];
-    for ordering_col in ["a", "b", "c"] {
-        sort_keys.push(PhysicalSortExpr {
-            expr: col(ordering_col, &schema).unwrap(),
-            options: SortOptions::default(),
-        })
-    }
+    let sort_keys = ["a", "b", "c"].map(|ordering_col| {
+        PhysicalSortExpr::new_default(col(ordering_col, &schema).unwrap())
+    });
 
     let concat_input_record = concat_batches(&schema, &input1).unwrap();
-    let usual_source = Arc::new(
-        MemoryExec::try_new(&[vec![concat_input_record]], schema.clone(), None).unwrap(),
-    );
 
-    let running_source = Arc::new(
-        MemoryExec::try_new(&[input1.clone()], schema.clone(), None)
-            .unwrap()
-            .with_sort_information(vec![sort_keys]),
-    );
-
-    let aggregate_expr = vec![create_aggregate_expr(
-        &sum_udaf(),
-        &[col("d", &schema).unwrap()],
-        &[],
-        &[],
-        &[],
-        &schema,
-        "sum1",
-        false,
-        false,
+    let usual_source = MemorySourceConfig::try_new_exec(
+        &[vec![concat_input_record]],
+        schema.clone(),
+        None,
     )
-    .unwrap()];
+    .unwrap();
+
+    let running_source = DataSourceExec::from_data_source(
+        MemorySourceConfig::try_new(std::slice::from_ref(&input1), schema.clone(), None)
+            .unwrap()
+            .try_with_sort_information(vec![sort_keys.into()])
+            .unwrap(),
+    );
+
+    let aggregate_expr = vec![
+        AggregateExprBuilder::new(sum_udaf(), vec![col("d", &schema).unwrap()])
+            .schema(Arc::clone(&schema))
+            .alias("sum1")
+            .build()
+            .map(Arc::new)
+            .unwrap(),
+    ];
     let expr = group_by_columns
         .iter()
-        .map(|elem| (col(elem, &schema).unwrap(), elem.to_string()))
+        .map(|elem| (col(elem, &schema).unwrap(), (*elem).to_string()))
         .collect::<Vec<_>>();
     let group_by = PhysicalGroupBy::new_single(expr);
 
@@ -183,7 +402,7 @@ async fn run_aggregate_test(input1: Vec<RecordBatch>, group_by_columns: Vec<&str
              Left Plan:\n{}\n\
              Right Plan:\n{}\n\
              schema:\n{schema}\n\
-             Left Ouptut:\n{}\n\
+             Left Output:\n{}\n\
              Right Output:\n{}\n\
              input:\n{}\n\
              ",
@@ -210,13 +429,13 @@ pub(crate) fn make_staggered_batches<const STREAM: bool>(
     let mut input4: Vec<i64> = vec![0; len];
     input123.iter_mut().for_each(|v| {
         *v = (
-            rng.gen_range(0..n_distinct) as i64,
-            rng.gen_range(0..n_distinct) as i64,
-            rng.gen_range(0..n_distinct) as i64,
+            rng.random_range(0..n_distinct) as i64,
+            rng.random_range(0..n_distinct) as i64,
+            rng.random_range(0..n_distinct) as i64,
         )
     });
     input4.iter_mut().for_each(|v| {
-        *v = rng.gen_range(0..n_distinct) as i64;
+        *v = rng.random_range(0..n_distinct) as i64;
     });
     input123.sort();
     let input1 = Int64Array::from_iter_values(input123.clone().into_iter().map(|k| k.0));
@@ -236,7 +455,7 @@ pub(crate) fn make_staggered_batches<const STREAM: bool>(
     let mut batches = vec![];
     if STREAM {
         while remainder.num_rows() > 0 {
-            let batch_size = rng.gen_range(0..50);
+            let batch_size = rng.random_range(0..50);
             if remainder.num_rows() < batch_size {
                 break;
             }
@@ -245,7 +464,7 @@ pub(crate) fn make_staggered_batches<const STREAM: bool>(
         }
     } else {
         while remainder.num_rows() > 0 {
-            let batch_size = rng.gen_range(0..remainder.num_rows() + 1);
+            let batch_size = rng.random_range(0..remainder.num_rows() + 1);
             batches.push(remainder.slice(0, batch_size));
             remainder = remainder.slice(batch_size, remainder.num_rows() - batch_size);
         }
@@ -291,7 +510,9 @@ async fn group_by_string_test(
     let expected = compute_counts(&input, column_name);
 
     let schema = input[0].schema();
-    let session_config = SessionConfig::new().with_batch_size(50);
+    let session_config = SessionConfig::new()
+        .with_batch_size(50)
+        .with_repartition_file_scans(false);
     let ctx = SessionContext::new_with_config(session_config);
 
     let provider = MemTable::try_new(schema.clone(), vec![input]).unwrap();
@@ -315,6 +536,7 @@ async fn group_by_string_test(
     let actual = extract_result_counts(results);
     assert_eq!(expected, actual);
 }
+
 async fn verify_ordered_aggregate(frame: &DataFrame, expected_sort: bool) {
     struct Visitor {
         expected_sort: bool,
@@ -407,4 +629,142 @@ fn extract_result_counts(results: Vec<RecordBatch>) -> HashMap<Option<String>, i
         }
     }
     output
+}
+
+pub(crate) fn assert_spill_count_metric(
+    expect_spill: bool,
+    plan_that_spills: Arc<dyn ExecutionPlan>,
+) -> usize {
+    if let Some(metrics_set) = plan_that_spills.metrics() {
+        let mut spill_count = 0;
+
+        // Inspect metrics for SpillCount
+        for metric in metrics_set.iter() {
+            if let MetricValue::SpillCount(count) = metric.value() {
+                spill_count = count.value();
+                break;
+            }
+        }
+
+        if expect_spill && spill_count == 0 {
+            panic!("Expected spill but SpillCount metric not found or SpillCount was 0.");
+        } else if !expect_spill && spill_count > 0 {
+            panic!(
+                "Expected no spill but found SpillCount metric with value greater than 0."
+            );
+        }
+
+        spill_count
+    } else {
+        panic!("No metrics returned from the operator; cannot verify spilling.");
+    }
+}
+
+// Fix for https://github.com/apache/datafusion/issues/15530
+#[tokio::test]
+async fn test_single_mode_aggregate_single_mode_aggregate_with_spill() -> Result<()> {
+    let scan_schema = Arc::new(Schema::new(vec![
+        Field::new("col_0", DataType::Int64, true),
+        Field::new("col_1", DataType::Utf8, true),
+        Field::new("col_2", DataType::Utf8, true),
+        Field::new("col_3", DataType::Utf8, true),
+        Field::new("col_4", DataType::Utf8, true),
+        Field::new("col_5", DataType::Int32, true),
+        Field::new("col_6", DataType::Utf8, true),
+        Field::new("col_7", DataType::Utf8, true),
+        Field::new("col_8", DataType::Utf8, true),
+    ]));
+
+    let group_by = PhysicalGroupBy::new_single(vec![
+        (Arc::new(Column::new("col_1", 1)), "col_1".to_string()),
+        (Arc::new(Column::new("col_7", 7)), "col_7".to_string()),
+        (Arc::new(Column::new("col_0", 0)), "col_0".to_string()),
+        (Arc::new(Column::new("col_8", 8)), "col_8".to_string()),
+    ]);
+
+    fn generate_int64_array() -> ArrayRef {
+        Arc::new(Int64Array::from_iter_values(
+            (0..1024).map(|_| random::<i64>()),
+        ))
+    }
+    fn generate_int32_array() -> ArrayRef {
+        Arc::new(Int32Array::from_iter_values(
+            (0..1024).map(|_| random::<i32>()),
+        ))
+    }
+
+    fn generate_string_array() -> ArrayRef {
+        Arc::new(StringArray::from(
+            (0..1024)
+                .map(|_| -> String {
+                    rng()
+                        .sample_iter::<char, _>(rand::distr::StandardUniform)
+                        .take(5)
+                        .collect()
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    fn generate_record_batch(schema: &SchemaRef) -> Result<RecordBatch> {
+        RecordBatch::try_new(
+            Arc::clone(schema),
+            vec![
+                generate_int64_array(),
+                generate_string_array(),
+                generate_string_array(),
+                generate_string_array(),
+                generate_string_array(),
+                generate_int32_array(),
+                generate_string_array(),
+                generate_string_array(),
+                generate_string_array(),
+            ],
+        )
+        .map_err(|err| err.into())
+    }
+
+    let aggregate_expressions = vec![Arc::new(
+        AggregateExprBuilder::new(sum_udaf(), vec![lit(1i64)])
+            .schema(Arc::clone(&scan_schema))
+            .alias("SUM(1i64)")
+            .build()?,
+    )];
+
+    let batches = (0..5)
+        .map(|_| generate_record_batch(&scan_schema))
+        .collect::<Result<Vec<_>>>()?;
+
+    let plan: Arc<dyn ExecutionPlan> =
+        MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&scan_schema), None)
+            .unwrap();
+
+    let single_aggregate = Arc::new(AggregateExec::try_new(
+        AggregateMode::Single,
+        group_by,
+        aggregate_expressions.clone(),
+        vec![None; aggregate_expressions.len()],
+        plan,
+        Arc::clone(&scan_schema),
+    )?);
+
+    let memory_pool = Arc::new(FairSpillPool::new(250000));
+    let task_ctx = Arc::new(
+        TaskContext::default()
+            .with_session_config(SessionConfig::new().with_batch_size(248))
+            .with_runtime(Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_pool(memory_pool)
+                    .build()?,
+            )),
+    );
+
+    datafusion_physical_plan::common::collect(
+        single_aggregate.execute(0, Arc::clone(&task_ctx))?,
+    )
+    .await?;
+
+    assert_spill_count_metric(true, single_aggregate);
+
+    Ok(())
 }

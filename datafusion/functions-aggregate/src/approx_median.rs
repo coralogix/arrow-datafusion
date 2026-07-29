@@ -17,17 +17,22 @@
 
 //! Defines physical expressions for APPROX_MEDIAN that can be evaluated MEDIAN at runtime during query execution
 
+use arrow::datatypes::DataType::{Float64, UInt64};
+use arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion_common::types::NativeType;
+use datafusion_functions_aggregate_common::noop_accumulator::NoopAccumulator;
 use std::any::Any;
 use std::fmt::Debug;
+use std::sync::Arc;
 
-use arrow::{datatypes::DataType, datatypes::Field};
-use arrow_schema::DataType::{Float64, UInt64};
-
-use datafusion_common::{not_impl_err, plan_err, Result};
+use datafusion_common::{Result, not_impl_err};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::type_coercion::aggregates::NUMERICS;
 use datafusion_expr::utils::format_state_name;
-use datafusion_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
+use datafusion_expr::{
+    Accumulator, AggregateUDFImpl, Coercion, Documentation, Signature, TypeSignature,
+    TypeSignatureClass, Volatility,
+};
+use datafusion_macros::user_doc;
 
 use crate::approx_percentile_cont::ApproxPercentileAccumulator;
 
@@ -40,17 +45,23 @@ make_udaf_expr_and_func!(
 );
 
 /// APPROX_MEDIAN aggregate expression
+#[user_doc(
+    doc_section(label = "Approximate Functions"),
+    description = "Returns the approximate median (50th percentile) of input values. It is an alias of `approx_percentile_cont(0.5) WITHIN GROUP (ORDER BY x)`.",
+    syntax_example = "approx_median(expression)",
+    sql_example = r#"```sql
+> SELECT approx_median(column_name) FROM table_name;
++-----------------------------------+
+| approx_median(column_name)        |
++-----------------------------------+
+| 23.5                              |
++-----------------------------------+
+```"#,
+    standard_argument(name = "expression",)
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ApproxMedian {
     signature: Signature,
-}
-
-impl Debug for ApproxMedian {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("ApproxMedian")
-            .field("name", &self.name())
-            .field("signature", &self.signature)
-            .finish()
-    }
 }
 
 impl Default for ApproxMedian {
@@ -63,30 +74,55 @@ impl ApproxMedian {
     /// Create a new APPROX_MEDIAN aggregate function
     pub fn new() -> Self {
         Self {
-            signature: Signature::uniform(1, NUMERICS.to_vec(), Volatility::Immutable),
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Coercible(vec![Coercion::new_exact(
+                        TypeSignatureClass::Integer,
+                    )]),
+                    TypeSignature::Coercible(vec![Coercion::new_implicit(
+                        TypeSignatureClass::Float,
+                        vec![TypeSignatureClass::Decimal],
+                        NativeType::Float64,
+                    )]),
+                ],
+                Volatility::Immutable,
+            ),
         }
     }
 }
 
 impl AggregateUDFImpl for ApproxMedian {
-    /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
-        Ok(vec![
-            Field::new(format_state_name(args.name, "max_size"), UInt64, false),
-            Field::new(format_state_name(args.name, "sum"), Float64, false),
-            Field::new(format_state_name(args.name, "count"), Float64, false),
-            Field::new(format_state_name(args.name, "max"), Float64, false),
-            Field::new(format_state_name(args.name, "min"), Float64, false),
-            Field::new_list(
-                format_state_name(args.name, "centroids"),
-                Field::new("item", Float64, true),
-                false,
-            ),
-        ])
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        if args.input_fields[0].data_type().is_null() {
+            Ok(vec![
+                Field::new(
+                    format_state_name(args.name, self.name()),
+                    DataType::Null,
+                    true,
+                )
+                .into(),
+            ])
+        } else {
+            Ok(vec![
+                Field::new(format_state_name(args.name, "max_size"), UInt64, false),
+                Field::new(format_state_name(args.name, "sum"), Float64, false),
+                Field::new(format_state_name(args.name, "count"), UInt64, false),
+                Field::new(format_state_name(args.name, "max"), Float64, false),
+                Field::new(format_state_name(args.name, "min"), Float64, false),
+                Field::new_list(
+                    format_state_name(args.name, "centroids"),
+                    Field::new_list_field(Float64, true),
+                    false,
+                ),
+            ]
+            .into_iter()
+            .map(Arc::new)
+            .collect())
+        }
     }
 
     fn name(&self) -> &str {
@@ -98,9 +134,6 @@ impl AggregateUDFImpl for ApproxMedian {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        if !arg_types[0].is_numeric() {
-            return plan_err!("ApproxMedian requires numeric input types");
-        }
         Ok(arg_types[0].clone())
     }
 
@@ -111,9 +144,17 @@ impl AggregateUDFImpl for ApproxMedian {
             );
         }
 
-        Ok(Box::new(ApproxPercentileAccumulator::new(
-            0.5_f64,
-            acc_args.input_type.clone(),
-        )))
+        if acc_args.expr_fields[0].data_type().is_null() {
+            Ok(Box::new(NoopAccumulator::default()))
+        } else {
+            Ok(Box::new(ApproxPercentileAccumulator::new(
+                0.5_f64,
+                acc_args.expr_fields[0].data_type().clone(),
+            )))
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

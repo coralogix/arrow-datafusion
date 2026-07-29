@@ -17,24 +17,32 @@
 
 //! Column
 
-use arrow_schema::{Field, FieldRef};
-
-use crate::error::_schema_err;
-use crate::utils::{parse_identifiers_normalized, quote_identifier};
-use crate::{DFSchema, DataFusionError, Result, SchemaError, TableReference};
+use crate::error::{_schema_err, add_possible_columns_to_diag};
+use crate::utils::parse_identifiers_normalized;
+use crate::utils::quote_identifier;
+use crate::{DFSchema, Diagnostic, Result, SchemaError, Spans, TableReference};
+use arrow::datatypes::{Field, FieldRef};
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::fmt;
-use std::str::FromStr;
-use std::sync::Arc;
 
 /// A named reference to a qualified field in a schema.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Column {
     /// relation/table reference.
     pub relation: Option<TableReference>,
     /// field/column name.
     pub name: String,
+    /// Original source code location, if known
+    pub spans: Spans,
+}
+
+impl fmt::Debug for Column {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Column")
+            .field("relation", &self.relation)
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl Column {
@@ -51,6 +59,7 @@ impl Column {
         Self {
             relation: relation.map(|r| r.into()),
             name: name.into(),
+            spans: Spans::new(),
         }
     }
 
@@ -59,6 +68,7 @@ impl Column {
         Self {
             relation: None,
             name: name.into(),
+            spans: Spans::new(),
         }
     }
 
@@ -69,10 +79,15 @@ impl Column {
         Self {
             relation: None,
             name: name.into(),
+            spans: Spans::new(),
         }
     }
 
-    fn from_idents(idents: &mut Vec<String>) -> Option<Self> {
+    /// Create a Column from multiple normalized identifiers
+    ///
+    /// For example, `foo.bar` would be represented as a two element vector
+    /// `["foo", "bar"]`
+    fn from_idents(mut idents: Vec<String>) -> Option<Self> {
         let (relation, name) = match idents.len() {
             1 => (None, idents.remove(0)),
             2 => (
@@ -100,7 +115,11 @@ impl Column {
             // identifiers will be treated as an unqualified column name
             _ => return None,
         };
-        Some(Self { relation, name })
+        Some(Self {
+            relation,
+            name,
+            spans: Spans::new(),
+        })
     }
 
     /// Deserialize a fully qualified name string into a column
@@ -110,21 +129,38 @@ impl Column {
     /// where `"foo.BAR"` would be parsed to a reference to column named `foo.BAR`
     pub fn from_qualified_name(flat_name: impl Into<String>) -> Self {
         let flat_name = flat_name.into();
-        Self::from_idents(&mut parse_identifiers_normalized(&flat_name, false))
-            .unwrap_or_else(|| Self {
+        Self::from_idents(parse_identifiers_normalized(&flat_name, false)).unwrap_or_else(
+            || Self {
                 relation: None,
                 name: flat_name,
-            })
+                spans: Spans::new(),
+            },
+        )
     }
 
     /// Deserialize a fully qualified name string into a column preserving column text case
+    #[cfg(feature = "sql")]
     pub fn from_qualified_name_ignore_case(flat_name: impl Into<String>) -> Self {
         let flat_name = flat_name.into();
-        Self::from_idents(&mut parse_identifiers_normalized(&flat_name, true))
-            .unwrap_or_else(|| Self {
+        Self::from_idents(parse_identifiers_normalized(&flat_name, true)).unwrap_or_else(
+            || Self {
                 relation: None,
                 name: flat_name,
-            })
+                spans: Spans::new(),
+            },
+        )
+    }
+
+    #[cfg(not(feature = "sql"))]
+    pub fn from_qualified_name_ignore_case(flat_name: impl Into<String>) -> Self {
+        Self::from_qualified_name(flat_name)
+    }
+
+    /// return the column's name.
+    ///
+    /// Note: This ignores the relation and returns the column name only.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Serialize column into a flat name string
@@ -147,79 +183,6 @@ impl Column {
             }
             None => quote_identifier(&self.name).to_string(),
         }
-    }
-
-    /// Qualify column if not done yet.
-    ///
-    /// If this column already has a [relation](Self::relation), it will be returned as is and the given parameters are
-    /// ignored. Otherwise this will search through the given schemas to find the column. This will use the first schema
-    /// that matches.
-    ///
-    /// A schema matches if there is a single column that -- when unqualified -- matches this column. There is an
-    /// exception for `USING` statements, see below.
-    ///
-    /// # Using columns
-    /// Take the following SQL statement:
-    ///
-    /// ```sql
-    /// SELECT id FROM t1 JOIN t2 USING(id)
-    /// ```
-    ///
-    /// In this case, both `t1.id` and `t2.id` will match unqualified column `id`. To express this possibility, use
-    /// `using_columns`. Each entry in this array is a set of columns that are bound together via a `USING` clause. So
-    /// in this example this would be `[{t1.id, t2.id}]`.
-    #[deprecated(
-        since = "20.0.0",
-        note = "use normalize_with_schemas_and_ambiguity_check instead"
-    )]
-    pub fn normalize_with_schemas(
-        self,
-        schemas: &[&Arc<DFSchema>],
-        using_columns: &[HashSet<Column>],
-    ) -> Result<Self> {
-        if self.relation.is_some() {
-            return Ok(self);
-        }
-
-        for schema in schemas {
-            let qualified_fields =
-                schema.qualified_fields_with_unqualified_name(&self.name);
-            match qualified_fields.len() {
-                0 => continue,
-                1 => {
-                    return Ok(Column::from(qualified_fields[0]));
-                }
-                _ => {
-                    // More than 1 fields in this schema have their names set to self.name.
-                    //
-                    // This should only happen when a JOIN query with USING constraint references
-                    // join columns using unqualified column name. For example:
-                    //
-                    // ```sql
-                    // SELECT id FROM t1 JOIN t2 USING(id)
-                    // ```
-                    //
-                    // In this case, both `t1.id` and `t2.id` will match unqualified column `id`.
-                    // We will use the relation from the first matched field to normalize self.
-
-                    // Compare matched fields with one USING JOIN clause at a time
-                    let columns = schema.columns_with_unqualified_name(&self.name);
-                    for using_col in using_columns {
-                        let all_matched = columns.iter().all(|f| using_col.contains(f));
-                        // All matched fields belong to the same using column set, in orther words
-                        // the same join clause. We simply pick the qualifer from the first match.
-                        if all_matched {
-                            return Ok(columns[0].clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        _schema_err!(SchemaError::FieldNotFound {
-            field: Box::new(Column::new(self.relation.clone(), self.name)),
-            valid_fields: schemas.iter().flat_map(|s| s.columns()).collect(),
-        })
     }
 
     /// Qualify column if not done yet.
@@ -295,8 +258,8 @@ impl Column {
                         .collect::<Vec<_>>();
                     for using_col in using_columns {
                         let all_matched = columns.iter().all(|c| using_col.contains(c));
-                        // All matched fields belong to the same using column set, in orther words
-                        // the same join clause. We simply pick the qualifer from the first match.
+                        // All matched fields belong to the same using column set, in other words
+                        // the same join clause. We simply pick the qualifier from the first match.
                         if all_matched {
                             return Ok(columns[0].clone());
                         }
@@ -304,7 +267,23 @@ impl Column {
 
                     // If not due to USING columns then due to ambiguous column name
                     return _schema_err!(SchemaError::AmbiguousReference {
-                        field: Column::new_unqualified(self.name),
+                        field: Box::new(Column::new_unqualified(&self.name)),
+                    })
+                    .map_err(|err| {
+                        let mut diagnostic = Diagnostic::new_error(
+                            format!("column '{}' is ambiguous", &self.name),
+                            self.spans().first(),
+                        );
+                        // TODO If [`DFSchema`] had spans, we could show the
+                        // user which columns are candidates, or which table
+                        // they come from. For now, let's list the table names
+                        // only.
+                        add_possible_columns_to_diag(
+                            &mut diagnostic,
+                            &Column::new_unqualified(&self.name),
+                            &columns,
+                        );
+                        err.with_diagnostic(diagnostic)
                     });
                 }
             }
@@ -318,6 +297,33 @@ impl Column {
                 .flat_map(|s| s.columns())
                 .collect(),
         })
+    }
+
+    /// Returns a reference to the set of locations in the SQL query where this
+    /// column appears, if known.
+    pub fn spans(&self) -> &Spans {
+        &self.spans
+    }
+
+    /// Returns a mutable reference to the set of locations in the SQL query
+    /// where this column appears, if known.
+    pub fn spans_mut(&mut self) -> &mut Spans {
+        &mut self.spans
+    }
+
+    /// Replaces the set of locations in the SQL query where this column
+    /// appears, if known.
+    pub fn with_spans(mut self, spans: Spans) -> Self {
+        self.spans = spans;
+        self
+    }
+
+    /// Qualifies the column with the given table reference.
+    pub fn with_relation(&self, relation: TableReference) -> Self {
+        Self {
+            relation: Some(relation),
+            ..self.clone()
+        }
     }
 }
 
@@ -355,8 +361,9 @@ impl From<(Option<&TableReference>, &FieldRef)> for Column {
     }
 }
 
-impl FromStr for Column {
-    type Err = Infallible;
+#[cfg(feature = "sql")]
+impl std::str::FromStr for Column {
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(s.into())
@@ -372,8 +379,8 @@ impl fmt::Display for Column {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::DataType;
-    use arrow_schema::SchemaBuilder;
+    use arrow::datatypes::{DataType, SchemaBuilder};
+    use std::sync::Arc;
 
     fn create_qualified_schema(qualifier: &str, names: Vec<&str>) -> Result<DFSchema> {
         let mut schema_builder = SchemaBuilder::new();
@@ -432,7 +439,8 @@ mod tests {
                 &[],
             )
             .expect_err("should've failed to find field");
-        let expected = r#"Schema error: No field named z. Valid fields are t1.a, t1.b, t2.c, t2.d, t3.a, t3.b, t3.c, t3.d, t3.e."#;
+        let expected = "Schema error: No field named z. \
+            Valid fields are t1.a, t1.b, t2.c, t2.d, t3.a, t3.b, t3.c, t3.d, t3.e.";
         assert_eq!(err.strip_backtrace(), expected);
 
         // ambiguous column reference

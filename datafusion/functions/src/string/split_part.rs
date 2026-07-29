@@ -15,21 +15,42 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::utf8_to_str_type;
+use arrow::array::{
+    ArrayRef, GenericStringArray, Int64Array, OffsetSizeTrait, StringArrayType,
+    StringViewArray,
+};
+use arrow::array::{AsArray, GenericStringBuilder};
+use arrow::datatypes::DataType;
+use datafusion_common::ScalarValue;
+use datafusion_common::cast::as_int64_array;
+use datafusion_common::types::{NativeType, logical_int64, logical_string};
+use datafusion_common::{DataFusionError, Result, exec_err};
+use datafusion_expr::{
+    Coercion, ColumnarValue, Documentation, TypeSignatureClass, Volatility,
+};
+use datafusion_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature};
+use datafusion_macros::user_doc;
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, GenericStringArray, OffsetSizeTrait};
-use arrow::datatypes::DataType;
-
-use datafusion_common::cast::{as_generic_string_array, as_int64_array};
-use datafusion_common::{exec_err, Result};
-use datafusion_expr::TypeSignature::*;
-use datafusion_expr::{ColumnarValue, Volatility};
-use datafusion_expr::{ScalarUDFImpl, Signature};
-
-use crate::utils::{make_scalar_function, utf8_to_str_type};
-
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Splits a string based on a specified delimiter and returns the substring in the specified position.",
+    syntax_example = "split_part(str, delimiter, pos)",
+    sql_example = r#"```sql
+> select split_part('1.2.3.4.5', '.', 3);
++--------------------------------------------------+
+| split_part(Utf8("1.2.3.4.5"),Utf8("."),Int64(3)) |
++--------------------------------------------------+
+| 3                                                |
++--------------------------------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    argument(name = "delimiter", description = "String or character to split on."),
+    argument(name = "pos", description = "Position of the part to return.")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SplitPartFunc {
     signature: Signature,
 }
@@ -42,14 +63,16 @@ impl Default for SplitPartFunc {
 
 impl SplitPartFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::one_of(
+            signature: Signature::coercible(
                 vec![
-                    Exact(vec![Utf8, Utf8, Int64]),
-                    Exact(vec![LargeUtf8, Utf8, Int64]),
-                    Exact(vec![Utf8, LargeUtf8, Int64]),
-                    Exact(vec![LargeUtf8, LargeUtf8, Int64]),
+                    Coercion::new_exact(TypeSignatureClass::Native(logical_string())),
+                    Coercion::new_exact(TypeSignatureClass::Native(logical_string())),
+                    Coercion::new_implicit(
+                        TypeSignatureClass::Native(logical_int64()),
+                        vec![TypeSignatureClass::Integer],
+                        NativeType::Int64,
+                    ),
                 ],
                 Volatility::Immutable,
             ),
@@ -74,51 +97,151 @@ impl ScalarUDFImpl for SplitPartFunc {
         utf8_to_str_type(&arg_types[0], "split_part")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        match args[0].data_type() {
-            DataType::Utf8 => make_scalar_function(split_part::<i32>, vec![])(args),
-            DataType::LargeUtf8 => make_scalar_function(split_part::<i64>, vec![])(args),
-            other => {
-                exec_err!("Unsupported data type {other:?} for function split_part")
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let ScalarFunctionArgs { args, .. } = args;
+
+        // First, determine if any of the arguments is an Array
+        let len = args.iter().find_map(|arg| match arg {
+            ColumnarValue::Array(a) => Some(a.len()),
+            _ => None,
+        });
+
+        let inferred_length = len.unwrap_or(1);
+        let is_scalar = len.is_none();
+
+        // Convert all ColumnarValues to ArrayRefs
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                ColumnarValue::Scalar(scalar) => scalar.to_array_of_size(inferred_length),
+                ColumnarValue::Array(array) => Ok(Arc::clone(array)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Unpack the ArrayRefs from the arguments
+        let n_array = as_int64_array(&args[2])?;
+        let result = match (args[0].data_type(), args[1].data_type()) {
+            (DataType::Utf8View, DataType::Utf8View) => {
+                split_part_impl::<&StringViewArray, &StringViewArray, i32>(
+                    &args[0].as_string_view(),
+                    &args[1].as_string_view(),
+                    n_array,
+                )
             }
+            (DataType::Utf8View, DataType::Utf8) => {
+                split_part_impl::<&StringViewArray, &GenericStringArray<i32>, i32>(
+                    &args[0].as_string_view(),
+                    &args[1].as_string::<i32>(),
+                    n_array,
+                )
+            }
+            (DataType::Utf8View, DataType::LargeUtf8) => {
+                split_part_impl::<&StringViewArray, &GenericStringArray<i64>, i32>(
+                    &args[0].as_string_view(),
+                    &args[1].as_string::<i64>(),
+                    n_array,
+                )
+            }
+            (DataType::Utf8, DataType::Utf8View) => {
+                split_part_impl::<&GenericStringArray<i32>, &StringViewArray, i32>(
+                    &args[0].as_string::<i32>(),
+                    &args[1].as_string_view(),
+                    n_array,
+                )
+            }
+            (DataType::LargeUtf8, DataType::Utf8View) => {
+                split_part_impl::<&GenericStringArray<i64>, &StringViewArray, i64>(
+                    &args[0].as_string::<i64>(),
+                    &args[1].as_string_view(),
+                    n_array,
+                )
+            }
+            (DataType::Utf8, DataType::Utf8) => {
+                split_part_impl::<&GenericStringArray<i32>, &GenericStringArray<i32>, i32>(
+                    &args[0].as_string::<i32>(),
+                    &args[1].as_string::<i32>(),
+                    n_array,
+                )
+            }
+            (DataType::LargeUtf8, DataType::LargeUtf8) => {
+                split_part_impl::<&GenericStringArray<i64>, &GenericStringArray<i64>, i64>(
+                    &args[0].as_string::<i64>(),
+                    &args[1].as_string::<i64>(),
+                    n_array,
+                )
+            }
+            (DataType::Utf8, DataType::LargeUtf8) => {
+                split_part_impl::<&GenericStringArray<i32>, &GenericStringArray<i64>, i32>(
+                    &args[0].as_string::<i32>(),
+                    &args[1].as_string::<i64>(),
+                    n_array,
+                )
+            }
+            (DataType::LargeUtf8, DataType::Utf8) => {
+                split_part_impl::<&GenericStringArray<i64>, &GenericStringArray<i32>, i64>(
+                    &args[0].as_string::<i64>(),
+                    &args[1].as_string::<i32>(),
+                    n_array,
+                )
+            }
+            _ => exec_err!("Unsupported combination of argument types for split_part"),
+        };
+        if is_scalar {
+            // If all inputs are scalar, keep the output as scalar
+            let result = result.and_then(|arr| ScalarValue::try_from_array(&arr, 0));
+            result.map(ColumnarValue::Scalar)
+        } else {
+            result.map(ColumnarValue::Array)
         }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
-/// Splits string at occurrences of delimiter and returns the n'th field (counting from one).
-/// split_part('abc~@~def~@~ghi', '~@~', 2) = 'def'
-fn split_part<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
-    let string_array = as_generic_string_array::<T>(&args[0])?;
-    let delimiter_array = as_generic_string_array::<T>(&args[1])?;
-    let n_array = as_int64_array(&args[2])?;
-    let result = string_array
+fn split_part_impl<'a, StringArrType, DelimiterArrType, StringArrayLen>(
+    string_array: &StringArrType,
+    delimiter_array: &DelimiterArrType,
+    n_array: &Int64Array,
+) -> Result<ArrayRef>
+where
+    StringArrType: StringArrayType<'a>,
+    DelimiterArrType: StringArrayType<'a>,
+    StringArrayLen: OffsetSizeTrait,
+{
+    let mut builder: GenericStringBuilder<StringArrayLen> = GenericStringBuilder::new();
+
+    string_array
         .iter()
         .zip(delimiter_array.iter())
         .zip(n_array.iter())
-        .map(|((string, delimiter), n)| match (string, delimiter, n) {
-            (Some(string), Some(delimiter), Some(n)) => {
-                let split_string: Vec<&str> = string.split(delimiter).collect();
-                let len = split_string.len();
+        .try_for_each(|((string, delimiter), n)| -> Result<(), DataFusionError> {
+            match (string, delimiter, n) {
+                (Some(string), Some(delimiter), Some(n)) => {
+                    let split_string: Vec<&str> = string.split(delimiter).collect();
+                    let len = split_string.len();
 
-                let index = match n.cmp(&0) {
-                    std::cmp::Ordering::Less => len as i64 + n,
-                    std::cmp::Ordering::Equal => {
-                        return exec_err!("field position must not be zero");
+                    let index = match n.cmp(&0) {
+                        std::cmp::Ordering::Less => len as i64 + n,
+                        std::cmp::Ordering::Equal => {
+                            return exec_err!("field position must not be zero");
+                        }
+                        std::cmp::Ordering::Greater => n - 1,
+                    } as usize;
+
+                    if index < len {
+                        builder.append_value(split_string[index]);
+                    } else {
+                        builder.append_value("");
                     }
-                    std::cmp::Ordering::Greater => n - 1,
-                } as usize;
-
-                if index < len {
-                    Ok(Some(split_string[index]))
-                } else {
-                    Ok(Some(""))
                 }
+                _ => builder.append_null(),
             }
-            _ => Ok(None),
-        })
-        .collect::<Result<GenericStringArray<T>>>()?;
+            Ok(())
+        })?;
 
-    Ok(Arc::new(result) as ArrayRef)
+    Ok(Arc::new(builder.finish()) as ArrayRef)
 }
 
 #[cfg(test)]
@@ -127,7 +250,7 @@ mod tests {
     use arrow::datatypes::DataType::Utf8;
 
     use datafusion_common::ScalarValue;
-    use datafusion_common::{exec_err, Result};
+    use datafusion_common::{Result, exec_err};
     use datafusion_expr::{ColumnarValue, ScalarUDFImpl};
 
     use crate::string::split_part::SplitPartFunc;
@@ -137,7 +260,7 @@ mod tests {
     fn test_functions() -> Result<()> {
         test_function!(
             SplitPartFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::from(
                     "abc~@~def~@~ghi"
                 )))),
@@ -151,7 +274,7 @@ mod tests {
         );
         test_function!(
             SplitPartFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::from(
                     "abc~@~def~@~ghi"
                 )))),
@@ -165,7 +288,7 @@ mod tests {
         );
         test_function!(
             SplitPartFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::from(
                     "abc~@~def~@~ghi"
                 )))),
@@ -179,7 +302,7 @@ mod tests {
         );
         test_function!(
             SplitPartFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::from(
                     "abc~@~def~@~ghi"
                 )))),

@@ -21,22 +21,25 @@ use std::sync::Arc;
 use arrow::array::{Int32Builder, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use datafusion::datasource::provider::{TableProvider, TableType};
+use datafusion::catalog::TableProvider;
+use datafusion::datasource::provider::TableType;
 use datafusion::error::Result;
-use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
-    PlanProperties, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics,
 };
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
+use datafusion_catalog::Session;
 use datafusion_common::cast::as_primitive_array;
-use datafusion_common::{internal_err, not_impl_err};
+use datafusion_common::{DataFusionError, internal_err, not_impl_err};
 use datafusion_expr::expr::{BinaryExpr, Cast};
 use datafusion_functions_aggregate::expr_fn::count;
 use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 
 use async_trait::async_trait;
 
@@ -70,11 +73,11 @@ impl CustomPlan {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -89,11 +92,19 @@ impl DisplayAs for CustomPlan {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "CustomPlan: batch_size={}", self.batches.len(),)
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for CustomPlan {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -123,9 +134,19 @@ impl ExecutionPlan for CustomPlan {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let schema_captured = self.schema().clone();
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::iter(self.batches.clone().into_iter().map(Ok)),
+            futures::stream::iter(self.batches.clone().into_iter().map(move |batch| {
+                let projection: Vec<usize> = schema_captured
+                    .fields()
+                    .iter()
+                    .filter_map(|field| batch.schema().index_of(field.name()).ok())
+                    .collect();
+                batch
+                    .project(&projection)
+                    .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+            })),
         )))
     }
 
@@ -136,7 +157,7 @@ impl ExecutionPlan for CustomPlan {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CustomProvider {
     zero_batch: RecordBatch,
     one_batch: RecordBatch,
@@ -158,7 +179,7 @@ impl TableProvider for CustomProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         _: Option<usize>,
@@ -168,12 +189,12 @@ impl TableProvider for CustomProvider {
         match &filters[0] {
             Expr::BinaryExpr(BinaryExpr { right, .. }) => {
                 let int_value = match &**right {
-                    Expr::Literal(ScalarValue::Int8(Some(i))) => *i as i64,
-                    Expr::Literal(ScalarValue::Int16(Some(i))) => *i as i64,
-                    Expr::Literal(ScalarValue::Int32(Some(i))) => *i as i64,
-                    Expr::Literal(ScalarValue::Int64(Some(i))) => *i,
+                    Expr::Literal(ScalarValue::Int8(Some(i)), _) => *i as i64,
+                    Expr::Literal(ScalarValue::Int16(Some(i)), _) => *i as i64,
+                    Expr::Literal(ScalarValue::Int32(Some(i)), _) => *i as i64,
+                    Expr::Literal(ScalarValue::Int64(Some(i)), _) => *i,
                     Expr::Cast(Cast { expr, data_type: _ }) => match expr.deref() {
-                        Expr::Literal(lit_value) => match lit_value {
+                        Expr::Literal(lit_value, _) => match lit_value {
                             ScalarValue::Int8(Some(v)) => *v as i64,
                             ScalarValue::Int16(Some(v)) => *v as i64,
                             ScalarValue::Int32(Some(v)) => *v as i64,

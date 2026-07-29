@@ -17,20 +17,15 @@
 
 use std::sync::Arc;
 
-use arrow::array::{make_array, Array, ArrayRef, BooleanArray, MutableArrayData};
-use arrow::compute::{and_kleene, is_not_null, SlicesIterator};
-use arrow::datatypes::Schema;
-
-use datafusion_common::{exec_err, Result};
-use datafusion_expr::expr::Alias;
-use datafusion_expr::sort_properties::ExprProperties;
-use datafusion_expr::Expr;
-
-use crate::expressions::literal::Literal;
-use crate::expressions::{self, CastExpr};
+use crate::metrics::ExpressionEvaluatorMetrics;
 use crate::physical_expr::PhysicalExpr;
-use crate::sort_expr::PhysicalSortExpr;
 use crate::tree_node::ExprContext;
+
+use arrow::array::{Array, ArrayRef, BooleanArray, MutableArrayData, make_array};
+use arrow::compute::{SlicesIterator, and_kleene, is_not_null};
+use arrow::record_batch::RecordBatch;
+use datafusion_common::Result;
+use datafusion_expr_common::sort_properties::ExprProperties;
 
 /// Represents a [`PhysicalExpr`] node with associated properties (order and
 /// range) in a context where properties are tracked.
@@ -98,43 +93,38 @@ pub fn scatter(mask: &BooleanArray, truthy: &dyn Array) -> Result<ArrayRef> {
     Ok(make_array(data))
 }
 
-/// Reverses the ORDER BY expression, which is useful during equivalent window
-/// expression construction. For instance, 'ORDER BY a ASC, NULLS LAST' turns into
-/// 'ORDER BY a DESC, NULLS FIRST'.
-pub fn reverse_order_bys(order_bys: &[PhysicalSortExpr]) -> Vec<PhysicalSortExpr> {
-    order_bys
-        .iter()
-        .map(|e| PhysicalSortExpr {
-            expr: e.expr.clone(),
-            options: !e.options,
-        })
-        .collect()
+/// Evaluates expressions against a record batch.
+/// This will convert the resulting ColumnarValues to ArrayRefs,
+/// duplicating any ScalarValues that may have been returned,
+/// and validating that the returned arrays all have the same
+/// number of rows as the input batch.
+#[inline]
+pub fn evaluate_expressions_to_arrays<'a>(
+    exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
+    batch: &RecordBatch,
+) -> Result<Vec<ArrayRef>> {
+    evaluate_expressions_to_arrays_with_metrics(exprs, batch, None)
 }
 
-/// Converts `datafusion_expr::Expr` into corresponding `Arc<dyn PhysicalExpr>`.
-/// If conversion is not supported yet, returns Error.
-pub fn limited_convert_logical_expr_to_physical_expr(
-    expr: &Expr,
-    schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>> {
-    match expr {
-        Expr::Alias(Alias { expr, .. }) => {
-            Ok(limited_convert_logical_expr_to_physical_expr(expr, schema)?)
-        }
-        Expr::Column(col) => expressions::column::col(&col.name, schema),
-        Expr::Cast(cast_expr) => Ok(Arc::new(CastExpr::new(
-            limited_convert_logical_expr_to_physical_expr(
-                cast_expr.expr.as_ref(),
-                schema,
-            )?,
-            cast_expr.data_type.clone(),
-            None,
-        ))),
-        Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
-        _ => exec_err!(
-            "Unsupported expression: {expr} for conversion to Arc<dyn PhysicalExpr>"
-        ),
-    }
+/// Same as [`evaluate_expressions_to_arrays`] but records optional per-expression metrics.
+///
+/// For metrics tracking, see [`ExpressionEvaluatorMetrics`] for details.
+#[inline]
+pub fn evaluate_expressions_to_arrays_with_metrics<'a>(
+    exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
+    batch: &RecordBatch,
+    metrics: Option<&ExpressionEvaluatorMetrics>,
+) -> Result<Vec<ArrayRef>> {
+    let num_rows = batch.num_rows();
+    exprs
+        .into_iter()
+        .enumerate()
+        .map(|(idx, e)| {
+            let _timer = metrics.and_then(|m| m.scoped_timer(idx));
+            e.evaluate(batch)
+                .and_then(|col| col.into_array_of_size(num_rows))
+        })
+        .collect::<Result<Vec<ArrayRef>>>()
 }
 
 #[cfg(test)]

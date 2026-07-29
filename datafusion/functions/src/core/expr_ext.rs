@@ -39,9 +39,8 @@ use super::expr_fn::get_field;
 /// ```
 /// # use datafusion_expr::{col};
 /// # use datafusion_functions::core::expr_ext::FieldAccessor;
-/// let expr = col("c1")
-///    .field("my_field");
-/// assert_eq!(expr.display_name().unwrap(), "c1[my_field]");
+/// let expr = col("c1").field("my_field");
+/// assert_eq!(expr.schema_name().to_string(), "c1[my_field]");
 /// ```
 pub trait FieldAccessor {
     fn field(self, name: impl Literal) -> Expr;

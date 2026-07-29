@@ -17,7 +17,7 @@
 
 //! [`EliminateOuterJoin`] converts `LEFT/RIGHT/FULL` joins to `INNER` joins
 use crate::{OptimizerConfig, OptimizerRule};
-use datafusion_common::{internal_err, Column, DFSchema, Result};
+use datafusion_common::{Column, DFSchema, Result};
 use datafusion_expr::logical_plan::{Join, JoinType, LogicalPlan};
 use datafusion_expr::{Expr, Filter, Operator};
 
@@ -26,7 +26,6 @@ use datafusion_common::tree_node::Transformed;
 use datafusion_expr::expr::{BinaryExpr, Cast, TryCast};
 use std::sync::Arc;
 
-#[derive(Default)]
 ///
 /// Attempt to replace outer joins with inner joins.
 ///
@@ -49,10 +48,11 @@ use std::sync::Arc;
 /// filters from the WHERE clause return false while any inputs are
 /// null and columns of those quals are come from nullable side of
 /// outer join.
+#[derive(Default, Debug)]
 pub struct EliminateOuterJoin;
 
 impl EliminateOuterJoin {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new() -> Self {
         Self {}
     }
@@ -60,14 +60,6 @@ impl EliminateOuterJoin {
 
 /// Attempt to eliminate outer joins.
 impl OptimizerRule for EliminateOuterJoin {
-    fn try_optimize(
-        &self,
-        _plan: &LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        internal_err!("Should have called EliminateOuterJoin::rewrite")
-    }
-
     fn name(&self) -> &str {
         "eliminate_outer_join"
     }
@@ -86,7 +78,7 @@ impl OptimizerRule for EliminateOuterJoin {
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
         match plan {
-            LogicalPlan::Filter(filter) => match filter.input.as_ref() {
+            LogicalPlan::Filter(mut filter) => match Arc::unwrap_or_clone(filter.input) {
                 LogicalPlan::Join(join) => {
                     let mut non_nullable_cols: Vec<Column> = vec![];
 
@@ -117,20 +109,24 @@ impl OptimizerRule for EliminateOuterJoin {
                     } else {
                         join.join_type
                     };
+
                     let new_join = Arc::new(LogicalPlan::Join(Join {
-                        left: Arc::new((*join.left).clone()),
-                        right: Arc::new((*join.right).clone()),
+                        left: join.left,
+                        right: join.right,
                         join_type: new_join_type,
                         join_constraint: join.join_constraint,
                         on: join.on.clone(),
                         filter: join.filter.clone(),
-                        schema: join.schema.clone(),
-                        null_equals_null: join.null_equals_null,
+                        schema: Arc::clone(&join.schema),
+                        null_equality: join.null_equality,
                     }));
                     Filter::try_new(filter.predicate, new_join)
                         .map(|f| Transformed::yes(LogicalPlan::Filter(f)))
                 }
-                _ => Ok(Transformed::no(LogicalPlan::Filter(filter))),
+                filter_input => {
+                    filter.input = Arc::new(filter_input);
+                    Ok(Transformed::no(LogicalPlan::Filter(filter)))
+                }
             },
             _ => Ok(Transformed::no(plan)),
         }
@@ -308,17 +304,31 @@ fn extract_non_nullable_columns(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OptimizerContext;
+    use crate::assert_optimized_plan_eq_snapshot;
     use crate::test::*;
     use arrow::datatypes::DataType;
     use datafusion_expr::{
+        Operator::{And, Or},
         binary_expr, cast, col, lit,
         logical_plan::builder::LogicalPlanBuilder,
         try_cast,
-        Operator::{And, Or},
     };
 
-    fn assert_optimized_plan_equal(plan: LogicalPlan, expected: &str) -> Result<()> {
-        assert_optimized_plan_eq(Arc::new(EliminateOuterJoin::new()), plan, expected)
+    macro_rules! assert_optimized_plan_equal {
+        (
+            $plan:expr,
+            @ $expected:literal $(,)?
+        ) => {{
+            let optimizer_ctx = OptimizerContext::new().with_max_passes(1);
+            let rules: Vec<Arc<dyn crate::OptimizerRule + Send + Sync>> = vec![Arc::new(EliminateOuterJoin::new())];
+            assert_optimized_plan_eq_snapshot!(
+                optimizer_ctx,
+                rules,
+                $plan,
+                @ $expected,
+            )
+        }};
     }
 
     #[test]
@@ -336,12 +346,13 @@ mod tests {
             )?
             .filter(col("t2.b").is_null())?
             .build()?;
-        let expected = "\
-        Filter: t2.b IS NULL\
-        \n  Left Join: t1.a = t2.a\
-        \n    TableScan: t1\
-        \n    TableScan: t2";
-        assert_optimized_plan_equal(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Filter: t2.b IS NULL
+          Left Join: t1.a = t2.a
+            TableScan: t1
+            TableScan: t2
+        ")
     }
 
     #[test]
@@ -359,12 +370,13 @@ mod tests {
             )?
             .filter(col("t2.b").is_not_null())?
             .build()?;
-        let expected = "\
-        Filter: t2.b IS NOT NULL\
-        \n  Inner Join: t1.a = t2.a\
-        \n    TableScan: t1\
-        \n    TableScan: t2";
-        assert_optimized_plan_equal(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Filter: t2.b IS NOT NULL
+          Inner Join: t1.a = t2.a
+            TableScan: t1
+            TableScan: t2
+        ")
     }
 
     #[test]
@@ -386,12 +398,13 @@ mod tests {
                 col("t1.c").lt(lit(20u32)),
             ))?
             .build()?;
-        let expected = "\
-        Filter: t1.b > UInt32(10) OR t1.c < UInt32(20)\
-        \n  Inner Join: t1.a = t2.a\
-        \n    TableScan: t1\
-        \n    TableScan: t2";
-        assert_optimized_plan_equal(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Filter: t1.b > UInt32(10) OR t1.c < UInt32(20)
+          Inner Join: t1.a = t2.a
+            TableScan: t1
+            TableScan: t2
+        ")
     }
 
     #[test]
@@ -413,12 +426,13 @@ mod tests {
                 col("t2.c").lt(lit(20u32)),
             ))?
             .build()?;
-        let expected = "\
-        Filter: t1.b > UInt32(10) AND t2.c < UInt32(20)\
-        \n  Inner Join: t1.a = t2.a\
-        \n    TableScan: t1\
-        \n    TableScan: t2";
-        assert_optimized_plan_equal(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Filter: t1.b > UInt32(10) AND t2.c < UInt32(20)
+          Inner Join: t1.a = t2.a
+            TableScan: t1
+            TableScan: t2
+        ")
     }
 
     #[test]
@@ -440,11 +454,12 @@ mod tests {
                 try_cast(col("t2.c"), DataType::Int64).lt(lit(20u32)),
             ))?
             .build()?;
-        let expected = "\
-        Filter: CAST(t1.b AS Int64) > UInt32(10) AND TRY_CAST(t2.c AS Int64) < UInt32(20)\
-        \n  Inner Join: t1.a = t2.a\
-        \n    TableScan: t1\
-        \n    TableScan: t2";
-        assert_optimized_plan_equal(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Filter: CAST(t1.b AS Int64) > UInt32(10) AND TRY_CAST(t2.c AS Int64) < UInt32(20)
+          Inner Join: t1.a = t2.a
+            TableScan: t1
+            TableScan: t2
+        ")
     }
 }

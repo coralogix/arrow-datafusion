@@ -17,21 +17,24 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
+use crate::ScalarFunctionExpr;
+use crate::{
+    PhysicalExpr,
+    expressions::{self, Column, Literal, binary, like, similar_to},
+};
 
+use arrow::datatypes::Schema;
+use datafusion_common::config::ConfigOptions;
+use datafusion_common::metadata::FieldMetadata;
 use datafusion_common::{
-    exec_err, not_impl_err, plan_err, DFSchema, Result, ScalarValue,
+    DFSchema, Result, ScalarValue, ToDFSchema, exec_err, not_impl_err, plan_err,
 };
 use datafusion_expr::execution_props::ExecutionProps;
-use datafusion_expr::expr::{Alias, Cast, InList, ScalarFunction};
-use datafusion_expr::var_provider::is_system_variables;
+use datafusion_expr::expr::{Alias, Cast, InList, Placeholder, ScalarFunction};
 use datafusion_expr::var_provider::VarType;
-use datafusion_expr::{binary_expr, Between, BinaryExpr, Expr, Like, Operator, TryCast};
-
-use crate::scalar_function;
-use crate::{
-    expressions::{self, binary, like, Column, Literal},
-    PhysicalExpr,
+use datafusion_expr::var_provider::is_system_variables;
+use datafusion_expr::{
+    Between, BinaryExpr, Expr, Like, Operator, TryCast, binary_expr, lit,
 };
 
 /// [PhysicalExpr] evaluate DataFusion expressions such as `A + 1`, or `CAST(c1
@@ -101,23 +104,38 @@ use crate::{
 ///
 /// * `e` - The logical expression
 /// * `input_dfschema` - The DataFusion schema for the input, used to resolve `Column` references
-///                      to qualified or unqualified fields by name.
+///   to qualified or unqualified fields by name.
+#[cfg_attr(feature = "recursive_protection", recursive::recursive)]
 pub fn create_physical_expr(
     e: &Expr,
     input_dfschema: &DFSchema,
     execution_props: &ExecutionProps,
 ) -> Result<Arc<dyn PhysicalExpr>> {
-    let input_schema: &Schema = &input_dfschema.into();
+    let input_schema = input_dfschema.as_arrow();
 
     match e {
-        Expr::Alias(Alias { expr, .. }) => {
-            Ok(create_physical_expr(expr, input_dfschema, execution_props)?)
+        Expr::Alias(Alias { expr, metadata, .. }) => {
+            if let Expr::Literal(v, prior_metadata) = expr.as_ref() {
+                let new_metadata = FieldMetadata::merge_options(
+                    prior_metadata.as_ref(),
+                    metadata.as_ref(),
+                );
+                Ok(Arc::new(Literal::new_with_metadata(
+                    v.clone(),
+                    new_metadata,
+                )))
+            } else {
+                Ok(create_physical_expr(expr, input_dfschema, execution_props)?)
+            }
         }
         Expr::Column(c) => {
             let idx = input_dfschema.index_of_column(c)?;
             Ok(Arc::new(Column::new(&c.name, idx)))
         }
-        Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
+        Expr::Literal(value, metadata) => Ok(Arc::new(Literal::new_with_metadata(
+            value.clone(),
+            metadata.clone(),
+        ))),
         Expr::ScalarVariable(_, variable_names) => {
             if is_system_variables(variable_names) {
                 match execution_props.get_var_provider(VarType::System) {
@@ -141,39 +159,33 @@ pub fn create_physical_expr(
             let binary_op = binary_expr(
                 expr.as_ref().clone(),
                 Operator::IsNotDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(Some(true))),
+                lit(true),
             );
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
         Expr::IsNotTrue(expr) => {
-            let binary_op = binary_expr(
-                expr.as_ref().clone(),
-                Operator::IsDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(Some(true))),
-            );
+            let binary_op =
+                binary_expr(expr.as_ref().clone(), Operator::IsDistinctFrom, lit(true));
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
         Expr::IsFalse(expr) => {
             let binary_op = binary_expr(
                 expr.as_ref().clone(),
                 Operator::IsNotDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(Some(false))),
+                lit(false),
             );
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
         Expr::IsNotFalse(expr) => {
-            let binary_op = binary_expr(
-                expr.as_ref().clone(),
-                Operator::IsDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(Some(false))),
-            );
+            let binary_op =
+                binary_expr(expr.as_ref().clone(), Operator::IsDistinctFrom, lit(false));
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
         Expr::IsUnknown(expr) => {
             let binary_op = binary_expr(
                 expr.as_ref().clone(),
                 Operator::IsNotDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(None)),
+                Expr::Literal(ScalarValue::Boolean(None), None),
             );
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
@@ -181,7 +193,7 @@ pub fn create_physical_expr(
             let binary_op = binary_expr(
                 expr.as_ref().clone(),
                 Operator::IsDistinctFrom,
-                Expr::Literal(ScalarValue::Boolean(None)),
+                Expr::Literal(ScalarValue::Boolean(None), None),
             );
             create_physical_expr(&binary_op, input_dfschema, execution_props)
         }
@@ -205,8 +217,11 @@ pub fn create_physical_expr(
             escape_char,
             case_insensitive,
         }) => {
-            if escape_char.is_some() {
-                return exec_err!("LIKE does not support escape_char");
+            // `\` is the implicit escape, see https://github.com/apache/datafusion/issues/13291
+            if escape_char.unwrap_or('\\') != '\\' {
+                return exec_err!(
+                    "LIKE does not support escape_char other than the backslash (\\)"
+                );
             }
             let physical_expr =
                 create_physical_expr(expr, input_dfschema, execution_props)?;
@@ -219,6 +234,22 @@ pub fn create_physical_expr(
                 physical_pattern,
                 input_schema,
             )
+        }
+        Expr::SimilarTo(Like {
+            negated,
+            expr,
+            pattern,
+            escape_char,
+            case_insensitive,
+        }) => {
+            if escape_char.is_some() {
+                return exec_err!("SIMILAR TO does not support escape_char yet");
+            }
+            let physical_expr =
+                create_physical_expr(expr, input_dfschema, execution_props)?;
+            let physical_pattern =
+                create_physical_expr(pattern, input_dfschema, execution_props)?;
+            similar_to(*negated, *case_insensitive, physical_expr, physical_pattern)
         }
         Expr::Case(case) => {
             let expr: Option<Arc<dyn PhysicalExpr>> = if let Some(e) = &case.expr {
@@ -243,7 +274,7 @@ pub fn create_physical_expr(
                 when_expr
                     .iter()
                     .zip(then_expr.iter())
-                    .map(|(w, t)| (w.clone(), t.clone()))
+                    .map(|(w, t)| (Arc::clone(w), Arc::clone(t)))
                     .collect();
             let else_expr: Option<Arc<dyn PhysicalExpr>> =
                 if let Some(e) = &case.else_expr {
@@ -287,14 +318,17 @@ pub fn create_physical_expr(
         Expr::ScalarFunction(ScalarFunction { func, args }) => {
             let physical_args =
                 create_physical_exprs(args, input_dfschema, execution_props)?;
+            let config_options = match execution_props.config_options.as_ref() {
+                Some(config_options) => Arc::clone(config_options),
+                None => Arc::new(ConfigOptions::default()),
+            };
 
-            scalar_function::create_physical_expr(
-                func.clone().as_ref(),
-                &physical_args,
+            Ok(Arc::new(ScalarFunctionExpr::try_new(
+                Arc::clone(func),
+                physical_args,
                 input_schema,
-                args,
-                input_dfschema,
-            )
+                config_options,
+            )?))
         }
         Expr::Between(Between {
             expr,
@@ -308,9 +342,19 @@ pub fn create_physical_expr(
 
             // rewrite the between into the two binary operators
             let binary_expr = binary(
-                binary(value_expr.clone(), Operator::GtEq, low_expr, input_schema)?,
+                binary(
+                    Arc::clone(&value_expr),
+                    Operator::GtEq,
+                    low_expr,
+                    input_schema,
+                )?,
                 Operator::And,
-                binary(value_expr.clone(), Operator::LtEq, high_expr, input_schema)?,
+                binary(
+                    Arc::clone(&value_expr),
+                    Operator::LtEq,
+                    high_expr,
+                    input_schema,
+                )?,
                 input_schema,
             );
 
@@ -325,7 +369,7 @@ pub fn create_physical_expr(
             list,
             negated,
         }) => match expr.as_ref() {
-            Expr::Literal(ScalarValue::Utf8(None)) => {
+            Expr::Literal(ScalarValue::Utf8(None), _) => {
                 Ok(expressions::lit(ScalarValue::Boolean(None)))
             }
             _ => {
@@ -337,6 +381,9 @@ pub fn create_physical_expr(
                 expressions::in_list(value_expr, list_exprs, negated, input_schema)
             }
         },
+        Expr::Placeholder(Placeholder { id, .. }) => {
+            exec_err!("Placeholder '{id}' was not provided a value for execution.")
+        }
         other => {
             not_impl_err!("Physical plan does not support logical expression {other:?}")
         }
@@ -355,15 +402,23 @@ where
     exprs
         .into_iter()
         .map(|expr| create_physical_expr(expr, input_dfschema, execution_props))
-        .collect::<Result<Vec<_>>>()
+        .collect()
+}
+
+/// Convert a logical expression to a physical expression (without any simplification, etc)
+pub fn logical2physical(expr: &Expr, schema: &Schema) -> Arc<dyn PhysicalExpr> {
+    // TODO this makes a deep copy of the Schema. Should take SchemaRef instead and avoid deep copy
+    let df_schema = schema.clone().to_dfschema().unwrap();
+    let execution_props = ExecutionProps::new();
+    create_physical_expr(expr, &df_schema, &execution_props).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field};
+    use arrow::array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field};
 
-    use datafusion_expr::{col, lit};
+    use datafusion_expr::{Operator, col, lit};
 
     use super::*;
 
@@ -388,6 +443,36 @@ mod tests {
             &result,
             &(Arc::new(BooleanArray::from(vec![true, false, false, false,])) as ArrayRef)
         );
+
+        Ok(())
+    }
+
+    /// Test that deeply nested expressions do not cause a stack overflow.
+    ///
+    /// This test only runs when the `recursive_protection` feature is enabled,
+    /// as it would overflow the stack otherwise.
+    #[test]
+    #[cfg_attr(not(feature = "recursive_protection"), ignore)]
+    fn test_deeply_nested_binary_expr() -> Result<()> {
+        // Create a deeply nested binary expression tree: ((((a + a) + a) + a) + ... )
+        // With 1000 levels of nesting, this would overflow the stack without recursion protection.
+        let depth = 1000;
+
+        let mut expr = col("a");
+        for _ in 0..depth {
+            expr = Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(expr),
+                op: Operator::Plus,
+                right: Box::new(col("a")),
+            });
+        }
+
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let df_schema = DFSchema::try_from(schema)?;
+
+        // This should not stack overflow
+        let _physical_expr =
+            create_physical_expr(&expr, &df_schema, &ExecutionProps::new())?;
 
         Ok(())
     }

@@ -26,25 +26,28 @@ use arrow::datatypes::{DataType, Field, Int32Type, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::Result;
-use datafusion::execution::context::{SessionContext, SessionState, TaskContext};
+use datafusion::execution::context::{SessionContext, TaskContext};
 use datafusion::logical_expr::{
-    col, Expr, LogicalPlan, LogicalPlanBuilder, TableScan, UNNAMED_TABLE,
+    Expr, LogicalPlan, LogicalPlanBuilder, TableScan, UNNAMED_TABLE, col,
 };
 use datafusion::physical_plan::{
-    collect, ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    RecordBatchStream, SendableRecordBatchStream, Statistics,
+    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    RecordBatchStream, SendableRecordBatchStream, Statistics, collect,
 };
 use datafusion::scalar::ScalarValue;
+use datafusion_catalog::Session;
 use datafusion_common::cast::as_primitive_array;
 use datafusion_common::project_schema;
 use datafusion_common::stats::Precision;
 use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_plan::PlanProperties;
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion_physical_plan::placeholder_row::PlaceholderRowExec;
-use datafusion_physical_plan::{ExecutionMode, PlanProperties};
 
 use async_trait::async_trait;
 use futures::stream::Stream;
 
+mod dml_planning;
 mod provider_filter_pushdown;
 mod statistics;
 
@@ -70,7 +73,9 @@ macro_rules! TEST_CUSTOM_RECORD_BATCH {
 
 //--- Custom source dataframe tests ---//
 
+#[derive(Debug)]
 struct CustomTableProvider;
+
 #[derive(Debug, Clone)]
 struct CustomExecutionPlan {
     projection: Option<Vec<usize>>,
@@ -88,12 +93,11 @@ impl CustomExecutionPlan {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
         PlanProperties::new(
-            eq_properties,
-            // Output Partitioning
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -135,11 +139,20 @@ impl DisplayAs for CustomExecutionPlan {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "CustomExecutionPlan: projection={:#?}", self.projection)
             }
+
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for CustomExecutionPlan {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -168,6 +181,13 @@ impl ExecutionPlan for CustomExecutionPlan {
     }
 
     fn statistics(&self) -> Result<Statistics> {
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if partition.is_some() {
+            return Ok(Statistics::new_unknown(&self.schema()));
+        }
         let batch = TEST_CUSTOM_RECORD_BATCH!().unwrap();
         Ok(Statistics {
             num_rows: Precision::Exact(batch.num_rows()),
@@ -208,7 +228,7 @@ impl TableProvider for CustomTableProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -241,7 +261,7 @@ async fn custom_source_dataframe() -> Result<()> {
     }
 
     let expected = format!("TableScan: {UNNAMED_TABLE} projection=[c2]");
-    assert_eq!(format!("{optimized_plan:?}"), expected);
+    assert_eq!(format!("{optimized_plan}"), expected);
 
     let physical_plan = state.create_physical_plan(&optimized_plan).await?;
 
@@ -278,9 +298,9 @@ async fn optimizers_catch_all_statistics() {
 
     let expected = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
-            Field::new("COUNT(*)", DataType::Int64, false),
-            Field::new("MIN(test.c1)", DataType::Int32, false),
-            Field::new("MAX(test.c1)", DataType::Int32, false),
+            Field::new("count(*)", DataType::Int64, false),
+            Field::new("min(test.c1)", DataType::Int32, false),
+            Field::new("max(test.c1)", DataType::Int32, false),
         ])),
         vec![
             Arc::new(Int64Array::from(vec![4])),
@@ -297,6 +317,7 @@ async fn optimizers_catch_all_statistics() {
     assert_eq!(format!("{:?}", actual[0]), format!("{expected:?}"));
 }
 
+#[expect(clippy::needless_pass_by_value)]
 fn contains_place_holder_exec(plan: Arc<dyn ExecutionPlan>) -> bool {
     if plan.as_any().is::<PlaceholderRowExec>() {
         true

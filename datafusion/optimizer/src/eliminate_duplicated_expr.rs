@@ -19,58 +19,38 @@
 
 use crate::optimizer::ApplyOrder;
 use crate::{OptimizerConfig, OptimizerRule};
+use datafusion_common::Result;
 use datafusion_common::tree_node::Transformed;
-use datafusion_common::{internal_err, Result};
 use datafusion_expr::logical_plan::LogicalPlan;
-use datafusion_expr::{Aggregate, Expr, Sort};
-use indexmap::IndexSet;
+use datafusion_expr::{Aggregate, Expr, Sort, SortExpr};
 use std::hash::{Hash, Hasher};
+
+use indexmap::IndexSet;
+
 /// Optimization rule that eliminate duplicated expr.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct EliminateDuplicatedExpr;
 
 impl EliminateDuplicatedExpr {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new() -> Self {
         Self {}
     }
 }
 // use this structure to avoid initial clone
 #[derive(Eq, Clone, Debug)]
-struct SortExprWrapper {
-    expr: Expr,
-}
+struct SortExprWrapper(SortExpr);
 impl PartialEq for SortExprWrapper {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.expr, &other.expr) {
-            (Expr::Sort(own_sort), Expr::Sort(other_sort)) => {
-                own_sort.expr == other_sort.expr
-            }
-            _ => self.expr == other.expr,
-        }
+        self.0.expr == other.0.expr
     }
 }
 impl Hash for SortExprWrapper {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match &self.expr {
-            Expr::Sort(sort) => {
-                sort.expr.hash(state);
-            }
-            _ => {
-                self.expr.hash(state);
-            }
-        }
+        self.0.expr.hash(state);
     }
 }
 impl OptimizerRule for EliminateDuplicatedExpr {
-    fn try_optimize(
-        &self,
-        _plan: &LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        internal_err!("Should have called EliminateDuplicatedExpr::rewrite")
-    }
-
     fn apply_order(&self) -> Option<ApplyOrder> {
         Some(ApplyOrder::TopDown)
     }
@@ -90,10 +70,10 @@ impl OptimizerRule for EliminateDuplicatedExpr {
                 let unique_exprs: Vec<_> = sort
                     .expr
                     .into_iter()
-                    .map(|e| SortExprWrapper { expr: e })
+                    .map(SortExprWrapper)
                     .collect::<IndexSet<_>>()
                     .into_iter()
-                    .map(|wrapper| wrapper.expr)
+                    .map(|wrapper| wrapper.0)
                     .collect();
 
                 let transformed = if len != unique_exprs.len() {
@@ -138,29 +118,41 @@ impl OptimizerRule for EliminateDuplicatedExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OptimizerContext;
+    use crate::assert_optimized_plan_eq_snapshot;
     use crate::test::*;
     use datafusion_expr::{col, logical_plan::builder::LogicalPlanBuilder};
     use std::sync::Arc;
 
-    fn assert_optimized_plan_eq(plan: LogicalPlan, expected: &str) -> Result<()> {
-        crate::test::assert_optimized_plan_eq(
-            Arc::new(EliminateDuplicatedExpr::new()),
-            plan,
-            expected,
-        )
+    macro_rules! assert_optimized_plan_equal {
+        (
+            $plan:expr,
+            @ $expected:literal $(,)?
+        ) => {{
+            let optimizer_ctx = OptimizerContext::new().with_max_passes(1);
+            let rules: Vec<Arc<dyn crate::OptimizerRule + Send + Sync>> = vec![Arc::new(EliminateDuplicatedExpr::new())];
+            assert_optimized_plan_eq_snapshot!(
+                optimizer_ctx,
+                rules,
+                $plan,
+                @ $expected,
+            )
+        }};
     }
 
     #[test]
     fn eliminate_sort_expr() -> Result<()> {
         let table_scan = test_table_scan().unwrap();
         let plan = LogicalPlanBuilder::from(table_scan)
-            .sort(vec![col("a"), col("a"), col("b"), col("c")])?
+            .sort_by(vec![col("a"), col("a"), col("b"), col("c")])?
             .limit(5, Some(10))?
             .build()?;
-        let expected = "Limit: skip=5, fetch=10\
-        \n  Sort: test.a, test.b, test.c\
-        \n    TableScan: test";
-        assert_optimized_plan_eq(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Limit: skip=5, fetch=10
+          Sort: test.a ASC NULLS LAST, test.b ASC NULLS LAST, test.c ASC NULLS LAST
+            TableScan: test
+        ")
     }
 
     #[test]
@@ -176,9 +168,11 @@ mod tests {
             .sort(sort_exprs)?
             .limit(5, Some(10))?
             .build()?;
-        let expected = "Limit: skip=5, fetch=10\
-        \n  Sort: test.a ASC NULLS FIRST, test.b ASC NULLS LAST\
-        \n    TableScan: test";
-        assert_optimized_plan_eq(plan, expected)
+
+        assert_optimized_plan_equal!(plan, @r"
+        Limit: skip=5, fetch=10
+          Sort: test.a ASC NULLS FIRST, test.b ASC NULLS LAST
+            TableScan: test
+        ")
     }
 }

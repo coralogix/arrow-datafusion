@@ -33,6 +33,7 @@ struct GeneratorOptions {
     pods_per_host: Range<usize>,
     containers_per_pod: Range<usize>,
     entries_per_container: Range<usize>,
+    include_nulls: bool,
 }
 
 impl Default for GeneratorOptions {
@@ -42,6 +43,7 @@ impl Default for GeneratorOptions {
             pods_per_host: 1..15,
             containers_per_pod: 1..3,
             entries_per_container: 1024..8192,
+            include_nulls: false,
         }
     }
 }
@@ -102,10 +104,11 @@ impl BatchBuilder {
     }
 
     fn append(&mut self, rng: &mut StdRng, host: &str, service: &str) {
-        let num_pods = rng.gen_range(self.options.pods_per_host.clone());
+        let num_pods = rng.random_range(self.options.pods_per_host.clone());
         let pods = generate_sorted_strings(rng, num_pods, 30..40);
         for pod in pods {
-            let num_containers = rng.gen_range(self.options.containers_per_pod.clone());
+            let num_containers =
+                rng.random_range(self.options.containers_per_pod.clone());
             for container_idx in 0..num_containers {
                 let container = format!("{service}_container_{container_idx}");
                 let image = format!(
@@ -113,7 +116,7 @@ impl BatchBuilder {
                 );
 
                 let num_entries =
-                    rng.gen_range(self.options.entries_per_container.clone());
+                    rng.random_range(self.options.entries_per_container.clone());
                 for i in 0..num_entries {
                     if self.is_finished() {
                         return;
@@ -149,27 +152,37 @@ impl BatchBuilder {
         self.image.append(image).unwrap();
         self.time.append_value(time);
 
-        self.client_addr.append_value(format!(
-            "{}.{}.{}.{}",
-            rng.gen::<u8>(),
-            rng.gen::<u8>(),
-            rng.gen::<u8>(),
-            rng.gen::<u8>()
-        ));
-        self.request_duration.append_value(rng.gen());
+        if self.options.include_nulls {
+            // Append a null value if the option is set
+            // Use both "NULL" as a string and a null value
+            if rng.random_bool(0.5) {
+                self.client_addr.append_null();
+            } else {
+                self.client_addr.append_value("NULL");
+            }
+        } else {
+            self.client_addr.append_value(format!(
+                "{}.{}.{}.{}",
+                rng.random::<u8>(),
+                rng.random::<u8>(),
+                rng.random::<u8>(),
+                rng.random::<u8>()
+            ));
+        }
+        self.request_duration.append_value(rng.random());
         self.request_user_agent
             .append_value(random_string(rng, 20..100));
         self.request_method
-            .append_value(methods[rng.gen_range(0..methods.len())]);
+            .append_value(methods[rng.random_range(0..methods.len())]);
         self.request_host
             .append_value(format!("https://{service}.mydomain.com"));
 
         self.request_bytes
-            .append_option(rng.gen_bool(0.9).then(|| rng.gen()));
+            .append_option(rng.random_bool(0.9).then(|| rng.random()));
         self.response_bytes
-            .append_option(rng.gen_bool(0.9).then(|| rng.gen()));
+            .append_option(rng.random_bool(0.9).then(|| rng.random()));
         self.response_status
-            .append_value(status[rng.gen_range(0..status.len())]);
+            .append_value(status[rng.random_range(0..status.len())]);
         self.prices_status.append_value(self.row_count as i128);
     }
 
@@ -204,9 +217,9 @@ impl BatchBuilder {
 }
 
 fn random_string(rng: &mut StdRng, len_range: Range<usize>) -> String {
-    let len = rng.gen_range(len_range);
+    let len = rng.random_range(len_range);
     (0..len)
-        .map(|_| rng.gen_range(b'a'..=b'z') as char)
+        .map(|_| rng.random_range(b'a'..=b'z') as char)
         .collect::<String>()
 }
 
@@ -225,7 +238,7 @@ fn generate_sorted_strings(
 
 /// Iterator that generates sorted, [`RecordBatch`]es with randomly generated data with
 /// an access log style schema for tracing or monitoring type
-/// usecases.
+/// use cases.
 ///
 /// This is useful for writing tests queries on such data
 ///
@@ -317,6 +330,12 @@ impl AccessLogGenerator {
         self.options.entries_per_container = range;
         self
     }
+
+    // Set the condition for null values in the generated data
+    pub fn with_include_nulls(mut self, include_nulls: bool) -> Self {
+        self.options.include_nulls = include_nulls;
+        self
+    }
 }
 
 impl Iterator for AccessLogGenerator {
@@ -346,7 +365,7 @@ impl Iterator for AccessLogGenerator {
         self.host_idx += 1;
 
         for service in &["frontend", "backend", "database", "cache"] {
-            if self.rng.gen_bool(0.5) {
+            if self.rng.random_bool(0.5) {
                 continue;
             }
             if builder.is_finished() {

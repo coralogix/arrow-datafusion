@@ -16,21 +16,44 @@
 // under the License.
 
 use std::any::Any;
-use std::cmp::{max, Ordering};
+use std::cmp::{Ordering, max};
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, GenericStringArray, OffsetSizeTrait};
+use arrow::array::{
+    Array, ArrayAccessor, ArrayIter, ArrayRef, GenericStringArray, Int64Array,
+    OffsetSizeTrait,
+};
 use arrow::datatypes::DataType;
 
-use datafusion_common::cast::{as_generic_string_array, as_int64_array};
-use datafusion_common::exec_err;
-use datafusion_common::Result;
-use datafusion_expr::TypeSignature::Exact;
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
-
 use crate::utils::{make_scalar_function, utf8_to_str_type};
+use datafusion_common::Result;
+use datafusion_common::cast::{
+    as_generic_string_array, as_int64_array, as_string_view_array,
+};
+use datafusion_common::exec_err;
+use datafusion_expr::TypeSignature::Exact;
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
+};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Returns a specified number of characters from the right side of a string.",
+    syntax_example = "right(str, n)",
+    sql_example = r#"```sql
+> select right('datafusion', 6);
++------------------------------------+
+| right(Utf8("datafusion"),Int64(6)) |
++------------------------------------+
+| fusion                             |
++------------------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    argument(name = "n", description = "Number of characters to return."),
+    related_udf(name = "left")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RightFunc {
     signature: Signature,
 }
@@ -46,7 +69,11 @@ impl RightFunc {
         use DataType::*;
         Self {
             signature: Signature::one_of(
-                vec![Exact(vec![Utf8, Int64]), Exact(vec![LargeUtf8, Int64])],
+                vec![
+                    Exact(vec![Utf8View, Int64]),
+                    Exact(vec![Utf8, Int64]),
+                    Exact(vec![LargeUtf8, Int64]),
+                ],
                 Volatility::Immutable,
             ),
         }
@@ -70,24 +97,52 @@ impl ScalarUDFImpl for RightFunc {
         utf8_to_str_type(&arg_types[0], "right")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> Result<ColumnarValue> {
+        let args = &args.args;
         match args[0].data_type() {
-            DataType::Utf8 => make_scalar_function(right::<i32>, vec![])(args),
+            DataType::Utf8 | DataType::Utf8View => {
+                make_scalar_function(right::<i32>, vec![])(args)
+            }
             DataType::LargeUtf8 => make_scalar_function(right::<i64>, vec![])(args),
-            other => exec_err!("Unsupported data type {other:?} for function right"),
+            other => exec_err!(
+                "Unsupported data type {other:?} for function right,\
+            expected Utf8View, Utf8 or LargeUtf8."
+            ),
         }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
 /// Returns last n characters in the string, or when n is negative, returns all but first |n| characters.
 /// right('abcde', 2) = 'de'
 /// The implementation uses UTF-8 code points as characters
-pub fn right<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
-    let string_array = as_generic_string_array::<T>(&args[0])?;
+fn right<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
     let n_array = as_int64_array(&args[1])?;
+    if args[0].data_type() == &DataType::Utf8View {
+        // string_view_right(args)
+        let string_array = as_string_view_array(&args[0])?;
+        right_impl::<T, _>(&mut string_array.iter(), n_array)
+    } else {
+        // string_right::<T>(args)
+        let string_array = &as_generic_string_array::<T>(&args[0])?;
+        right_impl::<T, _>(&mut string_array.iter(), n_array)
+    }
+}
 
-    let result = string_array
-        .iter()
+// Currently the return type can only be Utf8 or LargeUtf8, to reach fully support, we need
+// to edit the `get_optimal_return_type` in utils.rs to make the udfs be able to return Utf8View
+// See https://github.com/apache/datafusion/issues/11790#issuecomment-2283777166
+fn right_impl<'a, T: OffsetSizeTrait, V: ArrayAccessor<Item = &'a str>>(
+    string_array_iter: &mut ArrayIter<V>,
+    n_array: &Int64Array,
+) -> Result<ArrayRef> {
+    let result = string_array_iter
         .zip(n_array.iter())
         .map(|(string, n)| match (string, n) {
             (Some(string), Some(n)) => match n.cmp(&0) {
@@ -127,7 +182,7 @@ mod tests {
     fn test_functions() -> Result<()> {
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(2i64)),
             ],
@@ -138,7 +193,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(200i64)),
             ],
@@ -149,7 +204,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(-2i64)),
             ],
@@ -160,7 +215,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(-200i64)),
             ],
@@ -171,7 +226,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(0i64)),
             ],
@@ -182,7 +237,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(None)),
                 ColumnarValue::Scalar(ScalarValue::from(2i64)),
             ],
@@ -193,7 +248,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::Int64(None)),
             ],
@@ -204,7 +259,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("joséésoj")),
                 ColumnarValue::Scalar(ScalarValue::from(5i64)),
             ],
@@ -215,7 +270,7 @@ mod tests {
         );
         test_function!(
             RightFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("joséésoj")),
                 ColumnarValue::Scalar(ScalarValue::from(-3i64)),
             ],

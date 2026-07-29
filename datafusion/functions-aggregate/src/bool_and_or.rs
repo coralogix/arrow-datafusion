@@ -18,24 +18,27 @@
 //! Defines physical expressions that can evaluated at runtime during query execution
 
 use std::any::Any;
+use std::mem::size_of_val;
 
 use arrow::array::ArrayRef;
 use arrow::array::BooleanArray;
 use arrow::compute::bool_and as compute_bool_and;
 use arrow::compute::bool_or as compute_bool_or;
-use arrow::datatypes::DataType;
 use arrow::datatypes::Field;
+use arrow::datatypes::{DataType, FieldRef};
 
 use datafusion_common::internal_err;
+use datafusion_common::{Result, ScalarValue};
 use datafusion_common::{downcast_value, not_impl_err};
-use datafusion_common::{DataFusionError, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::utils::{format_state_name, AggregateOrderSensitivity};
+use datafusion_expr::utils::{AggregateOrderSensitivity, format_state_name};
 use datafusion_expr::{
-    Accumulator, AggregateUDFImpl, GroupsAccumulator, ReversedUDAF, Signature, Volatility,
+    Accumulator, AggregateUDFImpl, Documentation, GroupsAccumulator, ReversedUDAF,
+    Signature, Volatility,
 };
 
-use datafusion_physical_expr_common::aggregate::groups_accumulator::bool_op::BooleanGroupsAccumulator;
+use datafusion_functions_aggregate_common::aggregate::groups_accumulator::bool_op::BooleanGroupsAccumulator;
+use datafusion_macros::user_doc;
 
 // returns the new value after bool_and/bool_or with the new values, taking nullability into account
 macro_rules! typed_bool_and_or_batch {
@@ -88,8 +91,22 @@ make_udaf_expr_and_func!(
     bool_or_udaf
 );
 
+#[user_doc(
+    doc_section(label = "General Functions"),
+    description = "Returns true if all non-null input values are true, otherwise false.",
+    syntax_example = "bool_and(expression)",
+    sql_example = r#"```sql
+> SELECT bool_and(column_name) FROM table_name;
++----------------------------+
+| bool_and(column_name)       |
++----------------------------+
+| true                        |
++----------------------------+
+```"#,
+    standard_argument(name = "expression", prefix = "The")
+)]
 /// BOOL_AND aggregate expression
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BoolAnd {
     signature: Signature,
 }
@@ -133,12 +150,15 @@ impl AggregateUDFImpl for BoolAnd {
         Ok(Box::<BoolAndAccumulator>::default())
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
-        Ok(vec![Field::new(
-            format_state_name(args.name, self.name()),
-            DataType::Boolean,
-            true,
-        )])
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        Ok(vec![
+            Field::new(
+                format_state_name(args.name, self.name()),
+                DataType::Boolean,
+                true,
+            )
+            .into(),
+        ])
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
@@ -149,27 +169,16 @@ impl AggregateUDFImpl for BoolAnd {
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        match args.data_type {
+        match args.return_field.data_type() {
             DataType::Boolean => {
-                Ok(Box::new(BooleanGroupsAccumulator::new(|x, y| x && y)))
+                Ok(Box::new(BooleanGroupsAccumulator::new(|x, y| x && y, true)))
             }
             _ => not_impl_err!(
                 "GroupsAccumulator not supported for {} with {}",
                 args.name,
-                args.data_type
+                args.return_field.data_type()
             ),
         }
-    }
-
-    fn aliases(&self) -> &[String] {
-        &[]
-    }
-
-    fn create_sliding_accumulator(
-        &self,
-        _: AccumulatorArgs,
-    ) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::<BoolAndAccumulator>::default())
     }
 
     fn order_sensitivity(&self) -> AggregateOrderSensitivity {
@@ -178,6 +187,10 @@ impl AggregateUDFImpl for BoolAnd {
 
     fn reverse_expr(&self) -> ReversedUDAF {
         ReversedUDAF::Identical
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
@@ -203,7 +216,7 @@ impl Accumulator for BoolAndAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -215,8 +228,22 @@ impl Accumulator for BoolAndAccumulator {
     }
 }
 
+#[user_doc(
+    doc_section(label = "General Functions"),
+    description = "Returns true if all non-null input values are true, otherwise false.",
+    syntax_example = "bool_and(expression)",
+    sql_example = r#"```sql
+> SELECT bool_and(column_name) FROM table_name;
++----------------------------+
+| bool_and(column_name)       |
++----------------------------+
+| true                        |
++----------------------------+
+```"#,
+    standard_argument(name = "expression", prefix = "The")
+)]
 /// BOOL_OR aggregate expression
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BoolOr {
     signature: Signature,
 }
@@ -260,12 +287,15 @@ impl AggregateUDFImpl for BoolOr {
         Ok(Box::<BoolOrAccumulator>::default())
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
-        Ok(vec![Field::new(
-            format_state_name(args.name, self.name()),
-            DataType::Boolean,
-            true,
-        )])
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        Ok(vec![
+            Field::new(
+                format_state_name(args.name, self.name()),
+                DataType::Boolean,
+                true,
+            )
+            .into(),
+        ])
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
@@ -276,27 +306,17 @@ impl AggregateUDFImpl for BoolOr {
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        match args.data_type {
-            DataType::Boolean => {
-                Ok(Box::new(BooleanGroupsAccumulator::new(|x, y| x || y)))
-            }
+        match args.return_field.data_type() {
+            DataType::Boolean => Ok(Box::new(BooleanGroupsAccumulator::new(
+                |x, y| x || y,
+                false,
+            ))),
             _ => not_impl_err!(
                 "GroupsAccumulator not supported for {} with {}",
                 args.name,
-                args.data_type
+                args.return_field.data_type()
             ),
         }
-    }
-
-    fn aliases(&self) -> &[String] {
-        &[]
-    }
-
-    fn create_sliding_accumulator(
-        &self,
-        _: AccumulatorArgs,
-    ) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::<BoolOrAccumulator>::default())
     }
 
     fn order_sensitivity(&self) -> AggregateOrderSensitivity {
@@ -305,6 +325,10 @@ impl AggregateUDFImpl for BoolOr {
 
     fn reverse_expr(&self) -> ReversedUDAF {
         ReversedUDAF::Identical
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
@@ -330,7 +354,7 @@ impl Accumulator for BoolOrAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {

@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! CoalesceBatchesExec combines small batches into larger batches for more efficient use of
-//! vectorized processing by upstream operators.
+//! [`CoalesceBatchesExec`] combines small batches into larger batches.
 
 use std::any::Any;
 use std::pin::Pin;
@@ -25,27 +24,47 @@ use std::task::{Context, Poll};
 
 use super::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use super::{DisplayAs, ExecutionPlanProperties, PlanProperties, Statistics};
+use crate::projection::ProjectionExec;
 use crate::{
     DisplayFormatType, ExecutionPlan, RecordBatchStream, SendableRecordBatchStream,
 };
 
 use arrow::datatypes::SchemaRef;
-use arrow::error::Result as ArrowResult;
 use arrow::record_batch::RecordBatch;
 use datafusion_common::Result;
 use datafusion_execution::TaskContext;
+use datafusion_physical_expr::PhysicalExpr;
 
+use crate::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
+use crate::execution_plan::CardinalityEffect;
+use crate::filter_pushdown::{
+    ChildPushdownResult, FilterDescription, FilterPushdownPhase,
+    FilterPushdownPropagation,
+};
+use crate::sort_pushdown::SortOrderPushdownResult;
+use datafusion_common::config::ConfigOptions;
+use datafusion_physical_expr_common::sort_expr::PhysicalSortExpr;
+use futures::ready;
 use futures::stream::{Stream, StreamExt};
-use log::trace;
 
-/// CoalesceBatchesExec combines small batches into larger batches for more efficient use of
-/// vectorized processing by upstream operators.
-#[derive(Debug)]
+/// `CoalesceBatchesExec` combines small batches into larger batches for more
+/// efficient vectorized processing by later operators.
+///
+/// The operator buffers batches until it collects `target_batch_size` rows and
+/// then emits a single concatenated batch. When only a limited number of rows
+/// are necessary (specified by the `fetch` parameter), the operator will stop
+/// buffering and returns the final batch once the number of collected rows
+/// reaches the `fetch` value.
+///
+/// See [`LimitedBatchCoalescer`] for more information
+#[derive(Debug, Clone)]
 pub struct CoalesceBatchesExec {
     /// The input plan
     input: Arc<dyn ExecutionPlan>,
-    /// Minimum number of rows for coalesces batches
+    /// Minimum number of rows for coalescing batches
     target_batch_size: usize,
+    /// Maximum number of rows to fetch, `None` means fetching all rows
+    fetch: Option<usize>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     cache: PlanProperties,
@@ -58,9 +77,16 @@ impl CoalesceBatchesExec {
         Self {
             input,
             target_batch_size,
+            fetch: None,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         }
+    }
+
+    /// Update fetch with the argument
+    pub fn with_fetch(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
     }
 
     /// The input plan
@@ -80,7 +106,8 @@ impl CoalesceBatchesExec {
         PlanProperties::new(
             input.equivalence_properties().clone(), // Equivalence Properties
             input.output_partitioning().clone(),    // Output Partitioning
-            input.execution_mode(),                 // Execution Mode
+            input.pipeline_behavior(),
+            input.boundedness(),
         )
     }
 }
@@ -96,8 +123,20 @@ impl DisplayAs for CoalesceBatchesExec {
                 write!(
                     f,
                     "CoalesceBatchesExec: target_batch_size={}",
-                    self.target_batch_size
-                )
+                    self.target_batch_size,
+                )?;
+                if let Some(fetch) = self.fetch {
+                    write!(f, ", fetch={fetch}")?;
+                };
+
+                Ok(())
+            }
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "target_batch_size={}", self.target_batch_size)?;
+                if let Some(fetch) = self.fetch {
+                    write!(f, "limit={fetch}")?;
+                };
+                Ok(())
             }
         }
     }
@@ -133,10 +172,10 @@ impl ExecutionPlan for CoalesceBatchesExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(CoalesceBatchesExec::new(
-            children[0].clone(),
-            self.target_batch_size,
-        )))
+        Ok(Arc::new(
+            CoalesceBatchesExec::new(Arc::clone(&children[0]), self.target_batch_size)
+                .with_fetch(self.fetch),
+        ))
     }
 
     fn execute(
@@ -146,12 +185,13 @@ impl ExecutionPlan for CoalesceBatchesExec {
     ) -> Result<SendableRecordBatchStream> {
         Ok(Box::pin(CoalesceBatchesStream {
             input: self.input.execute(partition, context)?,
-            schema: self.input.schema(),
-            target_batch_size: self.target_batch_size,
-            buffer: Vec::new(),
-            buffered_rows: 0,
-            is_closed: false,
+            coalescer: LimitedBatchCoalescer::new(
+                self.input.schema(),
+                self.target_batch_size,
+                self.fetch,
+            ),
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
+            completed: false,
         }))
     }
 
@@ -160,25 +200,88 @@ impl ExecutionPlan for CoalesceBatchesExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        self.input.statistics()
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        self.input
+            .partition_statistics(partition)?
+            .with_fetch(self.fetch, 0, 1)
+    }
+
+    fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        Some(Arc::new(CoalesceBatchesExec {
+            input: Arc::clone(&self.input),
+            target_batch_size: self.target_batch_size,
+            fetch: limit,
+            metrics: self.metrics.clone(),
+            cache: self.cache.clone(),
+        }))
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
+    }
+
+    fn try_swapping_with_projection(
+        &self,
+        projection: &ProjectionExec,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        match self.input.try_swapping_with_projection(projection)? {
+            Some(new_input) => Ok(Some(
+                Arc::new(self.clone()).with_new_children(vec![new_input])?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn gather_filters_for_pushdown(
+        &self,
+        _phase: FilterPushdownPhase,
+        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterDescription> {
+        FilterDescription::from_children(parent_filters, &self.children())
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        _phase: FilterPushdownPhase,
+        child_pushdown_result: ChildPushdownResult,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+        Ok(FilterPushdownPropagation::if_all(child_pushdown_result))
+    }
+
+    fn try_pushdown_sort(
+        &self,
+        order: &[PhysicalSortExpr],
+    ) -> Result<SortOrderPushdownResult<Arc<dyn ExecutionPlan>>> {
+        // CoalesceBatchesExec is transparent for sort ordering - it preserves order
+        // Delegate to the child and wrap with a new CoalesceBatchesExec
+        self.input.try_pushdown_sort(order)?.try_map(|new_input| {
+            Ok(Arc::new(
+                CoalesceBatchesExec::new(new_input, self.target_batch_size)
+                    .with_fetch(self.fetch),
+            ) as Arc<dyn ExecutionPlan>)
+        })
     }
 }
 
+/// Stream for [`CoalesceBatchesExec`]. See [`CoalesceBatchesExec`] for more details.
 struct CoalesceBatchesStream {
     /// The input plan
     input: SendableRecordBatchStream,
-    /// The input schema
-    schema: SchemaRef,
-    /// Minimum number of rows for coalesces batches
-    target_batch_size: usize,
-    /// Buffered batches
-    buffer: Vec<RecordBatch>,
-    /// Buffered row count
-    buffered_rows: usize,
-    /// Whether the stream has finished returning all of its data or not
-    is_closed: bool,
+    /// Buffer for combining batches
+    coalescer: LimitedBatchCoalescer,
     /// Execution metrics
     baseline_metrics: BaselineMetrics,
+    /// is the input stream exhausted or limit reached?
+    completed: bool,
 }
 
 impl Stream for CoalesceBatchesStream {
@@ -203,68 +306,41 @@ impl CoalesceBatchesStream {
         self: &mut Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<RecordBatch>>> {
-        // Get a clone (uses same underlying atomic) as self gets borrowed below
         let cloned_time = self.baseline_metrics.elapsed_compute().clone();
-
-        if self.is_closed {
-            return Poll::Ready(None);
-        }
         loop {
-            let input_batch = self.input.poll_next_unpin(cx);
-            // records time on drop
+            // If there is any completed batch ready, return it
+            if let Some(batch) = self.coalescer.next_completed_batch() {
+                return Poll::Ready(Some(Ok(batch)));
+            }
+            if self.completed {
+                // If input is done and no batches are ready, return None to signal end of stream.
+                return Poll::Ready(None);
+            }
+            // Attempt to pull the next batch from the input stream.
+            let input_batch = ready!(self.input.poll_next_unpin(cx));
+            // Start timing the operation. The timer records time upon being dropped.
             let _timer = cloned_time.timer();
+
             match input_batch {
-                Poll::Ready(x) => match x {
-                    Some(Ok(batch)) => {
-                        if batch.num_rows() >= self.target_batch_size
-                            && self.buffer.is_empty()
-                        {
-                            return Poll::Ready(Some(Ok(batch)));
-                        } else if batch.num_rows() == 0 {
-                            // discard empty batches
-                        } else {
-                            // add to the buffered batches
-                            self.buffered_rows += batch.num_rows();
-                            self.buffer.push(batch);
-                            // check to see if we have enough batches yet
-                            if self.buffered_rows >= self.target_batch_size {
-                                // combine the batches and return
-                                let batch = concat_batches(
-                                    &self.schema,
-                                    &self.buffer,
-                                    self.buffered_rows,
-                                )?;
-                                // reset buffer state
-                                self.buffer.clear();
-                                self.buffered_rows = 0;
-                                // return batch
-                                return Poll::Ready(Some(Ok(batch)));
-                            }
+                None => {
+                    // Input stream is exhausted, finalize any remaining batches
+                    self.completed = true;
+                    self.coalescer.finish()?;
+                }
+                Some(Ok(batch)) => {
+                    match self.coalescer.push_batch(batch)? {
+                        PushBatchStatus::Continue => {
+                            // Keep pushing more batches
+                        }
+                        PushBatchStatus::LimitReached => {
+                            // limit was reached, so stop early
+                            self.completed = true;
+                            self.coalescer.finish()?;
                         }
                     }
-                    None => {
-                        self.is_closed = true;
-                        // we have reached the end of the input stream but there could still
-                        // be buffered batches
-                        if self.buffer.is_empty() {
-                            return Poll::Ready(None);
-                        } else {
-                            // combine the batches and return
-                            let batch = concat_batches(
-                                &self.schema,
-                                &self.buffer,
-                                self.buffered_rows,
-                            )?;
-                            // reset buffer state
-                            self.buffer.clear();
-                            self.buffered_rows = 0;
-                            // return batch
-                            return Poll::Ready(Some(Ok(batch)));
-                        }
-                    }
-                    other => return Poll::Ready(other),
-                },
-                Poll::Pending => return Poll::Pending,
+                }
+                // Error case
+                other => return Poll::Ready(other),
             }
         }
     }
@@ -272,101 +348,6 @@ impl CoalesceBatchesStream {
 
 impl RecordBatchStream for CoalesceBatchesStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
-
-/// Concatenates an array of `RecordBatch` into one batch
-pub fn concat_batches(
-    schema: &SchemaRef,
-    batches: &[RecordBatch],
-    row_count: usize,
-) -> ArrowResult<RecordBatch> {
-    trace!(
-        "Combined {} batches containing {} rows",
-        batches.len(),
-        row_count
-    );
-    arrow::compute::concat_batches(schema, batches)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{memory::MemoryExec, repartition::RepartitionExec, Partitioning};
-
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow_array::UInt32Array;
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_concat_batches() -> Result<()> {
-        let schema = test_schema();
-        let partition = create_vec_batches(&schema, 10);
-        let partitions = vec![partition];
-
-        let output_partitions = coalesce_batches(&schema, partitions, 21).await?;
-        assert_eq!(1, output_partitions.len());
-
-        // input is 10 batches x 8 rows (80 rows)
-        // expected output is batches of at least 20 rows (except for the final batch)
-        let batches = &output_partitions[0];
-        assert_eq!(4, batches.len());
-        assert_eq!(24, batches[0].num_rows());
-        assert_eq!(24, batches[1].num_rows());
-        assert_eq!(24, batches[2].num_rows());
-        assert_eq!(8, batches[3].num_rows());
-
-        Ok(())
-    }
-
-    fn test_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("c0", DataType::UInt32, false)]))
-    }
-
-    async fn coalesce_batches(
-        schema: &SchemaRef,
-        input_partitions: Vec<Vec<RecordBatch>>,
-        target_batch_size: usize,
-    ) -> Result<Vec<Vec<RecordBatch>>> {
-        // create physical plan
-        let exec = MemoryExec::try_new(&input_partitions, schema.clone(), None)?;
-        let exec =
-            RepartitionExec::try_new(Arc::new(exec), Partitioning::RoundRobinBatch(1))?;
-        let exec: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalesceBatchesExec::new(Arc::new(exec), target_batch_size));
-
-        // execute and collect results
-        let output_partition_count = exec.output_partitioning().partition_count();
-        let mut output_partitions = Vec::with_capacity(output_partition_count);
-        for i in 0..output_partition_count {
-            // execute this *output* partition and collect all batches
-            let task_ctx = Arc::new(TaskContext::default());
-            let mut stream = exec.execute(i, task_ctx.clone())?;
-            let mut batches = vec![];
-            while let Some(result) = stream.next().await {
-                batches.push(result?);
-            }
-            output_partitions.push(batches);
-        }
-        Ok(output_partitions)
-    }
-
-    /// Create vector batches
-    fn create_vec_batches(schema: &Schema, n: usize) -> Vec<RecordBatch> {
-        let batch = create_batch(schema);
-        let mut vec = Vec::with_capacity(n);
-        for _ in 0..n {
-            vec.push(batch.clone());
-        }
-        vec
-    }
-
-    /// Create batch
-    fn create_batch(schema: &Schema) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::new(schema.clone()),
-            vec![Arc::new(UInt32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]))],
-        )
-        .unwrap()
+        self.coalescer.schema()
     }
 }

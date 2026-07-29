@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::spill::get_record_batch_memory_size;
 use arrow::compute::interleave;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion_common::Result;
 use datafusion_execution::memory_pool::MemoryReservation;
+use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone, Default)]
 struct BatchCursor {
@@ -68,7 +70,8 @@ impl BatchBuilder {
 
     /// Append a new batch in `stream_idx`
     pub fn push_batch(&mut self, stream_idx: usize, batch: RecordBatch) -> Result<()> {
-        self.reservation.try_grow(batch.get_array_memory_size())?;
+        self.reservation
+            .try_grow(get_record_batch_memory_size(&batch))?;
         let batch_idx = self.batches.len();
         self.batches.push((stream_idx, batch));
         self.cursors[stream_idx] = BatchCursor {
@@ -140,11 +143,14 @@ impl BatchBuilder {
                 stream_cursor.batch_idx = retained;
                 retained += 1;
             } else {
-                self.reservation.shrink(batch.get_array_memory_size());
+                self.reservation.shrink(get_record_batch_memory_size(batch));
             }
             retain
         });
 
-        Ok(Some(RecordBatch::try_new(self.schema.clone(), columns)?))
+        Ok(Some(RecordBatch::try_new(
+            Arc::clone(&self.schema),
+            columns,
+        )?))
     }
 }

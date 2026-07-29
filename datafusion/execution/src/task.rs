@@ -15,26 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
-
-use datafusion_common::{plan_datafusion_err, DataFusionError, Result};
-use datafusion_expr::{AggregateUDF, ScalarUDF, WindowUDF};
-
 use crate::{
-    config::SessionConfig,
-    memory_pool::MemoryPool,
-    registry::FunctionRegistry,
-    runtime_env::{RuntimeConfig, RuntimeEnv},
+    config::SessionConfig, memory_pool::MemoryPool, registry::FunctionRegistry,
+    runtime_env::RuntimeEnv,
 };
+use datafusion_common::{Result, internal_datafusion_err, plan_datafusion_err};
+use datafusion_expr::planner::ExprPlanner;
+use datafusion_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use std::collections::HashSet;
+use std::{collections::HashMap, sync::Arc};
 
 /// Task Execution Context
 ///
-/// A [`TaskContext`] contains the state required during a single
-/// query's execution. Please see [`SessionContext`] for a user level
-/// multi-query API.
+/// A [`TaskContext`] contains the state required during a single query's
+/// execution. Please see the documentation on [`SessionContext`] for more
+/// information.
 ///
 /// [`SessionContext`]: https://docs.rs/datafusion/latest/datafusion/execution/context/struct.SessionContext.html
 #[derive(Debug)]
@@ -57,8 +52,7 @@ pub struct TaskContext {
 
 impl Default for TaskContext {
     fn default() -> Self {
-        let runtime = RuntimeEnv::new(RuntimeConfig::new())
-            .expect("default runtime created successfully");
+        let runtime = Arc::new(RuntimeEnv::default());
 
         // Create a default task context, mostly useful for testing
         Self {
@@ -68,7 +62,7 @@ impl Default for TaskContext {
             scalar_functions: HashMap::new(),
             aggregate_functions: HashMap::new(),
             window_functions: HashMap::new(),
-            runtime: Arc::new(runtime),
+            runtime,
         }
     }
 }
@@ -121,7 +115,19 @@ impl TaskContext {
 
     /// Return the [RuntimeEnv] associated with this [TaskContext]
     pub fn runtime_env(&self) -> Arc<RuntimeEnv> {
-        self.runtime.clone()
+        Arc::clone(&self.runtime)
+    }
+
+    pub fn scalar_functions(&self) -> &HashMap<String, Arc<ScalarUDF>> {
+        &self.scalar_functions
+    }
+
+    pub fn aggregate_functions(&self) -> &HashMap<String, Arc<AggregateUDF>> {
+        &self.aggregate_functions
+    }
+
+    pub fn window_functions(&self) -> &HashMap<String, Arc<WindowUDF>> {
+        &self.window_functions
     }
 
     /// Update the [`SessionConfig`]
@@ -162,9 +168,9 @@ impl FunctionRegistry for TaskContext {
         let result = self.window_functions.get(name);
 
         result.cloned().ok_or_else(|| {
-            DataFusionError::Internal(format!(
+            internal_datafusion_err!(
                 "There is no UDWF named \"{name}\" in the TaskContext"
-            ))
+            )
         })
     }
     fn register_udaf(
@@ -172,22 +178,42 @@ impl FunctionRegistry for TaskContext {
         udaf: Arc<AggregateUDF>,
     ) -> Result<Option<Arc<AggregateUDF>>> {
         udaf.aliases().iter().for_each(|alias| {
-            self.aggregate_functions.insert(alias.clone(), udaf.clone());
+            self.aggregate_functions
+                .insert(alias.clone(), Arc::clone(&udaf));
         });
         Ok(self.aggregate_functions.insert(udaf.name().into(), udaf))
     }
     fn register_udwf(&mut self, udwf: Arc<WindowUDF>) -> Result<Option<Arc<WindowUDF>>> {
         udwf.aliases().iter().for_each(|alias| {
-            self.window_functions.insert(alias.clone(), udwf.clone());
+            self.window_functions
+                .insert(alias.clone(), Arc::clone(&udwf));
         });
         Ok(self.window_functions.insert(udwf.name().into(), udwf))
     }
     fn register_udf(&mut self, udf: Arc<ScalarUDF>) -> Result<Option<Arc<ScalarUDF>>> {
         udf.aliases().iter().for_each(|alias| {
-            self.scalar_functions.insert(alias.clone(), udf.clone());
+            self.scalar_functions
+                .insert(alias.clone(), Arc::clone(&udf));
         });
         Ok(self.scalar_functions.insert(udf.name().into(), udf))
     }
+
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+        vec![]
+    }
+
+    fn udafs(&self) -> HashSet<String> {
+        self.aggregate_functions.keys().cloned().collect()
+    }
+
+    fn udwfs(&self) -> HashSet<String> {
+        self.window_functions.keys().cloned().collect()
+    }
+}
+
+/// Produce the [`TaskContext`].
+pub trait TaskContextProvider {
+    fn task_ctx(&self) -> Arc<TaskContext>;
 }
 
 #[cfg(test)]
@@ -201,6 +227,7 @@ mod tests {
     extensions_options! {
         struct TestExtension {
             value: usize, default = 42
+            option_value: Option<usize>, default = None
         }
     }
 
@@ -216,6 +243,7 @@ mod tests {
 
         let mut config = ConfigOptions::new().with_extensions(extensions);
         config.set("test.value", "24")?;
+        config.set("test.option_value", "42")?;
         let session_config = SessionConfig::from(config);
 
         let task_context = TaskContext::new(
@@ -236,6 +264,39 @@ mod tests {
         assert!(test.is_some());
 
         assert_eq!(test.unwrap().value, 24);
+        assert_eq!(test.unwrap().option_value, Some(42));
+
+        Ok(())
+    }
+
+    #[test]
+    fn task_context_extensions_default() -> Result<()> {
+        let runtime = Arc::new(RuntimeEnv::default());
+        let mut extensions = Extensions::new();
+        extensions.insert(TestExtension::default());
+
+        let config = ConfigOptions::new().with_extensions(extensions);
+        let session_config = SessionConfig::from(config);
+
+        let task_context = TaskContext::new(
+            Some("task_id".to_string()),
+            "session_id".to_string(),
+            session_config,
+            HashMap::default(),
+            HashMap::default(),
+            HashMap::default(),
+            runtime,
+        );
+
+        let test = task_context
+            .session_config()
+            .options()
+            .extensions
+            .get::<TestExtension>();
+        assert!(test.is_some());
+
+        assert_eq!(test.unwrap().value, 42);
+        assert_eq!(test.unwrap().option_value, None);
 
         Ok(())
     }

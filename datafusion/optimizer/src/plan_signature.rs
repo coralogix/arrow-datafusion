@@ -89,7 +89,7 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion_common::{DFSchema, Result};
-    use datafusion_expr::{lit, LogicalPlan};
+    use datafusion_expr::{LogicalPlan, lit};
 
     use crate::plan_signature::get_node_number;
 
@@ -100,7 +100,7 @@ mod tests {
         let one_node_plan =
             Arc::new(LogicalPlan::EmptyRelation(datafusion_expr::EmptyRelation {
                 produce_one_row: false,
-                schema: schema.clone(),
+                schema: Arc::clone(&schema),
             }));
 
         assert_eq!(1, get_node_number(&one_node_plan).get());
@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(2, get_node_number(&two_node_plan).get());
 
         let five_node_plan = Arc::new(LogicalPlan::Union(datafusion_expr::Union {
-            inputs: vec![two_node_plan.clone(), two_node_plan],
+            inputs: vec![Arc::clone(&two_node_plan), two_node_plan],
             schema,
         }));
 

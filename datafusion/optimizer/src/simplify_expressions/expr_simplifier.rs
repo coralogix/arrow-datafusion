@@ -17,39 +17,51 @@
 
 //! Expression simplification API
 
-use std::borrow::Cow;
-use std::collections::HashSet;
-use std::ops::Not;
-
 use arrow::{
-    array::{new_null_array, AsArray},
+    array::{AsArray, new_null_array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::ops::Not;
+use std::sync::Arc;
 
 use datafusion_common::{
+    DFSchema, DataFusionError, Result, ScalarValue, exec_datafusion_err, internal_err,
+};
+use datafusion_common::{
+    HashMap,
     cast::{as_large_list_array, as_list_array},
+    metadata::FieldMetadata,
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRewriter},
 };
-use datafusion_common::{internal_err, DFSchema, DataFusionError, Result, ScalarValue};
-use datafusion_expr::expr::{
-    AggregateFunctionDefinition, InList, InSubquery, WindowFunction,
-};
-use datafusion_expr::simplify::ExprSimplifyResult;
 use datafusion_expr::{
-    and, lit, or, BinaryExpr, Case, ColumnarValue, Expr, Like, Operator, Volatility,
-    WindowFunctionDefinition,
+    BinaryExpr, Case, ColumnarValue, Expr, Like, Operator, Volatility, and,
+    binary::BinaryTypeCoercer, lit, or,
 };
+use datafusion_expr::{Cast, TryCast, simplify::ExprSimplifyResult};
 use datafusion_expr::{expr::ScalarFunction, interval_arithmetic::NullableInterval};
+use datafusion_expr::{
+    expr::{InList, InSubquery},
+    utils::{iter_conjunction, iter_conjunction_owned},
+};
 use datafusion_physical_expr::{create_physical_expr, execution_props::ExecutionProps};
-
-use crate::analyzer::type_coercion::TypeCoercionRewriter;
-use crate::simplify_expressions::guarantees::GuaranteeRewriter;
-use crate::simplify_expressions::regex::simplify_regex_expr;
-use crate::simplify_expressions::SimplifyInfo;
 
 use super::inlist_simplifier::ShortenInListSimplifier;
 use super::utils::*;
+use crate::analyzer::type_coercion::TypeCoercionRewriter;
+use crate::simplify_expressions::SimplifyInfo;
+use crate::simplify_expressions::regex::simplify_regex_expr;
+use crate::simplify_expressions::unwrap_cast::{
+    is_cast_expr_and_support_unwrap_cast_in_comparison_for_binary,
+    is_cast_expr_and_support_unwrap_cast_in_comparison_for_inlist,
+    unwrap_cast_in_comparison_for_binary,
+};
+use datafusion_expr::expr_rewriter::rewrite_with_guarantees_map;
+use datafusion_expr_common::casts::try_cast_literal_to_type;
+use indexmap::IndexSet;
+use regex::Regex;
 
 /// This structure handles API for expression simplification
 ///
@@ -58,23 +70,21 @@ use super::utils::*;
 ///
 /// For example:
 /// ```
-/// use arrow::datatypes::{Schema, Field, DataType};
-/// use datafusion_expr::{col, lit};
+/// use arrow::datatypes::{DataType, Field, Schema};
 /// use datafusion_common::{DataFusionError, ToDFSchema};
 /// use datafusion_expr::execution_props::ExecutionProps;
 /// use datafusion_expr::simplify::SimplifyContext;
+/// use datafusion_expr::{col, lit};
 /// use datafusion_optimizer::simplify_expressions::ExprSimplifier;
 ///
 /// // Create the schema
-/// let schema = Schema::new(vec![
-///     Field::new("i", DataType::Int64, false),
-///   ])
-///   .to_dfschema_ref().unwrap();
+/// let schema = Schema::new(vec![Field::new("i", DataType::Int64, false)])
+///     .to_dfschema_ref()
+///     .unwrap();
 ///
 /// // Create the simplifier
 /// let props = ExecutionProps::new();
-/// let context = SimplifyContext::new(&props)
-///    .with_schema(schema);
+/// let context = SimplifyContext::new(&props).with_schema(schema);
 /// let simplifier = ExprSimplifier::new(context);
 ///
 /// // Use the simplifier
@@ -133,35 +143,35 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     ///
     /// ```
     /// use arrow::datatypes::DataType;
-    /// use datafusion_expr::{col, lit, Expr};
+    /// use datafusion_common::DFSchema;
     /// use datafusion_common::Result;
     /// use datafusion_expr::execution_props::ExecutionProps;
     /// use datafusion_expr::simplify::SimplifyContext;
     /// use datafusion_expr::simplify::SimplifyInfo;
+    /// use datafusion_expr::{col, lit, Expr};
     /// use datafusion_optimizer::simplify_expressions::ExprSimplifier;
-    /// use datafusion_common::DFSchema;
     /// use std::sync::Arc;
     ///
     /// /// Simple implementation that provides `Simplifier` the information it needs
     /// /// See SimplifyContext for a structure that does this.
     /// #[derive(Default)]
     /// struct Info {
-    ///   execution_props: ExecutionProps,
+    ///     execution_props: ExecutionProps,
     /// };
     ///
     /// impl SimplifyInfo for Info {
-    ///   fn is_boolean_type(&self, expr: &Expr) -> Result<bool> {
-    ///     Ok(false)
-    ///   }
-    ///   fn nullable(&self, expr: &Expr) -> Result<bool> {
-    ///     Ok(true)
-    ///   }
-    ///   fn execution_props(&self) -> &ExecutionProps {
-    ///     &self.execution_props
-    ///   }
-    ///   fn get_data_type(&self, expr: &Expr) -> Result<DataType> {
-    ///     Ok(DataType::Int32)
-    ///   }
+    ///     fn is_boolean_type(&self, expr: &Expr) -> Result<bool> {
+    ///         Ok(false)
+    ///     }
+    ///     fn nullable(&self, expr: &Expr) -> Result<bool> {
+    ///         Ok(true)
+    ///     }
+    ///     fn execution_props(&self) -> &ExecutionProps {
+    ///         &self.execution_props
+    ///     }
+    ///     fn get_data_type(&self, expr: &Expr) -> Result<DataType> {
+    ///         Ok(DataType::Int32)
+    ///     }
     /// }
     ///
     /// // Create the simplifier
@@ -178,7 +188,7 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     /// assert_eq!(expr, b_lt_2);
     /// ```
     pub fn simplify(&self, expr: Expr) -> Result<Expr> {
-        Ok(self.simplify_with_cycle_count(expr)?.0)
+        Ok(self.simplify_with_cycle_count_transformed(expr)?.0.data)
     }
 
     /// Like [Self::simplify], simplifies this [`Expr`] as much as possible, evaluating
@@ -187,12 +197,38 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     /// optimizations.
     ///
     /// See [Self::simplify] for details and usage examples.
-    ///
+    #[deprecated(
+        since = "48.0.0",
+        note = "Use `simplify_with_cycle_count_transformed` instead"
+    )]
+    #[expect(unused_mut)]
     pub fn simplify_with_cycle_count(&self, mut expr: Expr) -> Result<(Expr, u32)> {
+        let (transformed, cycle_count) =
+            self.simplify_with_cycle_count_transformed(expr)?;
+        Ok((transformed.data, cycle_count))
+    }
+
+    /// Like [Self::simplify], simplifies this [`Expr`] as much as possible, evaluating
+    /// constants and applying algebraic simplifications. Additionally returns a `u32`
+    /// representing the number of simplification cycles performed, which can be useful for testing
+    /// optimizations.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - The simplified expression wrapped in a `Transformed<Expr>` indicating if changes were made
+    /// - The number of simplification cycles that were performed
+    ///
+    /// See [Self::simplify] for details and usage examples.
+    pub fn simplify_with_cycle_count_transformed(
+        &self,
+        mut expr: Expr,
+    ) -> Result<(Transformed<Expr>, u32)> {
         let mut simplifier = Simplifier::new(&self.info);
         let mut const_evaluator = ConstEvaluator::try_new(self.info.execution_props())?;
         let mut shorten_in_list_simplifier = ShortenInListSimplifier::new();
-        let mut guarantee_rewriter = GuaranteeRewriter::new(&self.guarantees);
+        let guarantees_map: HashMap<&Expr, &NullableInterval> =
+            self.guarantees.iter().map(|(k, v)| (k, v)).collect();
 
         if self.canonicalize {
             expr = expr.rewrite(&mut Canonicalizer::new()).data()?
@@ -202,22 +238,30 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
         // simplifications can enable new constant evaluation
         // see `Self::with_max_cycles`
         let mut num_cycles = 0;
+        let mut has_transformed = false;
         loop {
             let Transformed {
                 data, transformed, ..
             } = expr
                 .rewrite(&mut const_evaluator)?
                 .transform_data(|expr| expr.rewrite(&mut simplifier))?
-                .transform_data(|expr| expr.rewrite(&mut guarantee_rewriter))?;
+                .transform_data(|expr| {
+                    rewrite_with_guarantees_map(expr, &guarantees_map)
+                })?;
             expr = data;
             num_cycles += 1;
+            // Track if any transformation occurred
+            has_transformed = has_transformed || transformed;
             if !transformed || num_cycles >= self.max_simplifier_cycles {
                 break;
             }
         }
         // shorten inlist should be started after other inlist rules are applied
         expr = expr.rewrite(&mut shorten_in_list_simplifier).data()?;
-        Ok((expr, num_cycles))
+        Ok((
+            Transformed::new_transformed(expr, has_transformed),
+            num_cycles,
+        ))
     }
 
     /// Apply type coercion to an [`Expr`] so that it can be
@@ -242,24 +286,24 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     ///
     /// ```rust
     /// use arrow::datatypes::{DataType, Field, Schema};
-    /// use datafusion_expr::{col, lit, Expr};
-    /// use datafusion_expr::interval_arithmetic::{Interval, NullableInterval};
     /// use datafusion_common::{Result, ScalarValue, ToDFSchema};
     /// use datafusion_expr::execution_props::ExecutionProps;
+    /// use datafusion_expr::interval_arithmetic::{Interval, NullableInterval};
     /// use datafusion_expr::simplify::SimplifyContext;
+    /// use datafusion_expr::{col, lit, Expr};
     /// use datafusion_optimizer::simplify_expressions::ExprSimplifier;
     ///
     /// let schema = Schema::new(vec![
-    ///   Field::new("x", DataType::Int64, false),
-    ///   Field::new("y", DataType::UInt32, false),
-    ///   Field::new("z", DataType::Int64, false),
-    ///   ])
-    ///   .to_dfschema_ref().unwrap();
+    ///     Field::new("x", DataType::Int64, false),
+    ///     Field::new("y", DataType::UInt32, false),
+    ///     Field::new("z", DataType::Int64, false),
+    /// ])
+    /// .to_dfschema_ref()
+    /// .unwrap();
     ///
     /// // Create the simplifier
     /// let props = ExecutionProps::new();
-    /// let context = SimplifyContext::new(&props)
-    ///    .with_schema(schema);
+    /// let context = SimplifyContext::new(&props).with_schema(schema);
     ///
     /// // Expression: (x >= 3) AND (y + 2 < 10) AND (z > 5)
     /// let expr_x = col("x").gt_eq(lit(3_i64));
@@ -268,15 +312,18 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     /// let expr = expr_x.and(expr_y).and(expr_z.clone());
     ///
     /// let guarantees = vec![
-    ///    // x ∈ [3, 5]
-    ///    (
-    ///        col("x"),
-    ///        NullableInterval::NotNull {
-    ///            values: Interval::make(Some(3_i64), Some(5_i64)).unwrap()
-    ///        }
-    ///    ),
-    ///    // y = 3
-    ///    (col("y"), NullableInterval::from(ScalarValue::UInt32(Some(3)))),
+    ///     // x ∈ [3, 5]
+    ///     (
+    ///         col("x"),
+    ///         NullableInterval::NotNull {
+    ///             values: Interval::make(Some(3_i64), Some(5_i64)).unwrap(),
+    ///         },
+    ///     ),
+    ///     // y = 3
+    ///     (
+    ///         col("y"),
+    ///         NullableInterval::from(ScalarValue::UInt32(Some(3))),
+    ///     ),
     /// ];
     /// let simplifier = ExprSimplifier::new(context).with_guarantees(guarantees);
     /// let output = simplifier.simplify(expr).unwrap();
@@ -289,7 +336,7 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
         self
     }
 
-    /// Should [`Canonicalizer`] be applied before simplification?
+    /// Should `Canonicalizer` be applied before simplification?
     ///
     /// If true (the default), the expression will be rewritten to canonical
     /// form before simplification. This is useful to ensure that the simplifier
@@ -301,24 +348,24 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     ///
     /// ```rust
     /// use arrow::datatypes::{DataType, Field, Schema};
-    /// use datafusion_expr::{col, lit, Expr};
-    /// use datafusion_expr::interval_arithmetic::{Interval, NullableInterval};
     /// use datafusion_common::{Result, ScalarValue, ToDFSchema};
     /// use datafusion_expr::execution_props::ExecutionProps;
+    /// use datafusion_expr::interval_arithmetic::{Interval, NullableInterval};
     /// use datafusion_expr::simplify::SimplifyContext;
+    /// use datafusion_expr::{col, lit, Expr};
     /// use datafusion_optimizer::simplify_expressions::ExprSimplifier;
     ///
     /// let schema = Schema::new(vec![
-    ///   Field::new("a", DataType::Int64, false),
-    ///   Field::new("b", DataType::Int64, false),
-    ///   Field::new("c", DataType::Int64, false),
-    ///   ])
-    ///   .to_dfschema_ref().unwrap();
+    ///     Field::new("a", DataType::Int64, false),
+    ///     Field::new("b", DataType::Int64, false),
+    ///     Field::new("c", DataType::Int64, false),
+    /// ])
+    /// .to_dfschema_ref()
+    /// .unwrap();
     ///
     /// // Create the simplifier
     /// let props = ExecutionProps::new();
-    /// let context = SimplifyContext::new(&props)
-    ///    .with_schema(schema);
+    /// let context = SimplifyContext::new(&props).with_schema(schema);
     /// let simplifier = ExprSimplifier::new(context);
     ///
     /// // Expression: a = c AND 1 = b
@@ -332,9 +379,9 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     ///
     /// // If canonicalization is disabled, the expression is not changed
     /// let non_canonicalized = simplifier
-    ///   .with_canonicalize(false)
-    ///   .simplify(expr.clone())
-    ///   .unwrap();
+    ///     .with_canonicalize(false)
+    ///     .simplify(expr.clone())
+    ///     .unwrap();
     ///
     /// assert_eq!(non_canonicalized, expr);
     /// ```
@@ -382,18 +429,17 @@ impl<S: SimplifyInfo> ExprSimplifier<S> {
     /// let expr = col("a").is_not_null();
     ///
     /// // When using default maximum cycles, 2 cycles will be performed.
-    /// let (simplified_expr, count) = simplifier.simplify_with_cycle_count(expr.clone()).unwrap();
-    /// assert_eq!(simplified_expr, lit(true));
+    /// let (simplified_expr, count) = simplifier.simplify_with_cycle_count_transformed(expr.clone()).unwrap();
+    /// assert_eq!(simplified_expr.data, lit(true));
     /// // 2 cycles were executed, but only 1 was needed
     /// assert_eq!(count, 2);
     ///
     /// // Only 1 simplification pass is necessary here, so we can set the maximum cycles to 1.
-    /// let (simplified_expr, count) = simplifier.with_max_cycles(1).simplify_with_cycle_count(expr.clone()).unwrap();
+    /// let (simplified_expr, count) = simplifier.with_max_cycles(1).simplify_with_cycle_count_transformed(expr.clone()).unwrap();
     /// // Expression has been rewritten to: (c = a AND b = 1)
-    /// assert_eq!(simplified_expr, lit(true));
+    /// assert_eq!(simplified_expr.data, lit(true));
     /// // Only 1 cycle was executed
     /// assert_eq!(count, 1);
-    ///
     /// ```
     pub fn with_max_cycles(mut self, max_simplifier_cycles: u32) -> Self {
         self.max_simplifier_cycles = max_simplifier_cycles;
@@ -434,7 +480,7 @@ impl TreeNodeRewriter for Canonicalizer {
                 })))
             }
             // <literal> <op> <col>
-            (Expr::Literal(_a), Expr::Column(_b), Some(swapped_op)) => {
+            (Expr::Literal(_a, _), Expr::Column(_b), Some(swapped_op)) => {
                 Ok(Transformed::yes(Expr::BinaryExpr(BinaryExpr {
                     left: right,
                     op: swapped_op,
@@ -450,7 +496,6 @@ impl TreeNodeRewriter for Canonicalizer {
     }
 }
 
-#[allow(rustdoc::private_intra_doc_links)]
 /// Partially evaluate `Expr`s so constant subtrees are evaluated at plan time.
 ///
 /// Note it does not handle algebraic rewrites such as `(a or false)`
@@ -475,18 +520,17 @@ struct ConstEvaluator<'a> {
     input_batch: RecordBatch,
 }
 
-#[allow(dead_code)]
 /// The simplify result of ConstEvaluator
 enum ConstSimplifyResult {
-    // Expr was simplifed and contains the new expression
-    Simplified(ScalarValue),
+    // Expr was simplified and contains the new expression
+    Simplified(ScalarValue, Option<FieldMetadata>),
     // Expr was not simplified and original value is returned
-    NotSimplified(ScalarValue),
+    NotSimplified(ScalarValue, Option<FieldMetadata>),
     // Evaluation encountered an error, contains the original expression
     SimplifyRuntimeError(DataFusionError, Expr),
 }
 
-impl<'a> TreeNodeRewriter for ConstEvaluator<'a> {
+impl TreeNodeRewriter for ConstEvaluator<'_> {
     type Node = Expr;
 
     fn f_down(&mut self, expr: Expr) -> Result<Transformed<Expr>> {
@@ -512,30 +556,37 @@ impl<'a> TreeNodeRewriter for ConstEvaluator<'a> {
 
         // NB: do not short circuit recursion even if we find a non
         // evaluatable node (so we can fold other children, args to
-        // functions, etc)
+        // functions, etc.)
         Ok(Transformed::no(expr))
     }
 
     fn f_up(&mut self, expr: Expr) -> Result<Transformed<Expr>> {
         match self.can_evaluate.pop() {
-            // Certain expressions such as `CASE` and `COALESCE` are short circuiting
-            // and may not evalute all their sub expressions. Thus if
-            // if any error is countered during simplification, return the original
+            // Certain expressions such as `CASE` and `COALESCE` are short-circuiting
+            // and may not evaluate all their sub expressions. Thus, if
+            // any error is countered during simplification, return the original
             // so that normal evaluation can occur
-            Some(true) => {
-                let result = self.evaluate_to_scalar(expr);
-                match result {
-                    ConstSimplifyResult::Simplified(s) => {
-                        Ok(Transformed::yes(Expr::Literal(s)))
-                    }
-                    ConstSimplifyResult::NotSimplified(s) => {
-                        Ok(Transformed::no(Expr::Literal(s)))
-                    }
-                    ConstSimplifyResult::SimplifyRuntimeError(_, expr) => {
-                        Ok(Transformed::yes(expr))
-                    }
+            Some(true) => match self.evaluate_to_scalar(expr) {
+                ConstSimplifyResult::Simplified(s, m) => {
+                    Ok(Transformed::yes(Expr::Literal(s, m)))
                 }
-            }
+                ConstSimplifyResult::NotSimplified(s, m) => {
+                    Ok(Transformed::no(Expr::Literal(s, m)))
+                }
+                ConstSimplifyResult::SimplifyRuntimeError(err, expr) => {
+                    // For CAST expressions with literal inputs, propagate the error at plan time rather than deferring to execution time.
+                    // This provides clearer error messages and fails fast.
+                    if let Expr::Cast(Cast { ref expr, .. })
+                    | Expr::TryCast(TryCast { ref expr, .. }) = expr
+                        && matches!(expr.as_ref(), Expr::Literal(_, _))
+                    {
+                        return Err(err);
+                    }
+                    // For other expressions (like CASE, COALESCE), preserve the original
+                    // to allow short-circuit evaluation at execution time
+                    Ok(Transformed::yes(expr))
+                }
+            },
             Some(false) => Ok(Transformed::no(expr)),
             _ => internal_err!("Failed to pop can_evaluate"),
         }
@@ -550,11 +601,15 @@ impl<'a> ConstEvaluator<'a> {
         // The dummy column name is unused and doesn't matter as only
         // expressions without column references can be evaluated
         static DUMMY_COL_NAME: &str = ".";
-        let schema = Schema::new(vec![Field::new(DUMMY_COL_NAME, DataType::Null, true)]);
-        let input_schema = DFSchema::try_from(schema.clone())?;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            DUMMY_COL_NAME,
+            DataType::Null,
+            true,
+        )]));
+        let input_schema = DFSchema::try_from(Arc::clone(&schema))?;
         // Need a single "input" row to produce a single output row
         let col = new_null_array(&DataType::Null, 1);
-        let input_batch = RecordBatch::try_new(std::sync::Arc::new(schema), vec![col])?;
+        let input_batch = RecordBatch::try_new(schema, vec![col])?;
 
         Ok(Self {
             can_evaluate: vec![],
@@ -583,9 +638,9 @@ impl<'a> ConstEvaluator<'a> {
         // added they can be checked for their ability to be evaluated
         // at plan time
         match expr {
-            // Has no runtime cost, but needed during planning
-            Expr::Alias(..)
-            | Expr::AggregateFunction { .. }
+            // TODO: remove the next line after `Expr::Wildcard` is removed
+            #[expect(deprecated)]
+            Expr::AggregateFunction { .. }
             | Expr::ScalarVariable(_, _)
             | Expr::Column(_)
             | Expr::OuterReferenceColumn(_, _)
@@ -593,14 +648,14 @@ impl<'a> ConstEvaluator<'a> {
             | Expr::InSubquery(_)
             | Expr::ScalarSubquery(_)
             | Expr::WindowFunction { .. }
-            | Expr::Sort { .. }
             | Expr::GroupingSet(_)
             | Expr::Wildcard { .. }
             | Expr::Placeholder(_) => false,
             Expr::ScalarFunction(ScalarFunction { func, .. }) => {
                 Self::volatility_ok(func.signature().volatility)
             }
-            Expr::Literal(_)
+            Expr::Literal(_, _)
+            | Expr::Alias(..)
             | Expr::Unnest(_)
             | Expr::BinaryExpr { .. }
             | Expr::Not(_)
@@ -625,8 +680,8 @@ impl<'a> ConstEvaluator<'a> {
 
     /// Internal helper to evaluates an Expr
     pub(crate) fn evaluate_to_scalar(&mut self, expr: Expr) -> ConstSimplifyResult {
-        if let Expr::Literal(s) = expr {
-            return ConstSimplifyResult::NotSimplified(s);
+        if let Expr::Literal(s, m) = expr {
+            return ConstSimplifyResult::NotSimplified(s, m);
         }
 
         let phys_expr =
@@ -634,6 +689,16 @@ impl<'a> ConstEvaluator<'a> {
                 Ok(e) => e,
                 Err(err) => return ConstSimplifyResult::SimplifyRuntimeError(err, expr),
             };
+        let metadata = phys_expr
+            .return_field(self.input_batch.schema_ref())
+            .ok()
+            .and_then(|f| {
+                let m = f.metadata();
+                match m.is_empty() {
+                    true => None,
+                    false => Some(FieldMetadata::from(m)),
+                }
+            });
         let col_val = match phys_expr.evaluate(&self.input_batch) {
             Ok(v) => v,
             Err(err) => return ConstSimplifyResult::SimplifyRuntimeError(err, expr),
@@ -642,26 +707,31 @@ impl<'a> ConstEvaluator<'a> {
             ColumnarValue::Array(a) => {
                 if a.len() != 1 {
                     ConstSimplifyResult::SimplifyRuntimeError(
-                        DataFusionError::Execution(format!("Could not evaluate the expression, found a result of length {}", a.len())),
+                        exec_datafusion_err!(
+                            "Could not evaluate the expression, found a result of length {}",
+                            a.len()
+                        ),
                         expr,
                     )
                 } else if as_list_array(&a).is_ok() {
-                    ConstSimplifyResult::Simplified(ScalarValue::List(
-                        a.as_list::<i32>().to_owned().into(),
-                    ))
+                    ConstSimplifyResult::Simplified(
+                        ScalarValue::List(a.as_list::<i32>().to_owned().into()),
+                        metadata,
+                    )
                 } else if as_large_list_array(&a).is_ok() {
-                    ConstSimplifyResult::Simplified(ScalarValue::LargeList(
-                        a.as_list::<i64>().to_owned().into(),
-                    ))
+                    ConstSimplifyResult::Simplified(
+                        ScalarValue::LargeList(a.as_list::<i64>().to_owned().into()),
+                        metadata,
+                    )
                 } else {
                     // Non-ListArray
                     match ScalarValue::try_from_array(&a, 0) {
-                        Ok(s) => ConstSimplifyResult::Simplified(s),
+                        Ok(s) => ConstSimplifyResult::Simplified(s, metadata),
                         Err(err) => ConstSimplifyResult::SimplifyRuntimeError(err, expr),
                     }
                 }
             }
-            ColumnarValue::Scalar(s) => ConstSimplifyResult::Simplified(s),
+            ColumnarValue::Scalar(s) => ConstSimplifyResult::Simplified(s, metadata),
         }
     }
 }
@@ -685,7 +755,7 @@ impl<'a, S> Simplifier<'a, S> {
     }
 }
 
-impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
+impl<S: SimplifyInfo> TreeNodeRewriter for Simplifier<'_, S> {
     type Node = Expr;
 
     /// rewrite the expression simplifying any constant expressions
@@ -698,6 +768,29 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
 
         let info = self.info;
         Ok(match expr {
+            // `value op NULL` -> `NULL`
+            // `NULL op value` -> `NULL`
+            // except for few operators that can return non-null value even when one of the operands is NULL
+            ref expr @ Expr::BinaryExpr(BinaryExpr {
+                ref left,
+                ref op,
+                ref right,
+            }) if op.returns_null_on_null()
+                && (is_null(left.as_ref()) || is_null(right.as_ref())) =>
+            {
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::try_new_null(&info.get_data_type(expr)?)?,
+                    None,
+                ))
+            }
+
+            // `NULL {AND, OR} NULL` -> `NULL`
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: And | Or,
+                right,
+            }) if is_null(&left) && is_null(&right) => Transformed::yes(lit_bool_null()),
+
             //
             // Rules for Eq
             //
@@ -710,7 +803,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: Eq,
                 right,
             }) if is_bool_lit(&left) && info.is_boolean_type(&right)? => {
-                Transformed::yes(match as_bool_lit(*left)? {
+                Transformed::yes(match as_bool_lit(&left)? {
                     Some(true) => *right,
                     Some(false) => Expr::Not(right),
                     None => lit_bool_null(),
@@ -724,12 +817,31 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: Eq,
                 right,
             }) if is_bool_lit(&right) && info.is_boolean_type(&left)? => {
-                Transformed::yes(match as_bool_lit(*right)? {
+                Transformed::yes(match as_bool_lit(&right)? {
                     Some(true) => *left,
                     Some(false) => Expr::Not(left),
                     None => lit_bool_null(),
                 })
             }
+            // According to SQL's null semantics, NULL = NULL evaluates to NULL
+            // Both sides are the same expression (A = A) and A is non-volatile expression
+            // A = A --> A IS NOT NULL OR NULL
+            // A = A --> true (if A not nullable)
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: Eq,
+                right,
+            }) if (left == right) & !left.is_volatile() => {
+                Transformed::yes(match !info.nullable(&left)? {
+                    true => lit(true),
+                    false => Expr::BinaryExpr(BinaryExpr {
+                        left: Box::new(Expr::IsNotNull(left)),
+                        op: Or,
+                        right: Box::new(lit_bool_null()),
+                    }),
+                })
+            }
+
             // Rules for NotEq
             //
 
@@ -741,7 +853,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: NotEq,
                 right,
             }) if is_bool_lit(&left) && info.is_boolean_type(&right)? => {
-                Transformed::yes(match as_bool_lit(*left)? {
+                Transformed::yes(match as_bool_lit(&left)? {
                     Some(true) => Expr::Not(right),
                     Some(false) => *right,
                     None => lit_bool_null(),
@@ -755,7 +867,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: NotEq,
                 right,
             }) if is_bool_lit(&right) && info.is_boolean_type(&left)? => {
-                Transformed::yes(match as_bool_lit(*right)? {
+                Transformed::yes(match as_bool_lit(&right)? {
                     Some(true) => Expr::Not(left),
                     Some(false) => *left,
                     None => lit_bool_null(),
@@ -796,7 +908,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: Or,
                 right,
             }) if is_not_of(&right, &left) && !info.nullable(&left)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::Boolean(Some(true))))
+                Transformed::yes(lit(true))
             }
             // !A OR A ---> true (if A not nullable)
             Expr::BinaryExpr(BinaryExpr {
@@ -804,7 +916,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: Or,
                 right,
             }) if is_not_of(&left, &right) && !info.nullable(&right)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::Boolean(Some(true))))
+                Transformed::yes(lit(true))
             }
             // (..A..) OR A --> (..A..)
             Expr::BinaryExpr(BinaryExpr {
@@ -818,21 +930,38 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: Or,
                 right,
             }) if expr_contains(&right, &left, Or) => Transformed::yes(*right),
-            // A OR (A AND B) --> A (if B not null)
+            // A OR (A AND B) --> A
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: Or,
                 right,
-            }) if !info.nullable(&right)? && is_op_with(And, &right, &left) => {
-                Transformed::yes(*left)
-            }
-            // (A AND B) OR A --> A (if B not null)
+            }) if is_op_with(And, &right, &left) => Transformed::yes(*left),
+            // (A AND B) OR A --> A
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: Or,
                 right,
-            }) if !info.nullable(&left)? && is_op_with(And, &left, &right) => {
-                Transformed::yes(*right)
+            }) if is_op_with(And, &left, &right) => Transformed::yes(*right),
+            // Eliminate common factors in conjunctions e.g
+            // (A AND B) OR (A AND C) -> A AND (B OR C)
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: Or,
+                right,
+            }) if has_common_conjunction(&left, &right) => {
+                let lhs: IndexSet<Expr> = iter_conjunction_owned(*left).collect();
+                let (common, rhs): (Vec<_>, Vec<_>) = iter_conjunction_owned(*right)
+                    .partition(|e| lhs.contains(e) && !e.is_volatile());
+
+                let new_rhs = rhs.into_iter().reduce(and);
+                let new_lhs = lhs.into_iter().filter(|e| !common.contains(e)).reduce(and);
+                let common_conjunction = common.into_iter().reduce(and).unwrap();
+
+                let new_expr = match (new_lhs, new_rhs) {
+                    (Some(lhs), Some(rhs)) => and(common_conjunction, or(lhs, rhs)),
+                    (_, _) => common_conjunction,
+                };
+                Transformed::yes(new_expr)
             }
 
             //
@@ -869,7 +998,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: And,
                 right,
             }) if is_not_of(&right, &left) && !info.nullable(&left)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::Boolean(Some(false))))
+                Transformed::yes(lit(false))
             }
             // !A AND A ---> false (if A not nullable)
             Expr::BinaryExpr(BinaryExpr {
@@ -877,7 +1006,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: And,
                 right,
             }) if is_not_of(&left, &right) && !info.nullable(&right)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::Boolean(Some(false))))
+                Transformed::yes(lit(false))
             }
             // (..A..) AND A --> (..A..)
             Expr::BinaryExpr(BinaryExpr {
@@ -891,51 +1020,63 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: And,
                 right,
             }) if expr_contains(&right, &left, And) => Transformed::yes(*right),
-            // A AND (A OR B) --> A (if B not null)
+            // A AND (A OR B) --> A
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: And,
                 right,
-            }) if !info.nullable(&right)? && is_op_with(Or, &right, &left) => {
-                Transformed::yes(*left)
-            }
-            // (A OR B) AND A --> A (if B not null)
+            }) if is_op_with(Or, &right, &left) => Transformed::yes(*left),
+            // (A OR B) AND A --> A
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: And,
                 right,
-            }) if !info.nullable(&left)? && is_op_with(Or, &left, &right) => {
-                Transformed::yes(*right)
+            }) if is_op_with(Or, &left, &right) => Transformed::yes(*right),
+            // A >= constant AND constant <= A --> A = constant
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: And,
+                right,
+            }) if can_reduce_to_equal_statement(&left, &right) => {
+                if let Expr::BinaryExpr(BinaryExpr {
+                    left: left_left,
+                    right: left_right,
+                    ..
+                }) = *left
+                {
+                    Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                        left: left_left,
+                        op: Eq,
+                        right: left_right,
+                    }))
+                } else {
+                    return internal_err!(
+                        "can_reduce_to_equal_statement should only be called with a BinaryExpr"
+                    );
+                }
             }
 
             //
             // Rules for Multiply
             //
 
-            // A * 1 --> A
+            // A * 1 --> A (with type coercion if needed)
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: Multiply,
                 right,
-            }) if is_one(&right) => Transformed::yes(*left),
+            }) if is_one(&right) => {
+                simplify_right_is_one_case(info, left, &Multiply, &right)?
+            }
             // 1 * A --> A
             Expr::BinaryExpr(BinaryExpr {
                 left,
                 op: Multiply,
                 right,
-            }) if is_one(&left) => Transformed::yes(*right),
-            // A * null --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: Multiply,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-            // null * A --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: Multiply,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
+            }) if is_one(&left) => {
+                // 1 * A is equivalent to A * 1
+                simplify_right_is_one_case(info, right, &Multiply, &left)?
+            }
 
             // A * 0 --> 0 (if A is not null and not floating, since NAN * 0 -> NAN)
             Expr::BinaryExpr(BinaryExpr {
@@ -969,36 +1110,14 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 left,
                 op: Divide,
                 right,
-            }) if is_one(&right) => Transformed::yes(*left),
-            // null / A --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: Divide,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
-            // A / null --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: Divide,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
+            }) if is_one(&right) => {
+                simplify_right_is_one_case(info, left, &Divide, &right)?
+            }
 
             //
             // Rules for Modulo
             //
 
-            // A % null --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: Modulo,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-            // null % A --> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: Modulo,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
             // A % 1 --> 0 (if A is not nullable and not floating, since NAN % 1 --> NAN)
             Expr::BinaryExpr(BinaryExpr {
                 left,
@@ -1008,26 +1127,15 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 && !info.get_data_type(&left)?.is_floating()
                 && is_one(&right) =>
             {
-                Transformed::yes(lit(0))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_zero(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             //
             // Rules for BitwiseAnd
             //
-
-            // A & null -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: BitwiseAnd,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-
-            // null & A -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: BitwiseAnd,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
 
             // A & 0 -> 0 (if A not nullable)
             Expr::BinaryExpr(BinaryExpr {
@@ -1049,9 +1157,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseAnd,
                 right,
             }) if is_negative_of(&left, &right) && !info.nullable(&right)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_zero(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_zero(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // A & !A -> 0 (if A not nullable)
@@ -1060,9 +1169,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseAnd,
                 right,
             }) if is_negative_of(&right, &left) && !info.nullable(&left)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_zero(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_zero(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // (..A..) & A --> (..A..)
@@ -1101,20 +1211,6 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             // Rules for BitwiseOr
             //
 
-            // A | null -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: BitwiseOr,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-
-            // null | A -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: BitwiseOr,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
-
             // A | 0 -> A (even if A is null)
             Expr::BinaryExpr(BinaryExpr {
                 left,
@@ -1135,9 +1231,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseOr,
                 right,
             }) if is_negative_of(&left, &right) && !info.nullable(&right)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_negative_one(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_negative_one(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // A | !A -> -1 (if A not nullable)
@@ -1146,9 +1243,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseOr,
                 right,
             }) if is_negative_of(&right, &left) && !info.nullable(&left)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_negative_one(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_negative_one(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // (..A..) | A --> (..A..)
@@ -1187,20 +1285,6 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             // Rules for BitwiseXor
             //
 
-            // A ^ null -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: BitwiseXor,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-
-            // null ^ A -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: BitwiseXor,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
-
             // A ^ 0 -> A (if A not nullable)
             Expr::BinaryExpr(BinaryExpr {
                 left,
@@ -1221,9 +1305,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseXor,
                 right,
             }) if is_negative_of(&left, &right) && !info.nullable(&right)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_negative_one(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_negative_one(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // A ^ !A -> -1 (if A not nullable)
@@ -1232,9 +1317,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 op: BitwiseXor,
                 right,
             }) if is_negative_of(&right, &left) && !info.nullable(&left)? => {
-                Transformed::yes(Expr::Literal(ScalarValue::new_negative_one(
-                    &info.get_data_type(&left)?,
-                )?))
+                Transformed::yes(Expr::Literal(
+                    ScalarValue::new_negative_one(&info.get_data_type(&left)?)?,
+                    None,
+                ))
             }
 
             // (..A..) ^ A --> (the expression without A, if number of A is odd, otherwise one A)
@@ -1245,7 +1331,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             }) if expr_contains(&left, &right, BitwiseXor) => {
                 let expr = delete_xor_in_complex_expr(&left, &right, false);
                 Transformed::yes(if expr == *right {
-                    Expr::Literal(ScalarValue::new_zero(&info.get_data_type(&right)?)?)
+                    Expr::Literal(
+                        ScalarValue::new_zero(&info.get_data_type(&right)?)?,
+                        None,
+                    )
                 } else {
                     expr
                 })
@@ -1259,7 +1348,10 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             }) if expr_contains(&right, &left, BitwiseXor) => {
                 let expr = delete_xor_in_complex_expr(&right, &left, true);
                 Transformed::yes(if expr == *left {
-                    Expr::Literal(ScalarValue::new_zero(&info.get_data_type(&left)?)?)
+                    Expr::Literal(
+                        ScalarValue::new_zero(&info.get_data_type(&left)?)?,
+                        None,
+                    )
                 } else {
                     expr
                 })
@@ -1268,20 +1360,6 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             //
             // Rules for BitwiseShiftRight
             //
-
-            // A >> null -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: BitwiseShiftRight,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-
-            // null >> A -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: BitwiseShiftRight,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
 
             // A >> 0 -> A (even if A is null)
             Expr::BinaryExpr(BinaryExpr {
@@ -1293,20 +1371,6 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             //
             // Rules for BitwiseShiftRight
             //
-
-            // A << null -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left: _,
-                op: BitwiseShiftLeft,
-                right,
-            }) if is_null(&right) => Transformed::yes(*right),
-
-            // null << A -> null
-            Expr::BinaryExpr(BinaryExpr {
-                left,
-                op: BitwiseShiftLeft,
-                right: _,
-            }) if is_null(&left) => Transformed::yes(*left),
 
             // A << 0 -> A (even if A is null)
             Expr::BinaryExpr(BinaryExpr {
@@ -1329,6 +1393,89 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             // Rules for Case
             //
 
+            // Inline a comparison to a literal with the case statement into the `THEN` clauses.
+            // which can enable further simplifications
+            // CASE WHEN X THEN "a" WHEN Y THEN "b" ... END = "a" --> CASE WHEN X THEN "a" = "a" WHEN Y THEN "b" = "a" END
+            Expr::BinaryExpr(BinaryExpr {
+                left,
+                op: op @ (Eq | NotEq),
+                right,
+            }) if is_case_with_literal_outputs(&left) && is_lit(&right) => {
+                let case = into_case(*left)?;
+                Transformed::yes(Expr::Case(Case {
+                    expr: None,
+                    when_then_expr: case
+                        .when_then_expr
+                        .into_iter()
+                        .map(|(when, then)| {
+                            (
+                                when,
+                                Box::new(Expr::BinaryExpr(BinaryExpr {
+                                    left: then,
+                                    op,
+                                    right: right.clone(),
+                                })),
+                            )
+                        })
+                        .collect(),
+                    else_expr: case.else_expr.map(|els| {
+                        Box::new(Expr::BinaryExpr(BinaryExpr {
+                            left: els,
+                            op,
+                            right,
+                        }))
+                    }),
+                }))
+            }
+
+            // CASE WHEN true THEN A ... END --> A
+            // CASE WHEN X THEN A WHEN TRUE THEN B ... END --> CASE WHEN X THEN A ELSE B END
+            // CASE WHEN false THEN A END --> NULL
+            // CASE WHEN false THEN A ELSE B END --> B
+            // CASE WHEN X THEN A WHEN false THEN B END --> CASE WHEN X THEN A ELSE B END
+            Expr::Case(Case {
+                expr: None,
+                when_then_expr,
+                mut else_expr,
+            }) if when_then_expr
+                .iter()
+                .any(|(when, _)| is_true(when.as_ref()) || is_false(when.as_ref())) =>
+            {
+                let out_type = info.get_data_type(&when_then_expr[0].1)?;
+                let mut new_when_then_expr = Vec::with_capacity(when_then_expr.len());
+
+                for (when, then) in when_then_expr.into_iter() {
+                    if is_true(when.as_ref()) {
+                        // Skip adding the rest of the when-then expressions after WHEN true
+                        // CASE WHEN X THEN A WHEN TRUE THEN B ... END --> CASE WHEN X THEN A ELSE B END
+                        else_expr = Some(then);
+                        break;
+                    } else if !is_false(when.as_ref()) {
+                        new_when_then_expr.push((when, then));
+                    }
+                    // else: skip WHEN false cases
+                }
+
+                // Exclude CASE statement altogether if there are no when-then expressions left
+                if new_when_then_expr.is_empty() {
+                    // CASE WHEN false THEN A ELSE B END --> B
+                    if let Some(else_expr) = else_expr {
+                        return Ok(Transformed::yes(*else_expr));
+                    // CASE WHEN false THEN A END --> NULL
+                    } else {
+                        let null =
+                            Expr::Literal(ScalarValue::try_new_null(&out_type)?, None);
+                        return Ok(Transformed::yes(null));
+                    }
+                }
+
+                Transformed::yes(Expr::Case(Case {
+                    expr: None,
+                    when_then_expr: new_when_then_expr,
+                    else_expr,
+                }))
+            }
+
             // CASE
             //   WHEN X THEN A
             //   WHEN Y THEN B
@@ -1345,32 +1492,82 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
                 when_then_expr,
                 else_expr,
             }) if !when_then_expr.is_empty()
-                && when_then_expr.len() < 3 // The rewrite is O(n!) so limit to small number
+                // The rewrite is O(n²) in general so limit to small number of when-thens that can be true
+                && (when_then_expr.len() < 3 // small number of input whens
+                    // or all thens are literal bools and a small number of them are true
+                    || (when_then_expr.iter().all(|(_, then)| is_bool_lit(then))
+                        && when_then_expr.iter().filter(|(_, then)| is_true(then)).count() < 3))
                 && info.is_boolean_type(&when_then_expr[0].1)? =>
             {
-                // The disjunction of all the when predicates encountered so far
+                // String disjunction of all the when predicates encountered so far. Not nullable.
                 let mut filter_expr = lit(false);
                 // The disjunction of all the cases
                 let mut out_expr = lit(false);
 
                 for (when, then) in when_then_expr {
-                    let case_expr = when
-                        .as_ref()
-                        .clone()
-                        .and(filter_expr.clone().not())
-                        .and(*then);
+                    let when = is_exactly_true(*when, info)?;
+                    let case_expr =
+                        when.clone().and(filter_expr.clone().not()).and(*then);
 
                     out_expr = out_expr.or(case_expr);
-                    filter_expr = filter_expr.or(*when);
+                    filter_expr = filter_expr.or(when);
                 }
 
-                if let Some(else_expr) = else_expr {
-                    let case_expr = filter_expr.not().and(*else_expr);
-                    out_expr = out_expr.or(case_expr);
-                }
+                let else_expr = else_expr.map(|b| *b).unwrap_or_else(lit_bool_null);
+                let case_expr = filter_expr.not().and(else_expr);
+                out_expr = out_expr.or(case_expr);
 
                 // Do a first pass at simplification
                 out_expr.rewrite(self)?
+            }
+            // CASE
+            //   WHEN X THEN true
+            //   WHEN Y THEN true
+            //   WHEN Z THEN false
+            //   ...
+            //   ELSE true
+            // END
+            //
+            // --->
+            //
+            // NOT(CASE
+            //   WHEN X THEN false
+            //   WHEN Y THEN false
+            //   WHEN Z THEN true
+            //   ...
+            //   ELSE false
+            // END)
+            //
+            // Note: the rationale for this rewrite is that the case can then be further
+            // simplified into a small number of ANDs and ORs
+            Expr::Case(Case {
+                expr: None,
+                when_then_expr,
+                else_expr,
+            }) if !when_then_expr.is_empty()
+                && when_then_expr
+                    .iter()
+                    .all(|(_, then)| is_bool_lit(then)) // all thens are literal bools
+                // This simplification is only helpful if we end up with a small number of true thens
+                && when_then_expr
+                    .iter()
+                    .filter(|(_, then)| is_false(then))
+                    .count()
+                    < 3
+                && else_expr.as_deref().is_none_or(is_bool_lit) =>
+            {
+                Transformed::yes(
+                    Expr::Case(Case {
+                        expr: None,
+                        when_then_expr: when_then_expr
+                            .into_iter()
+                            .map(|(when, then)| (when, Box::new(Expr::Not(then))))
+                            .collect(),
+                        else_expr: else_expr
+                            .map(|else_expr| Box::new(Expr::Not(else_expr))),
+                    })
+                    .not(),
+                )
             }
             Expr::ScalarFunction(ScalarFunction { func: udf, args }) => {
                 match udf.simplify(args, info)? {
@@ -1385,21 +1582,18 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             }
 
             Expr::AggregateFunction(datafusion_expr::expr::AggregateFunction {
-                func_def: AggregateFunctionDefinition::UDF(ref udaf),
+                ref func,
                 ..
-            }) => match (udaf.simplify(), expr) {
+            }) => match (func.simplify(), expr) {
                 (Some(simplify_function), Expr::AggregateFunction(af)) => {
                     Transformed::yes(simplify_function(af, info)?)
                 }
                 (_, expr) => Transformed::no(expr),
             },
 
-            Expr::WindowFunction(WindowFunction {
-                fun: WindowFunctionDefinition::WindowUDF(ref udwf),
-                ..
-            }) => match (udwf.simplify(), expr) {
+            Expr::WindowFunction(ref window_fun) => match (window_fun.simplify(), expr) {
                 (Some(simplify_function), Expr::WindowFunction(wf)) => {
-                    Transformed::yes(simplify_function(wf, info)?)
+                    Transformed::yes(simplify_function(*wf, info)?)
                 }
                 (_, expr) => Transformed::no(expr),
             },
@@ -1431,19 +1625,71 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             }) => Transformed::yes(simplify_regex_expr(left, op, right)?),
 
             // Rules for Like
-            Expr::Like(Like {
-                expr,
-                pattern,
-                negated,
-                escape_char: _,
-                case_insensitive: _,
-            }) if !is_null(&expr)
-                && matches!(
-                    pattern.as_ref(),
-                    Expr::Literal(ScalarValue::Utf8(Some(pattern_str))) if pattern_str == "%"
-                ) =>
-            {
-                Transformed::yes(lit(!negated))
+            Expr::Like(like) => {
+                // `\` is implicit escape, see https://github.com/apache/datafusion/issues/13291
+                let escape_char = like.escape_char.unwrap_or('\\');
+                match as_string_scalar(&like.pattern) {
+                    Some((data_type, pattern_str)) => {
+                        match pattern_str {
+                            None => return Ok(Transformed::yes(lit_bool_null())),
+                            Some(pattern_str) if pattern_str == "%" => {
+                                // exp LIKE '%' is
+                                //   - when exp is not NULL, it's true
+                                //   - when exp is NULL, it's NULL
+                                // exp NOT LIKE '%' is
+                                //   - when exp is not NULL, it's false
+                                //   - when exp is NULL, it's NULL
+                                let result_for_non_null = lit(!like.negated);
+                                Transformed::yes(if !info.nullable(&like.expr)? {
+                                    result_for_non_null
+                                } else {
+                                    Expr::Case(Case {
+                                        expr: Some(Box::new(Expr::IsNotNull(like.expr))),
+                                        when_then_expr: vec![(
+                                            Box::new(lit(true)),
+                                            Box::new(result_for_non_null),
+                                        )],
+                                        else_expr: None,
+                                    })
+                                })
+                            }
+                            Some(pattern_str)
+                                if pattern_str.contains("%%")
+                                    && !pattern_str.contains(escape_char) =>
+                            {
+                                // Repeated occurrences of wildcard are redundant so remove them
+                                // exp LIKE '%%'  --> exp LIKE '%'
+                                let simplified_pattern = Regex::new("%%+")
+                                    .unwrap()
+                                    .replace_all(pattern_str, "%")
+                                    .to_string();
+                                Transformed::yes(Expr::Like(Like {
+                                    pattern: Box::new(to_string_scalar(
+                                        &data_type,
+                                        Some(simplified_pattern),
+                                    )),
+                                    ..like
+                                }))
+                            }
+                            Some(pattern_str)
+                                if !like.case_insensitive
+                                    && !pattern_str
+                                        .contains(['%', '_', escape_char].as_ref()) =>
+                            {
+                                // If the pattern does not contain any wildcards, we can simplify the like expression to an equality expression
+                                // TODO: handle escape characters
+                                Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                                    left: like.expr.clone(),
+                                    op: if like.negated { NotEq } else { Eq },
+                                    right: like.pattern.clone(),
+                                }))
+                            }
+
+                            Some(_pattern_str) => Transformed::no(Expr::Like(like)),
+                        }
+                    }
+                    None => Transformed::no(Expr::Like(like)),
+                }
             }
 
             // a is not null/unknown --> true (if a is not nullable)
@@ -1461,20 +1707,20 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             // expr IN () --> false
             // expr NOT IN () --> true
             Expr::InList(InList {
-                expr,
+                expr: _,
                 list,
                 negated,
-            }) if list.is_empty() && *expr != Expr::Literal(ScalarValue::Null) => {
-                Transformed::yes(lit(negated))
-            }
+            }) if list.is_empty() => Transformed::yes(lit(negated)),
 
             // null in (x, y, z) --> null
             // null not in (x, y, z) --> null
             Expr::InList(InList {
                 expr,
-                list: _,
+                list,
                 negated: _,
-            }) if is_null(expr.as_ref()) => Transformed::yes(lit_bool_null()),
+            }) if is_null(expr.as_ref()) && !list.is_empty() => {
+                Transformed::yes(lit_bool_null())
+            }
 
             // expr IN ((subquery)) -> expr IN (subquery), see ##5529
             Expr::InList(InList {
@@ -1498,7 +1744,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             // i.e. `a = 1 OR a = 2 OR a = 3` -> `a IN (1, 2, 3)`
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::Or,
+                op: Or,
                 right,
             }) if are_inlist_and_eq(left.as_ref(), right.as_ref()) => {
                 let lhs = to_inlist(*left).unwrap();
@@ -1538,7 +1784,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             //     8. `a in (1,2,3,4) AND a not in (5,6,7,8) -> a in (1,2,3,4)`
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::And,
+                op: And,
                 right,
             }) if are_inlist_and_eq_and_match_neg(
                 left.as_ref(),
@@ -1549,7 +1795,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             {
                 match (*left, *right) {
                     (Expr::InList(l1), Expr::InList(l2)) => {
-                        return inlist_intersection(l1, l2, false).map(Transformed::yes);
+                        return inlist_intersection(l1, &l2, false).map(Transformed::yes);
                     }
                     // Matched previously once
                     _ => unreachable!(),
@@ -1558,7 +1804,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
 
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::And,
+                op: And,
                 right,
             }) if are_inlist_and_eq_and_match_neg(
                 left.as_ref(),
@@ -1578,7 +1824,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
 
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::And,
+                op: And,
                 right,
             }) if are_inlist_and_eq_and_match_neg(
                 left.as_ref(),
@@ -1589,7 +1835,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             {
                 match (*left, *right) {
                     (Expr::InList(l1), Expr::InList(l2)) => {
-                        return inlist_except(l1, l2).map(Transformed::yes);
+                        return inlist_except(l1, &l2).map(Transformed::yes);
                     }
                     // Matched previously once
                     _ => unreachable!(),
@@ -1598,7 +1844,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
 
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::And,
+                op: And,
                 right,
             }) if are_inlist_and_eq_and_match_neg(
                 left.as_ref(),
@@ -1609,7 +1855,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             {
                 match (*left, *right) {
                     (Expr::InList(l1), Expr::InList(l2)) => {
-                        return inlist_except(l2, l1).map(Transformed::yes);
+                        return inlist_except(l2, &l1).map(Transformed::yes);
                     }
                     // Matched previously once
                     _ => unreachable!(),
@@ -1618,7 +1864,7 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
 
             Expr::BinaryExpr(BinaryExpr {
                 left,
-                op: Operator::Or,
+                op: Or,
                 right,
             }) if are_inlist_and_eq_and_match_neg(
                 left.as_ref(),
@@ -1629,17 +1875,120 @@ impl<'a, S: SimplifyInfo> TreeNodeRewriter for Simplifier<'a, S> {
             {
                 match (*left, *right) {
                     (Expr::InList(l1), Expr::InList(l2)) => {
-                        return inlist_intersection(l1, l2, true).map(Transformed::yes);
+                        return inlist_intersection(l1, &l2, true).map(Transformed::yes);
                     }
                     // Matched previously once
                     _ => unreachable!(),
                 }
+            }
+
+            // =======================================
+            // unwrap_cast_in_comparison
+            // =======================================
+            //
+            // For case:
+            // try_cast/cast(expr as data_type) op literal
+            Expr::BinaryExpr(BinaryExpr { left, op, right })
+                if is_cast_expr_and_support_unwrap_cast_in_comparison_for_binary(
+                    info, &left, op, &right,
+                ) && op.supports_propagation() =>
+            {
+                unwrap_cast_in_comparison_for_binary(info, *left, *right, op)?
+            }
+            // literal op try_cast/cast(expr as data_type)
+            // -->
+            // try_cast/cast(expr as data_type) op_swap literal
+            Expr::BinaryExpr(BinaryExpr { left, op, right })
+                if is_cast_expr_and_support_unwrap_cast_in_comparison_for_binary(
+                    info, &right, op, &left,
+                ) && op.supports_propagation()
+                    && op.swap().is_some() =>
+            {
+                unwrap_cast_in_comparison_for_binary(
+                    info,
+                    *right,
+                    *left,
+                    op.swap().unwrap(),
+                )?
+            }
+            // For case:
+            // try_cast/cast(expr as left_type) in (expr1,expr2,expr3)
+            Expr::InList(InList {
+                expr: mut left,
+                list,
+                negated,
+            }) if is_cast_expr_and_support_unwrap_cast_in_comparison_for_inlist(
+                info, &left, &list,
+            ) =>
+            {
+                let (Expr::TryCast(TryCast {
+                    expr: left_expr, ..
+                })
+                | Expr::Cast(Cast {
+                    expr: left_expr, ..
+                })) = left.as_mut()
+                else {
+                    return internal_err!("Expect cast expr, but got {:?}", left)?;
+                };
+
+                let expr_type = info.get_data_type(left_expr)?;
+                let right_exprs = list
+                    .into_iter()
+                    .map(|right| {
+                        match right {
+                            Expr::Literal(right_lit_value, _) => {
+                                // if the right_lit_value can be casted to the type of internal_left_expr
+                                // we need to unwrap the cast for cast/try_cast expr, and add cast to the literal
+                                let Some(value) = try_cast_literal_to_type(&right_lit_value, &expr_type) else {
+                                    internal_err!(
+                                        "Can't cast the list expr {:?} to type {}",
+                                        right_lit_value, &expr_type
+                                    )?
+                                };
+                                Ok(lit(value))
+                            }
+                            other_expr => internal_err!(
+                                "Only support literal expr to optimize, but the expr is {:?}",
+                                &other_expr
+                            ),
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                Transformed::yes(Expr::InList(InList {
+                    expr: std::mem::take(left_expr),
+                    list: right_exprs,
+                    negated,
+                }))
             }
 
             // no additional rewrites possible
             expr => Transformed::no(expr),
         })
     }
+}
+
+fn as_string_scalar(expr: &Expr) -> Option<(DataType, &Option<String>)> {
+    match expr {
+        Expr::Literal(ScalarValue::Utf8(s), _) => Some((DataType::Utf8, s)),
+        Expr::Literal(ScalarValue::LargeUtf8(s), _) => Some((DataType::LargeUtf8, s)),
+        Expr::Literal(ScalarValue::Utf8View(s), _) => Some((DataType::Utf8View, s)),
+        _ => None,
+    }
+}
+
+fn to_string_scalar(data_type: &DataType, value: Option<String>) -> Expr {
+    match data_type {
+        DataType::Utf8 => Expr::Literal(ScalarValue::Utf8(value), None),
+        DataType::LargeUtf8 => Expr::Literal(ScalarValue::LargeUtf8(value), None),
+        DataType::Utf8View => Expr::Literal(ScalarValue::Utf8View(value), None),
+        _ => unreachable!(),
+    }
+}
+
+fn has_common_conjunction(lhs: &Expr, rhs: &Expr) -> bool {
+    let lhs_set: HashSet<&Expr> = iter_conjunction(lhs).collect();
+    iter_conjunction(rhs).any(|e| lhs_set.contains(&e) && !e.is_volatile())
 }
 
 // TODO: We might not need this after defer pattern for Box is stabilized. https://github.com/rust-lang/rust/issues/87121
@@ -1673,17 +2022,17 @@ fn are_inlist_and_eq(left: &Expr, right: &Expr) -> bool {
 }
 
 /// Try to convert an expression to an in-list expression
-fn as_inlist(expr: &Expr) -> Option<Cow<InList>> {
+fn as_inlist(expr: &'_ Expr) -> Option<Cow<'_, InList>> {
     match expr {
         Expr::InList(inlist) => Some(Cow::Borrowed(inlist)),
         Expr::BinaryExpr(BinaryExpr { left, op, right }) if *op == Operator::Eq => {
             match (left.as_ref(), right.as_ref()) {
-                (Expr::Column(_), Expr::Literal(_)) => Some(Cow::Owned(InList {
+                (Expr::Column(_), Expr::Literal(_, _)) => Some(Cow::Owned(InList {
                     expr: left.clone(),
                     list: vec![*right.clone()],
                     negated: false,
                 })),
-                (Expr::Literal(_), Expr::Column(_)) => Some(Cow::Owned(InList {
+                (Expr::Literal(_, _), Expr::Column(_)) => Some(Cow::Owned(InList {
                     expr: right.clone(),
                     list: vec![*left.clone()],
                     negated: false,
@@ -1703,12 +2052,12 @@ fn to_inlist(expr: Expr) -> Option<InList> {
             op: Operator::Eq,
             right,
         }) => match (left.as_ref(), right.as_ref()) {
-            (Expr::Column(_), Expr::Literal(_)) => Some(InList {
+            (Expr::Column(_), Expr::Literal(_, _)) => Some(InList {
                 expr: left,
                 list: vec![*right],
                 negated: false,
             }),
-            (Expr::Literal(_), Expr::Column(_)) => Some(InList {
+            (Expr::Literal(_, _), Expr::Column(_)) => Some(InList {
                 expr: right,
                 list: vec![*left],
                 negated: false,
@@ -1739,7 +2088,7 @@ fn inlist_union(mut l1: InList, l2: InList, negated: bool) -> Result<Expr> {
 
 /// Return the intersection of two inlist expressions
 /// maintaining the order of the elements in the two lists
-fn inlist_intersection(mut l1: InList, l2: InList, negated: bool) -> Result<Expr> {
+fn inlist_intersection(mut l1: InList, l2: &InList, negated: bool) -> Result<Expr> {
     let l2_items = l2.list.iter().collect::<HashSet<_>>();
 
     // remove all items from l1 that are not in l2
@@ -1755,7 +2104,7 @@ fn inlist_intersection(mut l1: InList, l2: InList, negated: bool) -> Result<Expr
 
 /// Return the all items in l1 that are not in l2
 /// maintaining the order of the elements in the two lists
-fn inlist_except(mut l1: InList, l2: InList) -> Result<Expr> {
+fn inlist_except(mut l1: InList, l2: &InList) -> Result<Expr> {
     let l2_items = l2.list.iter().collect::<HashSet<_>>();
 
     // keep only items from l1 that are not in l2
@@ -1767,10 +2116,54 @@ fn inlist_except(mut l1: InList, l2: InList) -> Result<Expr> {
     Ok(Expr::InList(l1))
 }
 
+/// Returns expression testing a boolean `expr` for being exactly `true` (not `false` or NULL).
+fn is_exactly_true(expr: Expr, info: &impl SimplifyInfo) -> Result<Expr> {
+    if !info.nullable(&expr)? {
+        Ok(expr)
+    } else {
+        Ok(Expr::BinaryExpr(BinaryExpr {
+            left: Box::new(expr),
+            op: Operator::IsNotDistinctFrom,
+            right: Box::new(lit(true)),
+        }))
+    }
+}
+
+// A * 1 -> A
+// A / 1 -> A
+//
+// Move this function body out of the large match branch avoid stack overflow
+fn simplify_right_is_one_case<S: SimplifyInfo>(
+    info: &S,
+    left: Box<Expr>,
+    op: &Operator,
+    right: &Expr,
+) -> Result<Transformed<Expr>> {
+    // Check if resulting type would be different due to coercion
+    let left_type = info.get_data_type(&left)?;
+    let right_type = info.get_data_type(right)?;
+    match BinaryTypeCoercer::new(&left_type, op, &right_type).get_result_type() {
+        Ok(result_type) => {
+            // Only cast if the types differ
+            if left_type != result_type {
+                Ok(Transformed::yes(Expr::Cast(Cast::new(left, result_type))))
+            } else {
+                Ok(Transformed::yes(*left))
+            }
+        }
+        Err(_) => Ok(Transformed::yes(*left)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use datafusion_common::{assert_contains, DFSchemaRef, ToDFSchema};
+    use super::*;
+    use crate::simplify_expressions::SimplifyContext;
+    use crate::test::test_table_scan_with_name;
+    use arrow::datatypes::FieldRef;
+    use datafusion_common::{DFSchemaRef, ToDFSchema, assert_contains};
     use datafusion_expr::{
+        expr::WindowFunction,
         function::{
             AccumulatorArgs, AggregateFunctionSimplification,
             WindowFunctionSimplification,
@@ -1778,16 +2171,16 @@ mod tests {
         interval_arithmetic::Interval,
         *,
     };
+    use datafusion_functions_window_common::field::WindowUDFFieldArgs;
+    use datafusion_functions_window_common::partition::PartitionEvaluatorArgs;
+    use datafusion_physical_expr::PhysicalExpr;
+    use std::hash::Hash;
+    use std::sync::LazyLock;
     use std::{
         collections::HashMap,
         ops::{BitAnd, BitOr, BitXor},
         sync::Arc,
     };
-
-    use crate::simplify_expressions::SimplifyContext;
-    use crate::test::test_table_scan_with_name;
-
-    use super::*;
 
     // ------------------------------
     // --- ExprSimplifier tests -----
@@ -1807,8 +2200,9 @@ mod tests {
     fn basic_coercion() {
         let schema = test_schema();
         let props = ExecutionProps::new();
-        let simplifier =
-            ExprSimplifier::new(SimplifyContext::new(&props).with_schema(schema.clone()));
+        let simplifier = ExprSimplifier::new(
+            SimplifyContext::new(&props).with_schema(Arc::clone(&schema)),
+        );
 
         // Note expr type is int32 (not int64)
         // (1i64 + 2i32) < i
@@ -1822,12 +2216,15 @@ mod tests {
     }
 
     fn test_schema() -> DFSchemaRef {
-        Schema::new(vec![
-            Field::new("i", DataType::Int64, false),
-            Field::new("b", DataType::Boolean, true),
-        ])
-        .to_dfschema_ref()
-        .unwrap()
+        static TEST_SCHEMA: LazyLock<DFSchemaRef> = LazyLock::new(|| {
+            Schema::new(vec![
+                Field::new("i", DataType::Int64, false),
+                Field::new("b", DataType::Boolean, true),
+            ])
+            .to_dfschema_ref()
+            .unwrap()
+        });
+        Arc::clone(&TEST_SCHEMA)
     }
 
     #[test]
@@ -1918,6 +2315,21 @@ mod tests {
             let expected = col("c2").lt(col("c1"));
             assert_eq!(simplify(expr), expected);
         }
+    }
+
+    #[test]
+    fn test_simplify_eq_not_self() {
+        // `expr_a`: column `c2` is nullable, so `c2 = c2` simplifies to `c2 IS NOT NULL OR NULL`
+        // This ensures the expression is only true when `c2` is not NULL, accounting for SQL's NULL semantics.
+        let expr_a = col("c2").eq(col("c2"));
+        let expected_a = col("c2").is_not_null().or(lit_bool_null());
+
+        // `expr_b`: column `c2_non_null` is explicitly non-nullable, so `c2_non_null = c2_non_null` is always true
+        let expr_b = col("c2_non_null").eq(col("c2_non_null"));
+        let expected_b = lit(true);
+
+        assert_eq!(simplify(expr_a), expected_a);
+        assert_eq!(simplify(expr_b), expected_b);
     }
 
     #[test]
@@ -2018,15 +2430,15 @@ mod tests {
 
     #[test]
     fn test_simplify_multiply_by_null() {
-        let null = Expr::Literal(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         // A * null --> null
         {
-            let expr = col("c2") * null.clone();
+            let expr = col("c3") * null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null * A --> null
         {
-            let expr = null.clone() * col("c2");
+            let expr = null.clone() * col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
@@ -2082,14 +2494,14 @@ mod tests {
     #[test]
     fn test_simplify_divide_null() {
         // A / null --> null
-        let null = lit(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         {
-            let expr = col("c") / null.clone();
+            let expr = col("c3") / null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null / A --> null
         {
-            let expr = null.clone() / col("c");
+            let expr = null.clone() / col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
@@ -2105,15 +2517,15 @@ mod tests {
 
     #[test]
     fn test_simplify_modulo_by_null() {
-        let null = lit(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         // A % null --> null
         {
-            let expr = col("c2") % null.clone();
+            let expr = col("c3") % null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null % A --> null
         {
-            let expr = null.clone() % col("c2");
+            let expr = null.clone() % col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
@@ -2149,55 +2561,55 @@ mod tests {
 
     #[test]
     fn test_simplify_modulo_by_one_non_null() {
-        let expr = col("c2_non_null") % lit(1);
-        let expected = lit(0);
+        let expr = col("c3_non_null") % lit(1);
+        let expected = lit(0_i64);
         assert_eq!(simplify(expr), expected);
         let expr =
-            col("c2_non_null") % lit(ScalarValue::Decimal128(Some(10000000000), 31, 10));
+            col("c3_non_null") % lit(ScalarValue::Decimal128(Some(10000000000), 31, 10));
         assert_eq!(simplify(expr), expected);
     }
 
     #[test]
     fn test_simplify_bitwise_xor_by_null() {
-        let null = lit(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         // A ^ null --> null
         {
-            let expr = col("c2") ^ null.clone();
+            let expr = col("c3") ^ null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null ^ A --> null
         {
-            let expr = null.clone() ^ col("c2");
+            let expr = null.clone() ^ col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
 
     #[test]
     fn test_simplify_bitwise_shift_right_by_null() {
-        let null = lit(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         // A >> null --> null
         {
-            let expr = col("c2") >> null.clone();
+            let expr = col("c3") >> null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null >> A --> null
         {
-            let expr = null.clone() >> col("c2");
+            let expr = null.clone() >> col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
 
     #[test]
     fn test_simplify_bitwise_shift_left_by_null() {
-        let null = lit(ScalarValue::Null);
+        let null = lit(ScalarValue::Int64(None));
         // A << null --> null
         {
-            let expr = col("c2") << null.clone();
+            let expr = col("c3") << null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null << A --> null
         {
-            let expr = null.clone() << col("c2");
+            let expr = null.clone() << col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
@@ -2264,15 +2676,15 @@ mod tests {
 
     #[test]
     fn test_simplify_bitwise_and_by_null() {
-        let null = lit(ScalarValue::Null);
+        let null = Expr::Literal(ScalarValue::Int64(None), None);
         // A & null --> null
         {
-            let expr = col("c2") & null.clone();
+            let expr = col("c3") & null.clone();
             assert_eq!(simplify(expr), null);
         }
         // null & A --> null
         {
-            let expr = null.clone() & col("c2");
+            let expr = null.clone() & col("c3");
             assert_eq!(simplify(expr), null);
         }
     }
@@ -2587,15 +2999,11 @@ mod tests {
         // (c2 > 5) OR ((c1 < 6) AND (c2 > 5))
         let expr = or(l.clone(), r.clone());
 
-        // no rewrites if c1 can be null
-        let expected = expr.clone();
+        let expected = l.clone();
         assert_eq!(simplify(expr), expected);
 
         // ((c1 < 6) AND (c2 > 5)) OR (c2 > 5)
-        let expr = or(l, r);
-
-        // no rewrites if c1 can be null
-        let expected = expr.clone();
+        let expr = or(r, l);
         assert_eq!(simplify(expr), expected);
     }
 
@@ -2626,13 +3034,11 @@ mod tests {
         // (c2 > 5) AND ((c1 < 6) OR (c2 > 5)) --> c2 > 5
         let expr = and(l.clone(), r.clone());
 
-        // no rewrites if c1 can be null
-        let expected = expr.clone();
+        let expected = l.clone();
         assert_eq!(simplify(expr), expected);
 
         // ((c1 < 6) OR (c2 > 5)) AND (c2 > 5) --> c2 > 5
-        let expr = and(l, r);
-        let expected = expr.clone();
+        let expr = and(r, l);
         assert_eq!(simplify(expr), expected);
     }
 
@@ -2737,16 +3143,31 @@ mod tests {
         assert_no_change(regex_match(col("c1"), lit("f_o")));
 
         // empty cases
-        assert_change(regex_match(col("c1"), lit("")), lit(true));
-        assert_change(regex_not_match(col("c1"), lit("")), lit(false));
-        assert_change(regex_imatch(col("c1"), lit("")), lit(true));
-        assert_change(regex_not_imatch(col("c1"), lit("")), lit(false));
+        assert_change(
+            regex_match(col("c1"), lit("")),
+            if_not_null(col("c1"), true),
+        );
+        assert_change(
+            regex_not_match(col("c1"), lit("")),
+            if_not_null(col("c1"), false),
+        );
+        assert_change(
+            regex_imatch(col("c1"), lit("")),
+            if_not_null(col("c1"), true),
+        );
+        assert_change(
+            regex_not_imatch(col("c1"), lit("")),
+            if_not_null(col("c1"), false),
+        );
 
         // single character
-        assert_change(regex_match(col("c1"), lit("x")), like(col("c1"), "%x%"));
+        assert_change(regex_match(col("c1"), lit("x")), col("c1").like(lit("%x%")));
 
         // single word
-        assert_change(regex_match(col("c1"), lit("foo")), like(col("c1"), "%foo%"));
+        assert_change(
+            regex_match(col("c1"), lit("foo")),
+            col("c1").like(lit("%foo%")),
+        );
 
         // regular expressions that match an exact literal
         assert_change(regex_match(col("c1"), lit("^$")), col("c1").eq(lit("")));
@@ -2833,44 +3254,55 @@ mod tests {
         assert_no_change(regex_match(col("c1"), lit("$foo^")));
 
         // regular expressions that match a partial literal
-        assert_change(regex_match(col("c1"), lit("^foo")), like(col("c1"), "foo%"));
-        assert_change(regex_match(col("c1"), lit("foo$")), like(col("c1"), "%foo"));
+        assert_change(
+            regex_match(col("c1"), lit("^foo")),
+            col("c1").like(lit("foo%")),
+        );
+        assert_change(
+            regex_match(col("c1"), lit("foo$")),
+            col("c1").like(lit("%foo")),
+        );
         assert_change(
             regex_match(col("c1"), lit("^foo|bar$")),
-            like(col("c1"), "foo%").or(like(col("c1"), "%bar")),
+            col("c1").like(lit("foo%")).or(col("c1").like(lit("%bar"))),
         );
 
         // OR-chain
         assert_change(
             regex_match(col("c1"), lit("foo|bar|baz")),
-            like(col("c1"), "%foo%")
-                .or(like(col("c1"), "%bar%"))
-                .or(like(col("c1"), "%baz%")),
+            col("c1")
+                .like(lit("%foo%"))
+                .or(col("c1").like(lit("%bar%")))
+                .or(col("c1").like(lit("%baz%"))),
         );
         assert_change(
             regex_match(col("c1"), lit("foo|x|baz")),
-            like(col("c1"), "%foo%")
-                .or(like(col("c1"), "%x%"))
-                .or(like(col("c1"), "%baz%")),
+            col("c1")
+                .like(lit("%foo%"))
+                .or(col("c1").like(lit("%x%")))
+                .or(col("c1").like(lit("%baz%"))),
         );
         assert_change(
             regex_not_match(col("c1"), lit("foo|bar|baz")),
-            not_like(col("c1"), "%foo%")
-                .and(not_like(col("c1"), "%bar%"))
-                .and(not_like(col("c1"), "%baz%")),
+            col("c1")
+                .not_like(lit("%foo%"))
+                .and(col("c1").not_like(lit("%bar%")))
+                .and(col("c1").not_like(lit("%baz%"))),
         );
         // both anchored expressions (translated to equality) and unanchored
         assert_change(
             regex_match(col("c1"), lit("foo|^x$|baz")),
-            like(col("c1"), "%foo%")
+            col("c1")
+                .like(lit("%foo%"))
                 .or(col("c1").eq(lit("x")))
-                .or(like(col("c1"), "%baz%")),
+                .or(col("c1").like(lit("%baz%"))),
         );
         assert_change(
             regex_not_match(col("c1"), lit("foo|^bar$|baz")),
-            not_like(col("c1"), "%foo%")
+            col("c1")
+                .not_like(lit("%foo%"))
                 .and(col("c1").not_eq(lit("bar")))
-                .and(not_like(col("c1"), "%baz%")),
+                .and(col("c1").not_like(lit("%baz%"))),
         );
         // Too many patterns (MAX_REGEX_ALTERNATIONS_EXPANSION)
         assert_no_change(regex_match(col("c1"), lit("foo|bar|baz|blarg|bozo|etc")));
@@ -2920,46 +3352,6 @@ mod tests {
         })
     }
 
-    fn like(expr: Expr, pattern: &str) -> Expr {
-        Expr::Like(Like {
-            negated: false,
-            expr: Box::new(expr),
-            pattern: Box::new(lit(pattern)),
-            escape_char: None,
-            case_insensitive: false,
-        })
-    }
-
-    fn not_like(expr: Expr, pattern: &str) -> Expr {
-        Expr::Like(Like {
-            negated: true,
-            expr: Box::new(expr),
-            pattern: Box::new(lit(pattern)),
-            escape_char: None,
-            case_insensitive: false,
-        })
-    }
-
-    fn ilike(expr: Expr, pattern: &str) -> Expr {
-        Expr::Like(Like {
-            negated: false,
-            expr: Box::new(expr),
-            pattern: Box::new(lit(pattern)),
-            escape_char: None,
-            case_insensitive: true,
-        })
-    }
-
-    fn not_ilike(expr: Expr, pattern: &str) -> Expr {
-        Expr::Like(Like {
-            negated: true,
-            expr: Box::new(expr),
-            pattern: Box::new(lit(pattern)),
-            escape_char: None,
-            case_insensitive: true,
-        })
-    }
-
     // ------------------------------
     // ----- Simplifier tests -------
     // ------------------------------
@@ -2973,6 +3365,15 @@ mod tests {
         simplifier.simplify(expr)
     }
 
+    fn coerce(expr: Expr) -> Expr {
+        let schema = expr_test_schema();
+        let execution_props = ExecutionProps::new();
+        let simplifier = ExprSimplifier::new(
+            SimplifyContext::new(&execution_props).with_schema(Arc::clone(&schema)),
+        );
+        simplifier.coerce(expr, schema.as_ref()).unwrap()
+    }
+
     fn simplify(expr: Expr) -> Expr {
         try_simplify(expr).unwrap()
     }
@@ -2983,7 +3384,8 @@ mod tests {
         let simplifier = ExprSimplifier::new(
             SimplifyContext::new(&execution_props).with_schema(schema),
         );
-        simplifier.simplify_with_cycle_count(expr)
+        let (expr, count) = simplifier.simplify_with_cycle_count_transformed(expr)?;
+        Ok((expr.data, count))
     }
 
     fn simplify_with_cycle_count(expr: Expr) -> (Expr, u32) {
@@ -3004,23 +3406,27 @@ mod tests {
     }
 
     fn expr_test_schema() -> DFSchemaRef {
-        Arc::new(
-            DFSchema::from_unqualifed_fields(
-                vec![
-                    Field::new("c1", DataType::Utf8, true),
-                    Field::new("c2", DataType::Boolean, true),
-                    Field::new("c3", DataType::Int64, true),
-                    Field::new("c4", DataType::UInt32, true),
-                    Field::new("c1_non_null", DataType::Utf8, false),
-                    Field::new("c2_non_null", DataType::Boolean, false),
-                    Field::new("c3_non_null", DataType::Int64, false),
-                    Field::new("c4_non_null", DataType::UInt32, false),
-                ]
-                .into(),
-                HashMap::new(),
+        static EXPR_TEST_SCHEMA: LazyLock<DFSchemaRef> = LazyLock::new(|| {
+            Arc::new(
+                DFSchema::from_unqualified_fields(
+                    vec![
+                        Field::new("c1", DataType::Utf8, true),
+                        Field::new("c2", DataType::Boolean, true),
+                        Field::new("c3", DataType::Int64, true),
+                        Field::new("c4", DataType::UInt32, true),
+                        Field::new("c1_non_null", DataType::Utf8, false),
+                        Field::new("c2_non_null", DataType::Boolean, false),
+                        Field::new("c3_non_null", DataType::Int64, false),
+                        Field::new("c4_non_null", DataType::UInt32, false),
+                        Field::new("c5", DataType::FixedSizeBinary(3), true),
+                    ]
+                    .into(),
+                    HashMap::new(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
+        });
+        Arc::clone(&EXPR_TEST_SCHEMA)
     }
 
     #[test]
@@ -3166,6 +3572,142 @@ mod tests {
     }
 
     #[test]
+    fn simplify_literal_case_equality() {
+        // CASE WHEN c2 != false THEN "ok" ELSE "not_ok"
+        let simple_case = Expr::Case(Case::new(
+            None,
+            vec![(
+                Box::new(col("c2_non_null").not_eq(lit(false))),
+                Box::new(lit("ok")),
+            )],
+            Some(Box::new(lit("not_ok"))),
+        ));
+
+        // CASE WHEN c2 != false THEN "ok" ELSE "not_ok" == "ok"
+        // -->
+        // CASE WHEN c2 != false THEN "ok" == "ok" ELSE "not_ok" == "ok"
+        // -->
+        // CASE WHEN c2 != false THEN true ELSE false
+        // -->
+        // c2
+        assert_eq!(
+            simplify(binary_expr(simple_case.clone(), Operator::Eq, lit("ok"),)),
+            col("c2_non_null"),
+        );
+
+        // CASE WHEN c2 != false THEN "ok" ELSE "not_ok" != "ok"
+        // -->
+        // NOT(CASE WHEN c2 != false THEN "ok" == "ok" ELSE "not_ok" == "ok")
+        // -->
+        // NOT(CASE WHEN c2 != false THEN true ELSE false)
+        // -->
+        // NOT(c2)
+        assert_eq!(
+            simplify(binary_expr(simple_case, Operator::NotEq, lit("ok"),)),
+            not(col("c2_non_null")),
+        );
+
+        let complex_case = Expr::Case(Case::new(
+            None,
+            vec![
+                (
+                    Box::new(col("c1").eq(lit("inboxed"))),
+                    Box::new(lit("pending")),
+                ),
+                (
+                    Box::new(col("c1").eq(lit("scheduled"))),
+                    Box::new(lit("pending")),
+                ),
+                (
+                    Box::new(col("c1").eq(lit("completed"))),
+                    Box::new(lit("completed")),
+                ),
+                (
+                    Box::new(col("c1").eq(lit("paused"))),
+                    Box::new(lit("paused")),
+                ),
+                (Box::new(col("c2")), Box::new(lit("running"))),
+                (
+                    Box::new(col("c1").eq(lit("invoked")).and(col("c3").gt(lit(0)))),
+                    Box::new(lit("backing-off")),
+                ),
+            ],
+            Some(Box::new(lit("ready"))),
+        ));
+
+        assert_eq!(
+            simplify(binary_expr(
+                complex_case.clone(),
+                Operator::Eq,
+                lit("completed"),
+            )),
+            not_distinct_from(col("c1").eq(lit("completed")), lit(true)).and(
+                distinct_from(col("c1").eq(lit("inboxed")), lit(true))
+                    .and(distinct_from(col("c1").eq(lit("scheduled")), lit(true)))
+            )
+        );
+
+        assert_eq!(
+            simplify(binary_expr(
+                complex_case.clone(),
+                Operator::NotEq,
+                lit("completed"),
+            )),
+            distinct_from(col("c1").eq(lit("completed")), lit(true))
+                .or(not_distinct_from(col("c1").eq(lit("inboxed")), lit(true))
+                    .or(not_distinct_from(col("c1").eq(lit("scheduled")), lit(true))))
+        );
+
+        assert_eq!(
+            simplify(binary_expr(
+                complex_case.clone(),
+                Operator::Eq,
+                lit("running"),
+            )),
+            not_distinct_from(col("c2"), lit(true)).and(
+                distinct_from(col("c1").eq(lit("inboxed")), lit(true))
+                    .and(distinct_from(col("c1").eq(lit("scheduled")), lit(true)))
+                    .and(distinct_from(col("c1").eq(lit("completed")), lit(true)))
+                    .and(distinct_from(col("c1").eq(lit("paused")), lit(true)))
+            )
+        );
+
+        assert_eq!(
+            simplify(binary_expr(
+                complex_case.clone(),
+                Operator::Eq,
+                lit("ready"),
+            )),
+            distinct_from(col("c1").eq(lit("inboxed")), lit(true))
+                .and(distinct_from(col("c1").eq(lit("scheduled")), lit(true)))
+                .and(distinct_from(col("c1").eq(lit("completed")), lit(true)))
+                .and(distinct_from(col("c1").eq(lit("paused")), lit(true)))
+                .and(distinct_from(col("c2"), lit(true)))
+                .and(distinct_from(
+                    col("c1").eq(lit("invoked")).and(col("c3").gt(lit(0))),
+                    lit(true)
+                ))
+        );
+
+        assert_eq!(
+            simplify(binary_expr(
+                complex_case.clone(),
+                Operator::NotEq,
+                lit("ready"),
+            )),
+            not_distinct_from(col("c1").eq(lit("inboxed")), lit(true))
+                .or(not_distinct_from(col("c1").eq(lit("scheduled")), lit(true)))
+                .or(not_distinct_from(col("c1").eq(lit("completed")), lit(true)))
+                .or(not_distinct_from(col("c1").eq(lit("paused")), lit(true)))
+                .or(not_distinct_from(col("c2"), lit(true)))
+                .or(not_distinct_from(
+                    col("c1").eq(lit("invoked")).and(col("c3").gt(lit(0))),
+                    lit(true)
+                ))
+        );
+    }
+
+    #[test]
     fn simplify_expr_case_when_then_else() {
         // CASE WHEN c2 != false THEN "ok" == "not_ok" ELSE c2 == true
         // -->
@@ -3176,12 +3718,12 @@ mod tests {
             simplify(Expr::Case(Case::new(
                 None,
                 vec![(
-                    Box::new(col("c2").not_eq(lit(false))),
+                    Box::new(col("c2_non_null").not_eq(lit(false))),
                     Box::new(lit("ok").eq(lit("not_ok"))),
                 )],
-                Some(Box::new(col("c2").eq(lit(true)))),
+                Some(Box::new(col("c2_non_null").eq(lit(true)))),
             ))),
-            col("c2").not().and(col("c2")) // #1716
+            lit(false) // #1716
         );
 
         // CASE WHEN c2 != false THEN "ok" == "ok" ELSE c2
@@ -3196,12 +3738,12 @@ mod tests {
             simplify(simplify(Expr::Case(Case::new(
                 None,
                 vec![(
-                    Box::new(col("c2").not_eq(lit(false))),
+                    Box::new(col("c2_non_null").not_eq(lit(false))),
                     Box::new(lit("ok").eq(lit("ok"))),
                 )],
-                Some(Box::new(col("c2").eq(lit(true)))),
+                Some(Box::new(col("c2_non_null").eq(lit(true)))),
             )))),
-            col("c2").or(col("c2").not().and(col("c2"))) // #1716
+            col("c2_non_null")
         );
 
         // CASE WHEN ISNULL(c2) THEN true ELSE c2
@@ -3232,12 +3774,12 @@ mod tests {
             simplify(simplify(Expr::Case(Case::new(
                 None,
                 vec![
-                    (Box::new(col("c1")), Box::new(lit(true)),),
-                    (Box::new(col("c2")), Box::new(lit(false)),),
+                    (Box::new(col("c1_non_null")), Box::new(lit(true)),),
+                    (Box::new(col("c2_non_null")), Box::new(lit(false)),),
                 ],
                 Some(Box::new(lit(true))),
             )))),
-            col("c1").or(col("c1").not().and(col("c2").not()))
+            col("c1_non_null").or(col("c1_non_null").not().and(col("c2_non_null").not()))
         );
 
         // CASE WHEN c1 then true WHEN c2 then true ELSE false
@@ -3251,13 +3793,247 @@ mod tests {
             simplify(simplify(Expr::Case(Case::new(
                 None,
                 vec![
-                    (Box::new(col("c1")), Box::new(lit(true)),),
-                    (Box::new(col("c2")), Box::new(lit(false)),),
+                    (Box::new(col("c1_non_null")), Box::new(lit(true)),),
+                    (Box::new(col("c2_non_null")), Box::new(lit(false)),),
                 ],
                 Some(Box::new(lit(true))),
             )))),
-            col("c1").or(col("c1").not().and(col("c2").not()))
+            col("c1_non_null").or(col("c1_non_null").not().and(col("c2_non_null").not()))
         );
+
+        // CASE WHEN c > 0 THEN true END AS c1
+        assert_eq!(
+            simplify(simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(col("c3").gt(lit(0_i64))), Box::new(lit(true)))],
+                None,
+            )))),
+            not_distinct_from(col("c3").gt(lit(0_i64)), lit(true)).or(distinct_from(
+                col("c3").gt(lit(0_i64)),
+                lit(true)
+            )
+            .and(lit_bool_null()))
+        );
+
+        // CASE WHEN c > 0 THEN true ELSE false END AS c1
+        assert_eq!(
+            simplify(simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(col("c3").gt(lit(0_i64))), Box::new(lit(true)))],
+                Some(Box::new(lit(false))),
+            )))),
+            not_distinct_from(col("c3").gt(lit(0_i64)), lit(true))
+        );
+    }
+
+    #[test]
+    fn simplify_expr_case_when_first_true() {
+        // CASE WHEN true THEN 1 ELSE c1 END --> 1
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(lit(true)), Box::new(lit(1)),)],
+                Some(Box::new(col("c1"))),
+            ))),
+            lit(1)
+        );
+
+        // CASE WHEN true THEN col('a') ELSE col('b') END --> col('a')
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(lit(true)), Box::new(lit("a")),)],
+                Some(Box::new(lit("b"))),
+            ))),
+            lit("a")
+        );
+
+        // CASE WHEN true THEN col('a') WHEN col('x') > 5 THEN col('b') ELSE col('c') END --> col('a')
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(lit(true)), Box::new(lit("a"))),
+                    (Box::new(lit("x").gt(lit(5))), Box::new(lit("b"))),
+                ],
+                Some(Box::new(lit("c"))),
+            ))),
+            lit("a")
+        );
+
+        // CASE WHEN true THEN col('a') END --> col('a') (no else clause)
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(lit(true)), Box::new(lit("a")),)],
+                None,
+            ))),
+            lit("a")
+        );
+
+        // Negative test: CASE WHEN c2 THEN 1 ELSE 2 END should not be simplified
+        let expr = Expr::Case(Case::new(
+            None,
+            vec![(Box::new(col("c2")), Box::new(lit(1)))],
+            Some(Box::new(lit(2))),
+        ));
+        assert_eq!(simplify(expr.clone()), expr);
+
+        // Negative test: CASE WHEN false THEN 1 ELSE 2 END should not use this rule
+        let expr = Expr::Case(Case::new(
+            None,
+            vec![(Box::new(lit(false)), Box::new(lit(1)))],
+            Some(Box::new(lit(2))),
+        ));
+        assert_ne!(simplify(expr), lit(1));
+
+        // Negative test: CASE WHEN col('c1') > 5 THEN 1 ELSE 2 END should not be simplified
+        let expr = Expr::Case(Case::new(
+            None,
+            vec![(Box::new(col("c1").gt(lit(5))), Box::new(lit(1)))],
+            Some(Box::new(lit(2))),
+        ));
+        assert_eq!(simplify(expr.clone()), expr);
+    }
+
+    #[test]
+    fn simplify_expr_case_when_any_true() {
+        // CASE WHEN c3 > 0 THEN 'a' WHEN true THEN 'b' ELSE 'c' END --> CASE WHEN c3 > 0 THEN 'a' ELSE 'b' END
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").gt(lit(0))), Box::new(lit("a"))),
+                    (Box::new(lit(true)), Box::new(lit("b"))),
+                ],
+                Some(Box::new(lit("c"))),
+            ))),
+            Expr::Case(Case::new(
+                None,
+                vec![(Box::new(col("c3").gt(lit(0))), Box::new(lit("a")))],
+                Some(Box::new(lit("b"))),
+            ))
+        );
+
+        // CASE WHEN c3 > 0 THEN 'a' WHEN c4 < 0 THEN 'b' WHEN true THEN 'c' WHEN c3 = 0 THEN 'd' ELSE 'e' END
+        // --> CASE WHEN c3 > 0 THEN 'a' WHEN c4 < 0 THEN 'b' ELSE 'c' END
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").gt(lit(0))), Box::new(lit("a"))),
+                    (Box::new(col("c4").lt(lit(0))), Box::new(lit("b"))),
+                    (Box::new(lit(true)), Box::new(lit("c"))),
+                    (Box::new(col("c3").eq(lit(0))), Box::new(lit("d"))),
+                ],
+                Some(Box::new(lit("e"))),
+            ))),
+            Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").gt(lit(0))), Box::new(lit("a"))),
+                    (Box::new(col("c4").lt(lit(0))), Box::new(lit("b"))),
+                ],
+                Some(Box::new(lit("c"))),
+            ))
+        );
+
+        // CASE WHEN c3 > 0 THEN 1 WHEN c4 < 0 THEN 2 WHEN true THEN 3 END (no else)
+        // --> CASE WHEN c3 > 0 THEN 1 WHEN c4 < 0 THEN 2 ELSE 3 END
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").gt(lit(0))), Box::new(lit(1))),
+                    (Box::new(col("c4").lt(lit(0))), Box::new(lit(2))),
+                    (Box::new(lit(true)), Box::new(lit(3))),
+                ],
+                None,
+            ))),
+            Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").gt(lit(0))), Box::new(lit(1))),
+                    (Box::new(col("c4").lt(lit(0))), Box::new(lit(2))),
+                ],
+                Some(Box::new(lit(3))),
+            ))
+        );
+
+        // Negative test: CASE WHEN c3 > 0 THEN c3 WHEN c4 < 0 THEN 2 ELSE 3 END should not be simplified
+        let expr = Expr::Case(Case::new(
+            None,
+            vec![
+                (Box::new(col("c3").gt(lit(0))), Box::new(col("c3"))),
+                (Box::new(col("c4").lt(lit(0))), Box::new(lit(2))),
+            ],
+            Some(Box::new(lit(3))),
+        ));
+        assert_eq!(simplify(expr.clone()), expr);
+    }
+
+    #[test]
+    fn simplify_expr_case_when_any_false() {
+        // CASE WHEN false THEN 'a' END --> NULL
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(lit(false)), Box::new(lit("a")))],
+                None,
+            ))),
+            Expr::Literal(ScalarValue::Utf8(None), None)
+        );
+
+        // CASE WHEN false THEN 2 ELSE 1 END --> 1
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![(Box::new(lit(false)), Box::new(lit(2)))],
+                Some(Box::new(lit(1))),
+            ))),
+            lit(1),
+        );
+
+        // CASE WHEN c3 < 10 THEN 'b' WHEN false then c3 ELSE c4 END --> CASE WHEN c3 < 10 THEN b ELSE c4 END
+        assert_eq!(
+            simplify(Expr::Case(Case::new(
+                None,
+                vec![
+                    (Box::new(col("c3").lt(lit(10))), Box::new(lit("b"))),
+                    (Box::new(lit(false)), Box::new(col("c3"))),
+                ],
+                Some(Box::new(col("c4"))),
+            ))),
+            Expr::Case(Case::new(
+                None,
+                vec![(Box::new(col("c3").lt(lit(10))), Box::new(lit("b")))],
+                Some(Box::new(col("c4"))),
+            ))
+        );
+
+        // Negative test: CASE WHEN c3 = 4 THEN 1 ELSE 2 END should not be simplified
+        let expr = Expr::Case(Case::new(
+            None,
+            vec![(Box::new(col("c3").eq(lit(4))), Box::new(lit(1)))],
+            Some(Box::new(lit(2))),
+        ));
+        assert_eq!(simplify(expr.clone()), expr);
+    }
+
+    fn distinct_from(left: impl Into<Expr>, right: impl Into<Expr>) -> Expr {
+        Expr::BinaryExpr(BinaryExpr {
+            left: Box::new(left.into()),
+            op: Operator::IsDistinctFrom,
+            right: Box::new(right.into()),
+        })
+    }
+
+    fn not_distinct_from(left: impl Into<Expr>, right: impl Into<Expr>) -> Expr {
+        Expr::BinaryExpr(BinaryExpr {
+            left: Box::new(left.into()),
+            op: Operator::IsNotDistinctFrom,
+            right: Box::new(right.into()),
+        })
     }
 
     #[test]
@@ -3340,15 +4116,15 @@ mod tests {
         assert_eq!(
             simplify(in_list(
                 col("c1"),
-                vec![scalar_subquery(subquery.clone())],
+                vec![scalar_subquery(Arc::clone(&subquery))],
                 false
             )),
-            in_subquery(col("c1"), subquery.clone())
+            in_subquery(col("c1"), Arc::clone(&subquery))
         );
         assert_eq!(
             simplify(in_list(
                 col("c1"),
-                vec![scalar_subquery(subquery.clone())],
+                vec![scalar_subquery(Arc::clone(&subquery))],
                 true
             )),
             not_in_subquery(col("c1"), subquery)
@@ -3385,32 +4161,32 @@ mod tests {
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], false).and(
             in_list(col("c1"), vec![lit(5), lit(6), lit(7), lit(8)], false),
         );
-        assert_eq!(simplify(expr.clone()), lit(false));
+        assert_eq!(simplify(expr), lit(false));
 
         // 2. c1 IN (1,2,3,4) AND c1 IN (4,5,6,7) -> c1 = 4
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], false).and(
             in_list(col("c1"), vec![lit(4), lit(5), lit(6), lit(7)], false),
         );
-        assert_eq!(simplify(expr.clone()), col("c1").eq(lit(4)));
+        assert_eq!(simplify(expr), col("c1").eq(lit(4)));
 
         // 3. c1 NOT IN (1, 2, 3, 4) OR c1 NOT IN (5, 6, 7, 8) -> true
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], true).or(
             in_list(col("c1"), vec![lit(5), lit(6), lit(7), lit(8)], true),
         );
-        assert_eq!(simplify(expr.clone()), lit(true));
+        assert_eq!(simplify(expr), lit(true));
 
         // 3.5 c1 NOT IN (1, 2, 3, 4) OR c1 NOT IN (4, 5, 6, 7) -> c1 != 4 (4 overlaps)
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], true).or(
             in_list(col("c1"), vec![lit(4), lit(5), lit(6), lit(7)], true),
         );
-        assert_eq!(simplify(expr.clone()), col("c1").not_eq(lit(4)));
+        assert_eq!(simplify(expr), col("c1").not_eq(lit(4)));
 
         // 4. c1 NOT IN (1,2,3,4) AND c1 NOT IN (4,5,6,7) -> c1 NOT IN (1,2,3,4,5,6,7)
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], true).and(
             in_list(col("c1"), vec![lit(4), lit(5), lit(6), lit(7)], true),
         );
         assert_eq!(
-            simplify(expr.clone()),
+            simplify(expr),
             in_list(
                 col("c1"),
                 vec![lit(1), lit(2), lit(3), lit(4), lit(5), lit(6), lit(7)],
@@ -3423,7 +4199,7 @@ mod tests {
             in_list(col("c1"), vec![lit(2), lit(3), lit(4), lit(5)], false),
         );
         assert_eq!(
-            simplify(expr.clone()),
+            simplify(expr),
             in_list(
                 col("c1"),
                 vec![lit(1), lit(2), lit(3), lit(4), lit(5)],
@@ -3437,7 +4213,7 @@ mod tests {
             vec![lit(1), lit(2), lit(3), lit(4), lit(5)],
             true,
         ));
-        assert_eq!(simplify(expr.clone()), lit(false));
+        assert_eq!(simplify(expr), lit(false));
 
         // 7. c1 NOT IN (1,2,3,4) AND c1 IN (1,2,3,4,5) -> c1 = 5
         let expr =
@@ -3446,14 +4222,14 @@ mod tests {
                 vec![lit(1), lit(2), lit(3), lit(4), lit(5)],
                 false,
             ));
-        assert_eq!(simplify(expr.clone()), col("c1").eq(lit(5)));
+        assert_eq!(simplify(expr), col("c1").eq(lit(5)));
 
         // 8. c1 IN (1,2,3,4) AND c1 NOT IN (5,6,7,8) -> c1 IN (1,2,3,4)
         let expr = in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], false).and(
             in_list(col("c1"), vec![lit(5), lit(6), lit(7), lit(8)], true),
         );
         assert_eq!(
-            simplify(expr.clone()),
+            simplify(expr),
             in_list(col("c1"), vec![lit(1), lit(2), lit(3), lit(4)], false)
         );
 
@@ -3471,7 +4247,7 @@ mod tests {
         ))
         .and(in_list(col("c1"), vec![lit(3), lit(6)], false));
         assert_eq!(
-            simplify(expr.clone()),
+            simplify(expr),
             col("c1").eq(lit(3)).or(col("c1").eq(lit(6)))
         );
 
@@ -3485,7 +4261,7 @@ mod tests {
                 ))
                 .and(in_list(col("c1"), vec![lit(8), lit(9), lit(10)], false)),
         );
-        assert_eq!(simplify(expr.clone()), col("c1").eq(lit(8)));
+        assert_eq!(simplify(expr), col("c1").eq(lit(8)));
 
         // Contains non-InList expression
         // c1 NOT IN (1,2,3,4) OR c1 != 5 OR c1 NOT IN (6,7,8,9) -> c1 NOT IN (1,2,3,4) OR c1 != 5 OR c1 NOT IN (6,7,8,9)
@@ -3501,6 +4277,56 @@ mod tests {
         // https://github.com/apache/datafusion/issues/8970
         // assert_eq!(simplify(expr.clone()), lit(true));
         assert_eq!(simplify(expr.clone()), expr);
+    }
+
+    #[test]
+    fn simplify_null_in_empty_inlist() {
+        // `NULL::boolean IN ()` == `NULL::boolean IN (SELECT foo FROM empty)` == false
+        let expr = in_list(lit_bool_null(), vec![], false);
+        assert_eq!(simplify(expr), lit(false));
+
+        // `NULL::boolean NOT IN ()` == `NULL::boolean NOT IN (SELECT foo FROM empty)` == true
+        let expr = in_list(lit_bool_null(), vec![], true);
+        assert_eq!(simplify(expr), lit(true));
+
+        // `NULL IN ()` == `NULL IN (SELECT foo FROM empty)` == false
+        let null_null = || Expr::Literal(ScalarValue::Null, None);
+        let expr = in_list(null_null(), vec![], false);
+        assert_eq!(simplify(expr), lit(false));
+
+        // `NULL NOT IN ()` == `NULL NOT IN (SELECT foo FROM empty)` == true
+        let expr = in_list(null_null(), vec![], true);
+        assert_eq!(simplify(expr), lit(true));
+    }
+
+    #[test]
+    fn just_simplifier_simplify_null_in_empty_inlist() {
+        let simplify = |expr: Expr| -> Expr {
+            let schema = expr_test_schema();
+            let execution_props = ExecutionProps::new();
+            let info = SimplifyContext::new(&execution_props).with_schema(schema);
+            let simplifier = &mut Simplifier::new(&info);
+            expr.rewrite(simplifier)
+                .expect("Failed to simplify expression")
+                .data
+        };
+
+        // `NULL::boolean IN ()` == `NULL::boolean IN (SELECT foo FROM empty)` == false
+        let expr = in_list(lit_bool_null(), vec![], false);
+        assert_eq!(simplify(expr), lit(false));
+
+        // `NULL::boolean NOT IN ()` == `NULL::boolean NOT IN (SELECT foo FROM empty)` == true
+        let expr = in_list(lit_bool_null(), vec![], true);
+        assert_eq!(simplify(expr), lit(true));
+
+        // `NULL IN ()` == `NULL IN (SELECT foo FROM empty)` == false
+        let null_null = || Expr::Literal(ScalarValue::Null, None);
+        let expr = in_list(null_null(), vec![], false);
+        assert_eq!(simplify(expr), lit(false));
+
+        // `NULL NOT IN ()` == `NULL NOT IN (SELECT foo FROM empty)` == true
+        let expr = in_list(null_null(), vec![], true);
+        assert_eq!(simplify(expr), lit(true));
     }
 
     #[test]
@@ -3565,33 +4391,127 @@ mod tests {
     }
 
     #[test]
-    fn test_like_and_ilke() {
-        // test non-null values
-        let expr = like(col("c1"), "%");
-        assert_eq!(simplify(expr), lit(true));
-
-        let expr = not_like(col("c1"), "%");
-        assert_eq!(simplify(expr), lit(false));
-
-        let expr = ilike(col("c1"), "%");
-        assert_eq!(simplify(expr), lit(true));
-
-        let expr = not_ilike(col("c1"), "%");
-        assert_eq!(simplify(expr), lit(false));
-
-        // test null values
+    fn test_like_and_ilike() {
         let null = lit(ScalarValue::Utf8(None));
-        let expr = like(null.clone(), "%");
+
+        // expr [NOT] [I]LIKE NULL
+        let expr = col("c1").like(null.clone());
         assert_eq!(simplify(expr), lit_bool_null());
 
-        let expr = not_like(null.clone(), "%");
+        let expr = col("c1").not_like(null.clone());
         assert_eq!(simplify(expr), lit_bool_null());
 
-        let expr = ilike(null.clone(), "%");
+        let expr = col("c1").ilike(null.clone());
         assert_eq!(simplify(expr), lit_bool_null());
 
-        let expr = not_ilike(null, "%");
+        let expr = col("c1").not_ilike(null.clone());
         assert_eq!(simplify(expr), lit_bool_null());
+
+        // expr [NOT] [I]LIKE '%'
+        let expr = col("c1").like(lit("%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), true));
+
+        let expr = col("c1").not_like(lit("%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), false));
+
+        let expr = col("c1").ilike(lit("%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), true));
+
+        let expr = col("c1").not_ilike(lit("%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), false));
+
+        // expr [NOT] [I]LIKE '%%'
+        let expr = col("c1").like(lit("%%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), true));
+
+        let expr = col("c1").not_like(lit("%%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), false));
+
+        let expr = col("c1").ilike(lit("%%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), true));
+
+        let expr = col("c1").not_ilike(lit("%%"));
+        assert_eq!(simplify(expr), if_not_null(col("c1"), false));
+
+        // not_null_expr [NOT] [I]LIKE '%'
+        let expr = col("c1_non_null").like(lit("%"));
+        assert_eq!(simplify(expr), lit(true));
+
+        let expr = col("c1_non_null").not_like(lit("%"));
+        assert_eq!(simplify(expr), lit(false));
+
+        let expr = col("c1_non_null").ilike(lit("%"));
+        assert_eq!(simplify(expr), lit(true));
+
+        let expr = col("c1_non_null").not_ilike(lit("%"));
+        assert_eq!(simplify(expr), lit(false));
+
+        // not_null_expr [NOT] [I]LIKE '%%'
+        let expr = col("c1_non_null").like(lit("%%"));
+        assert_eq!(simplify(expr), lit(true));
+
+        let expr = col("c1_non_null").not_like(lit("%%"));
+        assert_eq!(simplify(expr), lit(false));
+
+        let expr = col("c1_non_null").ilike(lit("%%"));
+        assert_eq!(simplify(expr), lit(true));
+
+        let expr = col("c1_non_null").not_ilike(lit("%%"));
+        assert_eq!(simplify(expr), lit(false));
+
+        // null_constant [NOT] [I]LIKE '%'
+        let expr = null.clone().like(lit("%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_like(lit("%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().ilike(lit("%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_ilike(lit("%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        // null_constant [NOT] [I]LIKE '%%'
+        let expr = null.clone().like(lit("%%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_like(lit("%%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().ilike(lit("%%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_ilike(lit("%%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        // null_constant [NOT] [I]LIKE 'a%'
+        let expr = null.clone().like(lit("a%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_like(lit("a%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().ilike(lit("a%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        let expr = null.clone().not_ilike(lit("a%"));
+        assert_eq!(simplify(expr), lit_bool_null());
+
+        // expr [NOT] [I]LIKE with pattern without wildcards
+        let expr = col("c1").like(lit("a"));
+        assert_eq!(simplify(expr), col("c1").eq(lit("a")));
+        let expr = col("c1").not_like(lit("a"));
+        assert_eq!(simplify(expr), col("c1").not_eq(lit("a")));
+        let expr = col("c1").like(lit("a_"));
+        assert_eq!(simplify(expr), col("c1").like(lit("a_")));
+        let expr = col("c1").not_like(lit("a_"));
+        assert_eq!(simplify(expr), col("c1").not_like(lit("a_")));
+
+        let expr = col("c1").ilike(lit("a"));
+        assert_eq!(simplify(expr), col("c1").ilike(lit("a")));
+        let expr = col("c1").not_ilike(lit("a"));
+        assert_eq!(simplify(expr), col("c1").not_ilike(lit("a")));
     }
 
     #[test]
@@ -3600,7 +4520,7 @@ mod tests {
         let expr_x = col("c3").gt(lit(3_i64));
         let expr_y = (col("c4") + lit(2_u32)).lt(lit(10_u32));
         let expr_z = col("c1").in_list(vec![lit("a"), lit("b")], true);
-        let expr = expr_x.clone().and(expr_y.clone().or(expr_z));
+        let expr = expr_x.clone().and(expr_y.or(expr_z));
 
         // All guaranteed null
         let guarantees = vec![
@@ -3676,7 +4596,7 @@ mod tests {
             col("c4"),
             NullableInterval::from(ScalarValue::UInt32(Some(3))),
         )];
-        let output = simplify_with_guarantee(expr.clone(), guarantees);
+        let output = simplify_with_guarantee(expr, guarantees);
         assert_eq!(&output, &expr_x);
     }
 
@@ -3733,16 +4653,60 @@ mod tests {
         assert_eq!(expr, expected);
         assert_eq!(num_iter, 2);
     }
+
+    fn boolean_test_schema() -> DFSchemaRef {
+        static BOOLEAN_TEST_SCHEMA: LazyLock<DFSchemaRef> = LazyLock::new(|| {
+            Schema::new(vec![
+                Field::new("A", DataType::Boolean, false),
+                Field::new("B", DataType::Boolean, false),
+                Field::new("C", DataType::Boolean, false),
+                Field::new("D", DataType::Boolean, false),
+            ])
+            .to_dfschema_ref()
+            .unwrap()
+        });
+        Arc::clone(&BOOLEAN_TEST_SCHEMA)
+    }
+
+    #[test]
+    fn simplify_common_factor_conjunction_in_disjunction() {
+        let props = ExecutionProps::new();
+        let schema = boolean_test_schema();
+        let simplifier =
+            ExprSimplifier::new(SimplifyContext::new(&props).with_schema(schema));
+
+        let a = || col("A");
+        let b = || col("B");
+        let c = || col("C");
+        let d = || col("D");
+
+        // (A AND B) OR (A AND C) -> A AND (B OR C)
+        let expr = a().and(b()).or(a().and(c()));
+        let expected = a().and(b().or(c()));
+
+        assert_eq!(expected, simplifier.simplify(expr).unwrap());
+
+        // (A AND B) OR (A AND C) OR (A AND D) -> A AND (B OR C OR D)
+        let expr = a().and(b()).or(a().and(c())).or(a().and(d()));
+        let expected = a().and(b().or(c()).or(d()));
+        assert_eq!(expected, simplifier.simplify(expr).unwrap());
+
+        // A OR (B AND C AND A) -> A
+        let expr = a().or(b().and(c().and(a())));
+        let expected = a();
+        assert_eq!(expected, simplifier.simplify(expr).unwrap());
+    }
+
     #[test]
     fn test_simplify_udaf() {
         let udaf = AggregateUDF::new_from_impl(SimplifyMockUdaf::new_with_simplify());
         let aggregate_function_expr =
-            Expr::AggregateFunction(datafusion_expr::expr::AggregateFunction::new_udf(
+            Expr::AggregateFunction(expr::AggregateFunction::new_udf(
                 udaf.into(),
                 vec![],
                 false,
                 None,
-                None,
+                vec![],
                 None,
             ));
 
@@ -3751,12 +4715,12 @@ mod tests {
 
         let udaf = AggregateUDF::new_from_impl(SimplifyMockUdaf::new_without_simplify());
         let aggregate_function_expr =
-            Expr::AggregateFunction(datafusion_expr::expr::AggregateFunction::new_udf(
+            Expr::AggregateFunction(expr::AggregateFunction::new_udf(
                 udaf.into(),
                 vec![],
                 false,
                 None,
-                None,
+                vec![],
                 None,
             ));
 
@@ -3766,7 +4730,7 @@ mod tests {
 
     /// A Mock UDAF which defines `simplify` to be used in tests
     /// related to UDAF simplification
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct SimplifyMockUdaf {
         simplify: bool,
     }
@@ -3801,7 +4765,7 @@ mod tests {
 
         fn accumulator(
             &self,
-            _acc_args: function::AccumulatorArgs,
+            _acc_args: AccumulatorArgs,
         ) -> Result<Box<dyn Accumulator>> {
             unimplemented!("not needed for tests")
         }
@@ -3831,15 +4795,7 @@ mod tests {
         let udwf = WindowFunctionDefinition::WindowUDF(
             WindowUDF::new_from_impl(SimplifyMockUdwf::new_with_simplify()).into(),
         );
-        let window_function_expr =
-            Expr::WindowFunction(datafusion_expr::expr::WindowFunction::new(
-                udwf,
-                vec![],
-                vec![],
-                vec![],
-                WindowFrame::new(None),
-                None,
-            ));
+        let window_function_expr = Expr::from(WindowFunction::new(udwf, vec![]));
 
         let expected = col("result_column");
         assert_eq!(simplify(window_function_expr), expected);
@@ -3847,15 +4803,7 @@ mod tests {
         let udwf = WindowFunctionDefinition::WindowUDF(
             WindowUDF::new_from_impl(SimplifyMockUdwf::new_without_simplify()).into(),
         );
-        let window_function_expr =
-            Expr::WindowFunction(datafusion_expr::expr::WindowFunction::new(
-                udwf,
-                vec![],
-                vec![],
-                vec![],
-                WindowFrame::new(None),
-                None,
-            ));
+        let window_function_expr = Expr::from(WindowFunction::new(udwf, vec![]));
 
         let expected = window_function_expr.clone();
         assert_eq!(simplify(window_function_expr), expected);
@@ -3863,7 +4811,7 @@ mod tests {
 
     /// A Mock UDWF which defines `simplify` to be used in tests
     /// related to UDWF simplification
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct SimplifyMockUdwf {
         simplify: bool,
     }
@@ -3892,10 +4840,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-            unimplemented!("not needed for tests")
-        }
-
         fn simplify(&self) -> Option<WindowFunctionSimplification> {
             if self.simplify {
                 Some(Box::new(|_, _| Ok(col("result_column"))))
@@ -3904,8 +4848,175 @@ mod tests {
             }
         }
 
-        fn partition_evaluator(&self) -> Result<Box<dyn PartitionEvaluator>> {
+        fn partition_evaluator(
+            &self,
+            _partition_evaluator_args: PartitionEvaluatorArgs,
+        ) -> Result<Box<dyn PartitionEvaluator>> {
             unimplemented!("not needed for tests")
         }
+
+        fn field(&self, _field_args: WindowUDFFieldArgs) -> Result<FieldRef> {
+            unimplemented!("not needed for tests")
+        }
+
+        fn limit_effect(&self, _args: &[Arc<dyn PhysicalExpr>]) -> LimitEffect {
+            LimitEffect::Unknown
+        }
+    }
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct VolatileUdf {
+        signature: Signature,
+    }
+
+    impl VolatileUdf {
+        pub fn new() -> Self {
+            Self {
+                signature: Signature::exact(vec![], Volatility::Volatile),
+            }
+        }
+    }
+    impl ScalarUDFImpl for VolatileUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "VolatileUdf"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+            Ok(DataType::Int16)
+        }
+
+        fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+            panic!("dummy - not implemented")
+        }
+    }
+
+    #[test]
+    fn test_optimize_volatile_conditions() {
+        let fun = Arc::new(ScalarUDF::new_from_impl(VolatileUdf::new()));
+        let rand = Expr::ScalarFunction(ScalarFunction::new_udf(fun, vec![]));
+        {
+            let expr = rand
+                .clone()
+                .eq(lit(0))
+                .or(col("column1").eq(lit(2)).and(rand.clone().eq(lit(0))));
+
+            assert_eq!(simplify(expr.clone()), expr);
+        }
+
+        {
+            let expr = col("column1")
+                .eq(lit(2))
+                .or(col("column1").eq(lit(2)).and(rand.clone().eq(lit(0))));
+
+            assert_eq!(simplify(expr), col("column1").eq(lit(2)));
+        }
+
+        {
+            let expr = (col("column1").eq(lit(2)).and(rand.clone().eq(lit(0)))).or(col(
+                "column1",
+            )
+            .eq(lit(2))
+            .and(rand.clone().eq(lit(0))));
+
+            assert_eq!(
+                simplify(expr),
+                col("column1")
+                    .eq(lit(2))
+                    .and((rand.clone().eq(lit(0))).or(rand.clone().eq(lit(0))))
+            );
+        }
+    }
+
+    #[test]
+    fn simplify_fixed_size_binary_eq_lit() {
+        let bytes = [1u8, 2, 3].as_slice();
+
+        // The expression starts simple.
+        let expr = col("c5").eq(lit(bytes));
+
+        // The type coercer introduces a cast.
+        let coerced = coerce(expr.clone());
+        let schema = expr_test_schema();
+        assert_eq!(
+            coerced,
+            col("c5")
+                .cast_to(&DataType::Binary, schema.as_ref())
+                .unwrap()
+                .eq(lit(bytes))
+        );
+
+        // The simplifier removes the cast.
+        assert_eq!(
+            simplify(coerced),
+            col("c5").eq(Expr::Literal(
+                ScalarValue::FixedSizeBinary(3, Some(bytes.to_vec()),),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn simplify_cast_literal() {
+        // Test that CAST(literal) expressions are evaluated at plan time
+
+        // CAST(123 AS Int64) should become 123i64
+        let expr = Expr::Cast(Cast::new(Box::new(lit(123i32)), DataType::Int64));
+        let expected = lit(123i64);
+        assert_eq!(simplify(expr), expected);
+
+        // CAST(1761630189642 AS Timestamp(Nanosecond, Some("+00:00")))
+        // Integer to timestamp cast
+        let expr = Expr::Cast(Cast::new(
+            Box::new(lit(1761630189642i64)),
+            DataType::Timestamp(
+                arrow::datatypes::TimeUnit::Nanosecond,
+                Some("+00:00".into()),
+            ),
+        ));
+        // Should evaluate to a timestamp literal
+        let result = simplify(expr);
+        match result {
+            Expr::Literal(ScalarValue::TimestampNanosecond(Some(val), tz), _) => {
+                assert_eq!(val, 1761630189642i64);
+                assert_eq!(tz.as_deref(), Some("+00:00"));
+            }
+            other => panic!("Expected TimestampNanosecond literal, got: {other:?}"),
+        }
+
+        // Test CAST of invalid string to timestamp - should return an error at plan time
+        // This represents the case from the issue: CAST(Utf8("1761630189642") AS Timestamp)
+        // "1761630189642" is NOT a valid timestamp string format
+        let expr = Expr::Cast(Cast::new(
+            Box::new(lit("1761630189642")),
+            DataType::Timestamp(
+                arrow::datatypes::TimeUnit::Nanosecond,
+                Some("+00:00".into()),
+            ),
+        ));
+
+        // The simplification should now fail with an error at plan time
+        let schema = test_schema();
+        let props = ExecutionProps::new();
+        let simplifier =
+            ExprSimplifier::new(SimplifyContext::new(&props).with_schema(schema));
+        let result = simplifier.simplify(expr);
+        assert!(result.is_err(), "Expected error for invalid cast");
+        let err_msg = result.unwrap_err().to_string();
+        assert_contains!(err_msg, "Error parsing timestamp");
+    }
+
+    fn if_not_null(expr: Expr, then: bool) -> Expr {
+        Expr::Case(Case {
+            expr: Some(expr.is_not_null().into()),
+            when_then_expr: vec![(lit(true).into(), lit(then).into())],
+            else_expr: None,
+        })
     }
 }

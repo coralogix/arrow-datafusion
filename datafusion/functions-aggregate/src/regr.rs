@@ -17,22 +17,29 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
-use std::any::Any;
-use std::fmt::Debug;
-
 use arrow::array::Float64Array;
+use arrow::datatypes::FieldRef;
 use arrow::{
     array::{ArrayRef, UInt64Array},
     compute::cast,
     datatypes::DataType,
     datatypes::Field,
 };
-use datafusion_common::{downcast_value, plan_err, unwrap_or_internal_err, ScalarValue};
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::{
+    HashMap, Result, ScalarValue, downcast_value, plan_err, unwrap_or_internal_err,
+};
+use datafusion_doc::aggregate_doc_sections::DOC_SECTION_STATISTICAL;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;
 use datafusion_expr::utils::format_state_name;
-use datafusion_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
+use datafusion_expr::{
+    Accumulator, AggregateUDFImpl, Documentation, Signature, Volatility,
+};
+use std::any::Any;
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::mem::size_of_val;
+use std::sync::{Arc, LazyLock};
 
 macro_rules! make_regr_udaf_expr_and_func {
     ($EXPR_FN:ident, $AGGREGATE_UDF_FN:ident, $REGR_TYPE:expr) => {
@@ -51,6 +58,7 @@ make_regr_udaf_expr_and_func!(regr_sxx, regr_sxx_udaf, RegrType::SXX);
 make_regr_udaf_expr_and_func!(regr_syy, regr_syy_udaf, RegrType::SYY);
 make_regr_udaf_expr_and_func!(regr_sxy, regr_sxy_udaf, RegrType::SXY);
 
+#[derive(PartialEq, Eq, Hash)]
 pub struct Regr {
     signature: Signature,
     regr_type: RegrType,
@@ -76,24 +84,7 @@ impl Regr {
     }
 }
 
-/*
-#[derive(Debug)]
-pub struct Regr {
-    name: String,
-    regr_type: RegrType,
-    expr_y: Arc<dyn PhysicalExpr>,
-    expr_x: Arc<dyn PhysicalExpr>,
-}
-
-impl Regr {
-    pub fn get_regr_type(&self) -> RegrType {
-        self.regr_type.clone()
-    }
-}
-*/
-
-#[derive(Debug, Clone)]
-#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum RegrType {
     /// Variant for `regr_slope` aggregate expression
     /// Returns the slope of the linear regression line for non-null pairs in aggregate columns.
@@ -135,6 +126,335 @@ pub enum RegrType {
     SXY,
 }
 
+impl RegrType {
+    /// return the documentation for the `RegrType`
+    fn documentation(&self) -> Option<&Documentation> {
+        get_regr_docs().get(self)
+    }
+}
+
+static DOCUMENTATION: LazyLock<HashMap<RegrType, Documentation>> = LazyLock::new(|| {
+    let mut hash_map = HashMap::new();
+    hash_map.insert(
+            RegrType::Slope,
+            Documentation::builder(
+                DOC_SECTION_STATISTICAL,
+                    "Returns the slope of the linear regression line for non-null pairs in aggregate columns. \
+                    Given input column Y and X: regr_slope(Y, X) returns the slope (k in Y = k*X + b) using minimal RSS fitting.",
+
+                "regr_slope(expression_y, expression_x)")
+                .with_sql_example(
+                    r#"```sql
+create table weekly_performance(day int, user_signups int) as values (1,60), (2,65), (3, 70), (4,75), (5,80);
+select * from weekly_performance;
++-----+--------------+
+| day | user_signups |
++-----+--------------+
+| 1   | 60           |
+| 2   | 65           |
+| 3   | 70           |
+| 4   | 75           |
+| 5   | 80           |
++-----+--------------+
+
+SELECT regr_slope(user_signups, day) AS slope FROM weekly_performance;
++--------+
+| slope  |
++--------+
+| 5.0    |
++--------+
+```
+"#
+                )
+                .with_standard_argument("expression_y", Some("Dependent variable"))
+                .with_standard_argument("expression_x", Some("Independent variable"))
+                .build()
+        );
+
+    hash_map.insert(
+            RegrType::Intercept,
+            Documentation::builder(
+                DOC_SECTION_STATISTICAL,
+                    "Computes the y-intercept of the linear regression line. For the equation (y = kx + b), \
+                    this function returns b.",
+
+                "regr_intercept(expression_y, expression_x)")
+                .with_sql_example(
+                    r#"```sql
+create table weekly_performance(week int, productivity_score int) as values (1,60), (2,65), (3, 70), (4,75), (5,80);
+select * from weekly_performance;
++------+---------------------+
+| week | productivity_score  |
+| ---- | ------------------- |
+| 1    | 60                  |
+| 2    | 65                  |
+| 3    | 70                  |
+| 4    | 75                  |
+| 5    | 80                  |
++------+---------------------+
+
+SELECT regr_intercept(productivity_score, week) AS intercept FROM weekly_performance;
++----------+
+|intercept|
+|intercept |
++----------+
+|  55      |
++----------+
+```
+"#
+                )
+                .with_standard_argument("expression_y", Some("Dependent variable"))
+                .with_standard_argument("expression_x", Some("Independent variable"))
+                .build()
+        );
+
+    hash_map.insert(
+        RegrType::Count,
+        Documentation::builder(
+            DOC_SECTION_STATISTICAL,
+            "Counts the number of non-null paired data points.",
+            "regr_count(expression_y, expression_x)",
+        )
+        .with_sql_example(
+            r#"```sql
+create table daily_metrics(day int, user_signups int) as values (1,100), (2,120), (3, NULL), (4,110), (5,NULL);
+select * from daily_metrics;
++-----+---------------+
+| day | user_signups  |
+| --- | ------------- |
+| 1   | 100           |
+| 2   | 120           |
+| 3   | NULL          |
+| 4   | 110           |
+| 5   | NULL          |
++-----+---------------+
+
+SELECT regr_count(user_signups, day) AS valid_pairs FROM daily_metrics;
++-------------+
+| valid_pairs |
++-------------+
+| 3           |
++-------------+
+```
+"#
+        )
+        .with_standard_argument("expression_y", Some("Dependent variable"))
+        .with_standard_argument("expression_x", Some("Independent variable"))
+        .build(),
+    );
+
+    hash_map.insert(
+            RegrType::R2,
+            Documentation::builder(
+                DOC_SECTION_STATISTICAL,
+                    "Computes the square of the correlation coefficient between the independent and dependent variables.",
+
+                "regr_r2(expression_y, expression_x)")
+                .with_sql_example(
+                    r#"```sql
+create table weekly_performance(day int ,user_signups int) as values (1,60), (2,65), (3, 70), (4,75), (5,80);
+select * from weekly_performance;
++-----+--------------+
+| day | user_signups |
++-----+--------------+
+| 1   | 60           |
+| 2   | 65           |
+| 3   | 70           |
+| 4   | 75           |
+| 5   | 80           |
++-----+--------------+
+
+SELECT regr_r2(user_signups, day) AS r_squared FROM weekly_performance;
++---------+
+|r_squared|
++---------+
+| 1.0     |
++---------+
+```
+"#
+                )
+                .with_standard_argument("expression_y", Some("Dependent variable"))
+                .with_standard_argument("expression_x", Some("Independent variable"))
+                .build()
+        );
+
+    hash_map.insert(
+            RegrType::AvgX,
+            Documentation::builder(
+                DOC_SECTION_STATISTICAL,
+                    "Computes the average of the independent variable (input) expression_x for the non-null paired data points.",
+
+                "regr_avgx(expression_y, expression_x)")
+                .with_sql_example(
+                    r#"```sql
+create table daily_sales(day int, total_sales int) as values (1,100), (2,150), (3,200), (4,NULL), (5,250);
+select * from daily_sales;
++-----+-------------+
+| day | total_sales |
+| --- | ----------- |
+| 1   | 100         |
+| 2   | 150         |
+| 3   | 200         |
+| 4   | NULL        |
+| 5   | 250         |
++-----+-------------+
+
+SELECT regr_avgx(total_sales, day) AS avg_day FROM daily_sales;
++----------+
+| avg_day  |
++----------+
+|   2.75   |
++----------+
+```
+"#
+                )
+                .with_standard_argument("expression_y", Some("Dependent variable"))
+                .with_standard_argument("expression_x", Some("Independent variable"))
+                .build()
+        );
+
+    hash_map.insert(
+            RegrType::AvgY,
+            Documentation::builder(
+                DOC_SECTION_STATISTICAL,
+                    "Computes the average of the dependent variable (output) expression_y for the non-null paired data points.",
+
+                "regr_avgy(expression_y, expression_x)")
+                .with_sql_example(
+                    r#"```sql
+create table daily_temperature(day int, temperature int) as values (1,30), (2,32), (3, NULL), (4,35), (5,36);
+select * from daily_temperature;
++-----+-------------+
+| day | temperature |
+| --- | ----------- |
+| 1   | 30          |
+| 2   | 32          |
+| 3   | NULL        |
+| 4   | 35          |
+| 5   | 36          |
++-----+-------------+
+
+-- temperature as Dependent Variable(Y), day as Independent Variable(X)
+SELECT regr_avgy(temperature, day) AS avg_temperature FROM daily_temperature;
++-----------------+
+| avg_temperature |
++-----------------+
+| 33.25           |
++-----------------+
+```
+"#
+                )
+                .with_standard_argument("expression_y", Some("Dependent variable"))
+                .with_standard_argument("expression_x", Some("Independent variable"))
+                .build()
+        );
+
+    hash_map.insert(
+        RegrType::SXX,
+        Documentation::builder(
+            DOC_SECTION_STATISTICAL,
+            "Computes the sum of squares of the independent variable.",
+            "regr_sxx(expression_y, expression_x)",
+        )
+        .with_sql_example(
+            r#"```sql
+create table study_hours(student_id int, hours int, test_score int) as values (1,2,55), (2,4,65), (3,6,75), (4,8,85), (5,10,95);
+select * from study_hours;
++------------+-------+------------+
+| student_id | hours | test_score |
++------------+-------+------------+
+| 1          | 2     | 55         |
+| 2          | 4     | 65         |
+| 3          | 6     | 75         |
+| 4          | 8     | 85         |
+| 5          | 10    | 95         |
++------------+-------+------------+
+
+SELECT regr_sxx(test_score, hours) AS sxx FROM study_hours;
++------+
+| sxx  |
++------+
+| 40.0 |
++------+
+```
+"#
+        )
+        .with_standard_argument("expression_y", Some("Dependent variable"))
+        .with_standard_argument("expression_x", Some("Independent variable"))
+        .build(),
+    );
+
+    hash_map.insert(
+        RegrType::SYY,
+        Documentation::builder(
+            DOC_SECTION_STATISTICAL,
+            "Computes the sum of squares of the dependent variable.",
+            "regr_syy(expression_y, expression_x)",
+        )
+        .with_sql_example(
+            r#"```sql
+create table employee_productivity(week int, productivity_score int) as values (1,60), (2,65), (3,70);
+select * from employee_productivity;
++------+--------------------+
+| week | productivity_score |
++------+--------------------+
+| 1    | 60                 |
+| 2    | 65                 |
+| 3    | 70                 |
++------+--------------------+
+
+SELECT regr_syy(productivity_score, week) AS sum_squares_y FROM employee_productivity;
++---------------+
+| sum_squares_y |
++---------------+
+|    50.0       |
++---------------+
+```
+"#
+        )
+        .with_standard_argument("expression_y", Some("Dependent variable"))
+        .with_standard_argument("expression_x", Some("Independent variable"))
+        .build(),
+    );
+
+    hash_map.insert(
+        RegrType::SXY,
+        Documentation::builder(
+            DOC_SECTION_STATISTICAL,
+            "Computes the sum of products of paired data points.",
+            "regr_sxy(expression_y, expression_x)",
+        )
+        .with_sql_example(
+            r#"```sql
+create table employee_productivity(week int, productivity_score int) as values(1,60), (2,65), (3,70);
+select * from employee_productivity;
++------+--------------------+
+| week | productivity_score |
++------+--------------------+
+| 1    | 60                 |
+| 2    | 65                 |
+| 3    | 70                 |
++------+--------------------+
+
+SELECT regr_sxy(productivity_score, week) AS sum_product_deviations FROM employee_productivity;
++------------------------+
+| sum_product_deviations |
++------------------------+
+|       10.0             |
++------------------------+
+```
+"#
+        )
+        .with_standard_argument("expression_y", Some("Dependent variable"))
+        .with_standard_argument("expression_x", Some("Independent variable"))
+        .build(),
+    );
+    hash_map
+});
+fn get_regr_docs() -> &'static HashMap<RegrType, Documentation> {
+    &DOCUMENTATION
+}
+
 impl AggregateUDFImpl for Regr {
     fn as_any(&self) -> &dyn Any {
         self
@@ -153,21 +473,18 @@ impl AggregateUDFImpl for Regr {
             return plan_err!("Covariance requires numeric input types");
         }
 
-        Ok(DataType::Float64)
+        if matches!(self.regr_type, RegrType::Count) {
+            Ok(DataType::UInt64)
+        } else {
+            Ok(DataType::Float64)
+        }
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(RegrAccumulator::try_new(&self.regr_type)?))
     }
 
-    fn create_sliding_accumulator(
-        &self,
-        _args: AccumulatorArgs,
-    ) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(RegrAccumulator::try_new(&self.regr_type)?))
-    }
-
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
             Field::new(
                 format_state_name(args.name, "count"),
@@ -199,24 +516,16 @@ impl AggregateUDFImpl for Regr {
                 DataType::Float64,
                 true,
             ),
-        ])
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect())
     }
-}
 
-/*
-impl PartialEq<dyn Any> for Regr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.name == x.name
-                    && self.expr_y.eq(&x.expr_y)
-                    && self.expr_x.eq(&x.expr_x)
-            })
-            .unwrap_or(false)
+    fn documentation(&self) -> Option<&Documentation> {
+        self.regr_type.documentation()
     }
 }
-*/
 
 /// `RegrAccumulator` is used to compute linear regression aggregate functions
 /// by maintaining statistics needed to compute them in an online fashion.
@@ -480,7 +789,7 @@ impl Accumulator for RegrAccumulator {
                 let nullif_cond = self.count <= 1 || var_pop_x == 0.0;
                 nullif_or_stat(nullif_cond, self.mean_y - slope * self.mean_x)
             }
-            RegrType::Count => Ok(ScalarValue::Float64(Some(self.count as f64))),
+            RegrType::Count => Ok(ScalarValue::UInt64(Some(self.count))),
             RegrType::R2 => {
                 // Only 0/1 point or all x(or y) is the same
                 let nullif_cond = self.count <= 1 || var_pop_x == 0.0 || var_pop_y == 0.0;
@@ -498,6 +807,6 @@ impl Accumulator for RegrAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }

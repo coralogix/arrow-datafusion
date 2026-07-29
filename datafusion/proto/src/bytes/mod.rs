@@ -24,21 +24,22 @@ use crate::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
 };
 use crate::protobuf;
-use datafusion_common::{plan_datafusion_err, Result};
+use datafusion_common::{Result, plan_datafusion_err};
+use datafusion_execution::TaskContext;
 use datafusion_expr::{
-    create_udaf, create_udf, create_udwf, AggregateUDF, Expr, LogicalPlan, Volatility,
-    WindowUDF,
+    AggregateUDF, Expr, LogicalPlan, Volatility, WindowUDF, create_udaf, create_udf,
+    create_udwf,
 };
 use prost::{
-    bytes::{Bytes, BytesMut},
     Message,
+    bytes::{Bytes, BytesMut},
 };
 use std::sync::Arc;
 
 // Reexport Bytes which appears in the API
-use datafusion::execution::registry::FunctionRegistry;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
+use datafusion_execution::registry::FunctionRegistry;
+use datafusion_expr::planner::ExprPlanner;
+use datafusion_physical_plan::ExecutionPlan;
 
 mod registry;
 
@@ -115,7 +116,7 @@ impl Serializeable for Expr {
                 Ok(Arc::new(create_udf(
                     name,
                     vec![],
-                    Arc::new(arrow::datatypes::DataType::Null),
+                    arrow::datatypes::DataType::Null,
                     Volatility::Immutable,
                     Arc::new(|_| unimplemented!()),
                 )))
@@ -165,6 +166,18 @@ impl Serializeable for Expr {
                     "register_udwf called in Placeholder Registry!"
                 )
             }
+
+            fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+                vec![]
+            }
+
+            fn udafs(&self) -> std::collections::HashSet<String> {
+                std::collections::HashSet::default()
+            }
+
+            fn udwfs(&self) -> std::collections::HashSet<String> {
+                std::collections::HashSet::default()
+            }
         }
         Expr::from_bytes_with_registry(&bytes, &PlaceHolderRegistry)?;
 
@@ -194,11 +207,7 @@ pub fn logical_plan_to_bytes(plan: &LogicalPlan) -> Result<Bytes> {
 #[cfg(feature = "json")]
 pub fn logical_plan_to_json(plan: &LogicalPlan) -> Result<String> {
     let extension_codec = DefaultLogicalExtensionCodec {};
-    let protobuf =
-        protobuf::LogicalPlanNode::try_from_logical_plan(plan, &extension_codec)
-            .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))?;
-    serde_json::to_string(&protobuf)
-        .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))
+    logical_plan_to_json_with_extension_codec(plan, &extension_codec)
 }
 
 /// Serialize a LogicalPlan as bytes, using the provided extension codec
@@ -215,20 +224,28 @@ pub fn logical_plan_to_bytes_with_extension_codec(
     Ok(buffer.into())
 }
 
+/// Serialize a LogicalPlan as JSON using the provided extension codec
+#[cfg(feature = "json")]
+pub fn logical_plan_to_json_with_extension_codec(
+    plan: &LogicalPlan,
+    extension_codec: &dyn LogicalExtensionCodec,
+) -> Result<String> {
+    let protobuf =
+        protobuf::LogicalPlanNode::try_from_logical_plan(plan, extension_codec)
+            .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))?;
+    serde_json::to_string(&protobuf)
+        .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))
+}
+
 /// Deserialize a LogicalPlan from JSON
 #[cfg(feature = "json")]
-pub fn logical_plan_from_json(json: &str, ctx: &SessionContext) -> Result<LogicalPlan> {
-    let back: protobuf::LogicalPlanNode = serde_json::from_str(json)
-        .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))?;
+pub fn logical_plan_from_json(json: &str, ctx: &TaskContext) -> Result<LogicalPlan> {
     let extension_codec = DefaultLogicalExtensionCodec {};
-    back.try_into_logical_plan(ctx, &extension_codec)
+    logical_plan_from_json_with_extension_codec(json, ctx, &extension_codec)
 }
 
 /// Deserialize a LogicalPlan from bytes
-pub fn logical_plan_from_bytes(
-    bytes: &[u8],
-    ctx: &SessionContext,
-) -> Result<LogicalPlan> {
+pub fn logical_plan_from_bytes(bytes: &[u8], ctx: &TaskContext) -> Result<LogicalPlan> {
     let extension_codec = DefaultLogicalExtensionCodec {};
     logical_plan_from_bytes_with_extension_codec(bytes, ctx, &extension_codec)
 }
@@ -236,12 +253,24 @@ pub fn logical_plan_from_bytes(
 /// Deserialize a LogicalPlan from bytes
 pub fn logical_plan_from_bytes_with_extension_codec(
     bytes: &[u8],
-    ctx: &SessionContext,
+    ctx: &TaskContext,
     extension_codec: &dyn LogicalExtensionCodec,
 ) -> Result<LogicalPlan> {
     let protobuf = protobuf::LogicalPlanNode::decode(bytes)
         .map_err(|e| plan_datafusion_err!("Error decoding expr as protobuf: {e}"))?;
     protobuf.try_into_logical_plan(ctx, extension_codec)
+}
+
+/// Deserialize a LogicalPlan from JSON
+#[cfg(feature = "json")]
+pub fn logical_plan_from_json_with_extension_codec(
+    json: &str,
+    ctx: &TaskContext,
+    extension_codec: &dyn LogicalExtensionCodec,
+) -> Result<LogicalPlan> {
+    let back: protobuf::LogicalPlanNode = serde_json::from_str(json)
+        .map_err(|e| plan_datafusion_err!("Error deserializing plan: {e}"))?;
+    back.try_into_logical_plan(ctx, extension_codec)
 }
 
 /// Serialize a PhysicalPlan as bytes
@@ -279,18 +308,18 @@ pub fn physical_plan_to_bytes_with_extension_codec(
 #[cfg(feature = "json")]
 pub fn physical_plan_from_json(
     json: &str,
-    ctx: &SessionContext,
+    ctx: &TaskContext,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let back: protobuf::PhysicalPlanNode = serde_json::from_str(json)
         .map_err(|e| plan_datafusion_err!("Error serializing plan: {e}"))?;
     let extension_codec = DefaultPhysicalExtensionCodec {};
-    back.try_into_physical_plan(ctx, &ctx.runtime_env(), &extension_codec)
+    back.try_into_physical_plan(ctx, &extension_codec)
 }
 
 /// Deserialize a PhysicalPlan from bytes
 pub fn physical_plan_from_bytes(
     bytes: &[u8],
-    ctx: &SessionContext,
+    ctx: &TaskContext,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let extension_codec = DefaultPhysicalExtensionCodec {};
     physical_plan_from_bytes_with_extension_codec(bytes, ctx, &extension_codec)
@@ -299,10 +328,10 @@ pub fn physical_plan_from_bytes(
 /// Deserialize a PhysicalPlan from bytes
 pub fn physical_plan_from_bytes_with_extension_codec(
     bytes: &[u8],
-    ctx: &SessionContext,
+    ctx: &TaskContext,
     extension_codec: &dyn PhysicalExtensionCodec,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let protobuf = protobuf::PhysicalPlanNode::decode(bytes)
         .map_err(|e| plan_datafusion_err!("Error decoding expr as protobuf: {e}"))?;
-    protobuf.try_into_physical_plan(ctx, &ctx.runtime_env(), extension_codec)
+    protobuf.try_into_physical_plan(ctx, extension_codec)
 }

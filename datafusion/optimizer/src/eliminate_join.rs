@@ -19,16 +19,16 @@
 use crate::optimizer::ApplyOrder;
 use crate::{OptimizerConfig, OptimizerRule};
 use datafusion_common::tree_node::Transformed;
-use datafusion_common::{internal_err, Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::JoinType::Inner;
 use datafusion_expr::{
+    Expr,
     logical_plan::{EmptyRelation, LogicalPlan},
-    CrossJoin, Expr,
 };
 
 /// Eliminates joins when join condition is false.
 /// Replaces joins when inner join condition is true with a cross join.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct EliminateJoin;
 
 impl EliminateJoin {
@@ -38,14 +38,6 @@ impl EliminateJoin {
 }
 
 impl OptimizerRule for EliminateJoin {
-    fn try_optimize(
-        &self,
-        _plan: &LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        internal_err!("Should have called EliminateJoin::rewrite")
-    }
-
     fn name(&self) -> &str {
         "eliminate_join"
     }
@@ -62,14 +54,7 @@ impl OptimizerRule for EliminateJoin {
         match plan {
             LogicalPlan::Join(join) if join.join_type == Inner && join.on.is_empty() => {
                 match join.filter {
-                    Some(Expr::Literal(ScalarValue::Boolean(Some(true)))) => {
-                        Ok(Transformed::yes(LogicalPlan::CrossJoin(CrossJoin {
-                            left: join.left,
-                            right: join.right,
-                            schema: join.schema,
-                        })))
-                    }
-                    Some(Expr::Literal(ScalarValue::Boolean(Some(false)))) => Ok(
+                    Some(Expr::Literal(ScalarValue::Boolean(Some(false)), _)) => Ok(
                         Transformed::yes(LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
                             schema: join.schema,
@@ -89,15 +74,28 @@ impl OptimizerRule for EliminateJoin {
 
 #[cfg(test)]
 mod tests {
+    use crate::OptimizerContext;
+    use crate::assert_optimized_plan_eq_snapshot;
     use crate::eliminate_join::EliminateJoin;
-    use crate::test::*;
-    use datafusion_common::{Result, ScalarValue};
+    use datafusion_common::Result;
     use datafusion_expr::JoinType::Inner;
-    use datafusion_expr::{logical_plan::builder::LogicalPlanBuilder, Expr, LogicalPlan};
+    use datafusion_expr::{lit, logical_plan::builder::LogicalPlanBuilder};
     use std::sync::Arc;
 
-    fn assert_optimized_plan_equal(plan: LogicalPlan, expected: &str) -> Result<()> {
-        assert_optimized_plan_eq(Arc::new(EliminateJoin::new()), plan, expected)
+    macro_rules! assert_optimized_plan_equal {
+        (
+            $plan:expr,
+            @ $expected:literal $(,)?
+        ) => {{
+            let optimizer_ctx = OptimizerContext::new().with_max_passes(1);
+            let rules: Vec<Arc<dyn crate::OptimizerRule + Send + Sync>> = vec![Arc::new(EliminateJoin::new())];
+            assert_optimized_plan_eq_snapshot!(
+                optimizer_ctx,
+                rules,
+                $plan,
+                @ $expected,
+            )
+        }};
     }
 
     #[test]
@@ -106,28 +104,10 @@ mod tests {
             .join_on(
                 LogicalPlanBuilder::empty(false).build()?,
                 Inner,
-                Some(Expr::Literal(ScalarValue::Boolean(Some(false)))),
+                Some(lit(false)),
             )?
             .build()?;
 
-        let expected = "EmptyRelation";
-        assert_optimized_plan_equal(plan, expected)
-    }
-
-    #[test]
-    fn join_on_true() -> Result<()> {
-        let plan = LogicalPlanBuilder::empty(false)
-            .join_on(
-                LogicalPlanBuilder::empty(false).build()?,
-                Inner,
-                Some(Expr::Literal(ScalarValue::Boolean(Some(true)))),
-            )?
-            .build()?;
-
-        let expected = "\
-        CrossJoin:\
-        \n  EmptyRelation\
-        \n  EmptyRelation";
-        assert_optimized_plan_equal(plan, expected)
+        assert_optimized_plan_equal!(plan, @"EmptyRelation: rows=0")
     }
 }

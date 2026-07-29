@@ -16,25 +16,26 @@
 // under the License.
 
 mod data_utils;
+
 use arrow::util::pretty::pretty_format_batches;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use data_utils::make_data;
-use datafusion::physical_plan::{collect, displayable, ExecutionPlan};
+use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::SessionContext;
 use datafusion::{datasource::MemTable, error::Result};
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::TaskContext;
+use std::hint::black_box;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 async fn create_context(
-    limit: usize,
     partition_cnt: i32,
     sample_cnt: i32,
     asc: bool,
     use_topk: bool,
-) -> Result<(Arc<dyn ExecutionPlan>, Arc<TaskContext>)> {
-    let (schema, parts) = make_data(partition_cnt, sample_cnt, asc).unwrap();
+    use_view: bool,
+) -> Result<SessionContext> {
+    let (schema, parts) = make_data(partition_cnt, sample_cnt, asc, use_view).unwrap();
     let mem_table = Arc::new(MemTable::try_new(schema, parts).unwrap());
 
     // Create the DataFrame
@@ -43,52 +44,52 @@ async fn create_context(
     opts.optimizer.enable_topk_aggregation = use_topk;
     let ctx = SessionContext::new_with_config(cfg);
     let _ = ctx.register_table("traces", mem_table)?;
-    let sql = format!("select trace_id, max(timestamp_ms) from traces group by trace_id order by max(timestamp_ms) desc limit {limit};");
+
+    Ok(ctx)
+}
+
+fn run(rt: &Runtime, ctx: SessionContext, limit: usize, use_topk: bool, asc: bool) {
+    black_box(rt.block_on(async { aggregate(ctx, limit, use_topk, asc).await })).unwrap();
+}
+
+async fn aggregate(
+    ctx: SessionContext,
+    limit: usize,
+    use_topk: bool,
+    asc: bool,
+) -> Result<()> {
+    let sql = format!(
+        "select max(timestamp_ms) from traces group by trace_id order by max(timestamp_ms) desc limit {limit};"
+    );
     let df = ctx.sql(sql.as_str()).await?;
-    let physical_plan = df.create_physical_plan().await?;
-    let actual_phys_plan = displayable(physical_plan.as_ref()).indent(true).to_string();
+    let plan = df.create_physical_plan().await?;
+    let actual_phys_plan = displayable(plan.as_ref()).indent(true).to_string();
     assert_eq!(
         actual_phys_plan.contains(&format!("lim=[{limit}]")),
         use_topk
     );
 
-    Ok((physical_plan, ctx.task_ctx()))
-}
-
-fn run(plan: Arc<dyn ExecutionPlan>, ctx: Arc<TaskContext>, asc: bool) {
-    let rt = Runtime::new().unwrap();
-    criterion::black_box(
-        rt.block_on(async { aggregate(plan.clone(), ctx.clone(), asc).await }),
-    )
-    .unwrap();
-}
-
-async fn aggregate(
-    plan: Arc<dyn ExecutionPlan>,
-    ctx: Arc<TaskContext>,
-    asc: bool,
-) -> Result<()> {
-    let batches = collect(plan, ctx).await?;
+    let batches = collect(plan, ctx.task_ctx()).await?;
     assert_eq!(batches.len(), 1);
     let batch = batches.first().unwrap();
     assert_eq!(batch.num_rows(), 10);
 
     let actual = format!("{}", pretty_format_batches(&batches)?).to_lowercase();
     let expected_asc = r#"
-+----------------------------------+--------------------------+
-| trace_id                         | max(traces.timestamp_ms) |
-+----------------------------------+--------------------------+
-| 5868861a23ed31355efc5200eb80fe74 | 16909009999999           |
-| 4040e64656804c3d77320d7a0e7eb1f0 | 16909009999998           |
-| 02801bbe533190a9f8713d75222f445d | 16909009999997           |
-| 9e31b3b5a620de32b68fefa5aeea57f1 | 16909009999996           |
-| 2d88a860e9bd1cfaa632d8e7caeaa934 | 16909009999995           |
-| a47edcef8364ab6f191dd9103e51c171 | 16909009999994           |
-| 36a3fa2ccfbf8e00337f0b1254384db6 | 16909009999993           |
-| 0756be84f57369012e10de18b57d8a2f | 16909009999992           |
-| d4d6bf9845fa5897710e3a8db81d5907 | 16909009999991           |
-| 3c2cc1abe728a66b61e14880b53482a0 | 16909009999990           |
-+----------------------------------+--------------------------+
++--------------------------+
+| max(traces.timestamp_ms) |
++--------------------------+
+| 16909009999999           |
+| 16909009999998           |
+| 16909009999997           |
+| 16909009999996           |
+| 16909009999995           |
+| 16909009999994           |
+| 16909009999993           |
+| 16909009999992           |
+| 16909009999991           |
+| 16909009999990           |
++--------------------------+
         "#
     .trim();
     if asc {
@@ -99,58 +100,75 @@ async fn aggregate(
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let limit = 10;
     let partitions = 10;
     let samples = 1_000_000;
 
-    let rt = Runtime::new().unwrap();
-    let topk_real = rt.block_on(async {
-        create_context(limit, partitions, samples, false, true)
-            .await
-            .unwrap()
-    });
-    let topk_asc = rt.block_on(async {
-        create_context(limit, partitions, samples, true, true)
-            .await
-            .unwrap()
-    });
-    let real = rt.block_on(async {
-        create_context(limit, partitions, samples, false, false)
-            .await
-            .unwrap()
-    });
-    let asc = rt.block_on(async {
-        create_context(limit, partitions, samples, true, false)
-            .await
-            .unwrap()
-    });
-
+    let ctx = rt
+        .block_on(create_context(partitions, samples, false, false, false))
+        .unwrap();
     c.bench_function(
         format!("aggregate {} time-series rows", partitions * samples).as_str(),
-        |b| b.iter(|| run(real.0.clone(), real.1.clone(), false)),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, false, false)),
     );
 
+    let ctx = rt
+        .block_on(create_context(partitions, samples, true, false, false))
+        .unwrap();
     c.bench_function(
         format!("aggregate {} worst-case rows", partitions * samples).as_str(),
-        |b| b.iter(|| run(asc.0.clone(), asc.1.clone(), true)),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, false, true)),
     );
 
+    let ctx = rt
+        .block_on(create_context(partitions, samples, false, true, false))
+        .unwrap();
     c.bench_function(
         format!(
             "top k={limit} aggregate {} time-series rows",
             partitions * samples
         )
         .as_str(),
-        |b| b.iter(|| run(topk_real.0.clone(), topk_real.1.clone(), false)),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, true, false)),
     );
 
+    let ctx = rt
+        .block_on(create_context(partitions, samples, true, true, false))
+        .unwrap();
     c.bench_function(
         format!(
             "top k={limit} aggregate {} worst-case rows",
             partitions * samples
         )
         .as_str(),
-        |b| b.iter(|| run(topk_asc.0.clone(), topk_asc.1.clone(), true)),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, true, true)),
+    );
+
+    // Utf8View schema，time-series rows
+    let ctx = rt
+        .block_on(create_context(partitions, samples, false, true, true))
+        .unwrap();
+    c.bench_function(
+        format!(
+            "top k={limit} aggregate {} time-series rows [Utf8View]",
+            partitions * samples
+        )
+        .as_str(),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, true, false)),
+    );
+
+    // Utf8View schema，worst-case rows
+    let ctx = rt
+        .block_on(create_context(partitions, samples, true, true, true))
+        .unwrap();
+    c.bench_function(
+        format!(
+            "top k={limit} aggregate {} worst-case rows [Utf8View]",
+            partitions * samples
+        )
+        .as_str(),
+        |b| b.iter(|| run(&rt, ctx.clone(), limit, true, true)),
     );
 }
 

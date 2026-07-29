@@ -67,13 +67,13 @@ CREATE TABLE small_floats(
 ## abs
 
 # abs scalar function
-query III rowsort
+query III
 select abs(64), abs(0), abs(-64);
 ----
 64 0 64
 
 # abs scalar nulls
-query ? rowsort
+query R
 select abs(null);
 ----
 NULL
@@ -309,6 +309,62 @@ select ceil(a), ceil(b), ceil(c) from small_floats;
 1 0 0
 1 0 1
 
+# ceil with scale parameter(Scale not supported)
+query error DataFusion error: This feature is not implemented: CEIL with scale is not supported
+select ceil(100.1234, 1)
+
+# ceil with datetime parameter (not supported)
+query error DataFusion error: This feature is not implemented: CEIL with datetime is not supported
+select ceil(100.1234 to year)
+
+# ceil with decimal argument
+query RRRR
+select
+  ceil(arrow_cast(1.23,'Decimal128(10,2)')),
+  ceil(arrow_cast(-1.23,'Decimal128(10,2)')),
+  ceil(arrow_cast(123.00,'Decimal128(10,2)')),
+  ceil(arrow_cast(-123.00,'Decimal128(10,2)'));
+----
+2 -1 123 -123
+
+# ceil overflow with limited precision
+query error Decimal overflow while applying ceil
+select ceil(arrow_cast(9.23,'Decimal128(3,2)'));
+
+# ceil with decimal32 argument (ensure decimal output)
+query TTTTTTTT
+select
+  arrow_typeof(ceil(arrow_cast(9.01,'Decimal32(7,2)'))),
+  arrow_cast(ceil(arrow_cast(9.01,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(ceil(arrow_cast(-9.01,'Decimal32(7,2)'))),
+  arrow_cast(ceil(arrow_cast(-9.01,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(ceil(arrow_cast(10.00,'Decimal32(7,2)'))),
+  arrow_cast(ceil(arrow_cast(10.00,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(ceil(arrow_cast(-0.99,'Decimal32(7,2)'))),
+  arrow_cast(ceil(arrow_cast(-0.99,'Decimal32(7,2)')), 'Utf8');
+----
+Decimal32(7, 2) 10.00 Decimal32(7, 2) -9.00 Decimal32(7, 2) 10.00 Decimal32(7, 2) 0.00
+
+# ceil with decimal64 zero scale
+query TTTT
+select
+  arrow_typeof(ceil(arrow_cast(123456789,'Decimal64(18,0)'))),
+  arrow_cast(ceil(arrow_cast(123456789,'Decimal64(18,0)')), 'Utf8'),
+  arrow_typeof(ceil(arrow_cast(-987654321,'Decimal64(18,0)'))),
+  arrow_cast(ceil(arrow_cast(-987654321,'Decimal64(18,0)')), 'Utf8');
+----
+Decimal64(18, 0) 123456789 Decimal64(18, 0) -987654321
+
+# ceil with decimal256 argument
+query TTTT
+select
+  arrow_typeof(ceil(arrow_cast('9999999999999999999999999999999999.01','Decimal256(38,2)'))),
+  arrow_cast(ceil(arrow_cast('9999999999999999999999999999999999.01','Decimal256(38,2)')), 'Utf8'),
+  arrow_typeof(ceil(arrow_cast('-9999999999999999999999999999999999.01','Decimal256(38,2)'))),
+  arrow_cast(ceil(arrow_cast('-9999999999999999999999999999999999.01','Decimal256(38,2)')), 'Utf8');
+----
+Decimal256(38, 2) 10000000000000000000000000000000000.00 Decimal256(38, 2) -9999999999999999999999999999999999.00
+
 ## degrees
 
 # degrees scalar function
@@ -448,75 +504,61 @@ select floor(a), floor(b), floor(c) from signed_integers;
 2 -1000 123
 4 NULL NULL
 
-## gcd
+# floor with scale parameter(Scale not supported)
+query error DataFusion error: This feature is not implemented: FLOOR with scale is not supported
+select floor(a, 1)
 
-# gcd scalar function
-query III rowsort
-select gcd(0, 0), gcd(2, 3), gcd(15, 10);
+# floor with datetime parameter ( not supported)
+query error DataFusion error: This feature is not implemented: FLOOR with datetime is not supported
+select floor(a to year)
+
+# floor with decimal argument
+query RRRR
+select
+  floor(arrow_cast(1.23,'Decimal128(10,2)')),
+  floor(arrow_cast(-1.23,'Decimal128(10,2)')),
+  floor(arrow_cast(123.00,'Decimal128(10,2)')),
+  floor(arrow_cast(-123.00,'Decimal128(10,2)'));
 ----
-0 1 5
+1 -2 123 -123
 
-# gcd scalar nulls
-query I rowsort
-select gcd(null, 64);
+# floor overflow with limited precision
+query error Decimal overflow while applying floor
+select floor(arrow_cast(-9.23,'Decimal128(3,2)'));
+
+# floor with decimal32 argument (ensure decimal output)
+query TTTTTTTT
+select
+  arrow_typeof(floor(arrow_cast(9.99,'Decimal32(7,2)'))),
+  arrow_cast(floor(arrow_cast(9.99,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(floor(arrow_cast(-9.01,'Decimal32(7,2)'))),
+  arrow_cast(floor(arrow_cast(-9.01,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(floor(arrow_cast(10.00,'Decimal32(7,2)'))),
+  arrow_cast(floor(arrow_cast(10.00,'Decimal32(7,2)')), 'Utf8'),
+  arrow_typeof(floor(arrow_cast(-0.01,'Decimal32(7,2)'))),
+  arrow_cast(floor(arrow_cast(-0.01,'Decimal32(7,2)')), 'Utf8');
 ----
-NULL
+Decimal32(7, 2) 9.00 Decimal32(7, 2) -10.00 Decimal32(7, 2) 10.00 Decimal32(7, 2) -1.00
 
-# gcd scalar nulls #1
-query I rowsort
-select gcd(2, null);
+# floor with decimal64 zero scale
+query TTTT
+select
+  arrow_typeof(floor(arrow_cast(123456789,'Decimal64(18,0)'))),
+  arrow_cast(floor(arrow_cast(123456789,'Decimal64(18,0)')), 'Utf8'),
+  arrow_typeof(floor(arrow_cast(-987654321,'Decimal64(18,0)'))),
+  arrow_cast(floor(arrow_cast(-987654321,'Decimal64(18,0)')), 'Utf8');
 ----
-NULL
+Decimal64(18, 0) 123456789 Decimal64(18, 0) -987654321
 
-# gcd scalar nulls #2
-query I rowsort
-select gcd(null, null);
+# floor with decimal256 argument
+query TTTT
+select
+  arrow_typeof(floor(arrow_cast('9999999999999999999999999999999999.99','Decimal256(38,2)'))),
+  arrow_cast(floor(arrow_cast('9999999999999999999999999999999999.99','Decimal256(38,2)')), 'Utf8'),
+  arrow_typeof(floor(arrow_cast('-9999999999999999999999999999999999.99','Decimal256(38,2)'))),
+  arrow_cast(floor(arrow_cast('-9999999999999999999999999999999999.99','Decimal256(38,2)')), 'Utf8');
 ----
-NULL
-
-# gcd with columns
-query III rowsort
-select gcd(a, b), gcd(c, d), gcd(e, f) from signed_integers;
-----
-1 1 2
-1 2 6
-2 1 1
-NULL NULL NULL
-
-## lcm
-
-# lcm scalar function
-query III rowsort
-select lcm(0, 0), lcm(2, 3), lcm(15, 10);
-----
-0 6 30
-
-# lcm scalar nulls
-query I rowsort
-select lcm(null, 64);
-----
-NULL
-
-# lcm scalar nulls #1
-query I rowsort
-select lcm(2, null);
-----
-NULL
-
-# lcm scalar nulls #2
-query I rowsort
-select lcm(null, null);
-----
-NULL
-
-# lcm with columns
-query III rowsort
-select lcm(a, b), lcm(c, d), lcm(e, f) from signed_integers;
-----
-100 580608 20
-1000 31488 55
-30000 1001472 12
-NULL NULL NULL
+Decimal256(38, 2) 9999999999999999999999999999999999.00 Decimal256(38, 2) -10000000000000000000000000000000000.00
 
 ## ln
 
@@ -593,7 +635,7 @@ query RRR rowsort
 select log(a, 64) a, log(b), log(10, b) from unsigned_integers;
 ----
 3 NULL NULL
-3.7855785 4 4
+3.785578521429 4 4
 6 3 3
 Infinity 2 2
 
@@ -605,6 +647,37 @@ select log(a, 64) a, log(b), log(10, b) from signed_integers;
 6 NaN NaN
 NaN 2 2
 NaN 4 4
+
+# log overloaded base 10 float64 and float32 casting scalar
+query RR rowsort
+select log(arrow_cast(10, 'Float64')) a ,log(arrow_cast(100, 'Float32')) b;
+----
+1 2
+
+# log overloaded base 10 float64 and float32 casting with columns
+query RR rowsort
+select log(arrow_cast(a, 'Float64')), log(arrow_cast(b, 'Float32')) from signed_integers;
+----
+0.301029995664 NaN
+0.602059991328 NULL
+NaN 2
+NaN 4
+
+# log float64 and float32 casting scalar
+query RR rowsort
+select log(2,arrow_cast(8, 'Float64')) a, log(2,arrow_cast(16, 'Float32')) b;
+----
+3 4
+
+# log float64 and float32 casting with columns
+query RR rowsort
+select log(2,arrow_cast(a, 'Float64')), log(4,arrow_cast(b, 'Float32')) from signed_integers;
+----
+1 NaN
+2 NULL
+NaN 3.321928
+NaN 6.643856
+
 
 ## log10
 
@@ -769,8 +842,8 @@ select pi(), pi() / 2, pi() / 3;
 
 ## power
 
-# power scalar function
-query III rowsort
+# power scalar function (always returns Float64, like PostgreSQL)
+query RRR rowsort
 select power(2, 0), power(2, 1), power(2, 2);
 ----
 1 2 4
@@ -782,7 +855,7 @@ select power(null, 64);
 NULL
 
 # power scalar nulls #1
-query I rowsort
+query R rowsort
 select power(2, null);
 ----
 NULL
@@ -848,13 +921,53 @@ select round(a), round(b), round(c) from small_floats;
 0 0 1
 1 0 0
 
+# round with too large
+#  max Int32 is 2147483647
+query error Arrow error: Cast error: Can't cast value 2147483648 to type Int32
+select round(3.14, 2147483648);
+
+# with array
+query error Arrow error: Cast error: Can't cast value 2147483649 to type Int32
+select round(column1, column2) from values (3.14, 2), (3.14, 3), (3.14, 2147483649);
+
+# round decimal should not cast to float
+query TR
+select arrow_typeof(round('173975140545.855'::decimal(38,10), 2)),
+       round('173975140545.855'::decimal(38,10), 2);
+----
+Decimal128(38, 10) 173975140545.86
+
+# round decimal ties away from zero
+query RRRR
+select round('1.5'::decimal(2,1), 0),
+       round('-1.5'::decimal(2,1), 0),
+       round('2.5'::decimal(2,1), 0),
+       round('-2.5'::decimal(2,1), 0);
+----
+2 -2 3 -3
+
+# round decimal negative places (left of decimal)
+query TR
+select arrow_typeof(round('12345.55'::decimal(10,2), -1)),
+       round('12345.55'::decimal(10,2), -1);
+----
+Decimal128(10, 2) 12350
+
+# round decimal256 keeps decimals
+query TR
+select arrow_typeof(round('1234.5678'::decimal(50,4), 2)),
+       round('1234.5678'::decimal(50,4), 2);
+----
+Decimal256(50, 4) 1234.57
+
+
 ## signum
 
 # signum scalar function
 query RRR rowsort
 select signum(-2), signum(0), signum(2);
 ----
--1 1 1
+-1 0 1
 
 # signum scalar nulls
 query R rowsort
@@ -1263,7 +1376,7 @@ FROM t1
 999
 999
 
-# case_when_else_with_null_contant()
+# case_when_else_with_null_constant()
 query I
  SELECT
 CASE WHEN c1 = 'a' THEN 1
@@ -1298,27 +1411,27 @@ SELECT CASE WHEN NULL THEN 'foo' ELSE 'bar' END
 bar
 
 # case_expr_with_null()
-query ?
+query I
 select case when b is null then null else b end from (select a,b from (values (1,null),(2,3)) as t (a,b)) a;
 ----
 NULL
 3
 
-query ?
+query I
 select case when b is null then null else b end from (select a,b from (values (1,1),(2,3)) as t (a,b)) a;
 ----
 1
 3
 
 # case_expr_with_nulls()
-query ?
+query I
 select case when b is null then null when b < 3 then null when b >=3 then b + 1 else b end from (select a,b from (values (1,null),(1,2),(2,3)) as t (a,b)) a
 ----
 NULL
 NULL
 4
 
-query ?
+query I
 select case b when 1 then null when 2 then null when 3 then b + 1 else b end from (select a,b from (values (1,null),(1,2),(2,3)) as t (a,b)) a;
 ----
 NULL
@@ -1586,6 +1699,9 @@ NULL NULL
 query error DataFusion error: Error during planning: Negation only supports numeric, interval and timestamp types
 SELECT -'100'
 
+query error DataFusion error: Error during planning: Unary operator '\+' only supports numeric, interval and timestamp types
+SELECT +true
+
 statement ok
 drop table test_boolean
 
@@ -1638,7 +1754,7 @@ false
 statement ok
 CREATE TABLE t1(
   a boolean,
-  b boolean,
+  b boolean
 ) as VALUES
   (true, true),
   (true, null),
@@ -1715,6 +1831,11 @@ true true false false true true
 statement ok
 drop table t1
 
+# can't use like with non strings
+query error There isn't a common type to coerce Utf8 and Int64 in LIKE expression
+select column1 like 1 from (values('a'), ('b'), (NULL)) as t;
+
+
 # like nlike with null lt
 query BB rowsort
 SELECT column1 like NULL as col_null, NULL like column1 as null_col from (values('a'), ('b'), (NULL)) as t
@@ -1755,7 +1876,7 @@ SELECT make_array(c1, cast(c2 as varchar)) FROM test
 ----
 [, 0]
 [a, 1]
-[aa, ]
+[aa, NULL]
 [aaa, 3]
 
 statement ok
@@ -1780,7 +1901,7 @@ CREATE TABLE test(
 (-14, -14, -14.5, -14.5),
 (NULL, NULL, NULL, NULL);
 
-query RRRRIR rowsort
+query RRRRRR rowsort
 SELECT power(i32, exp_i) as power_i32,
        power(i64, exp_f) as power_i64,
        pow(f32, exp_i) as power_f32,
@@ -1828,24 +1949,6 @@ SELECT acos();
 statement error
 SELECT isnan();
 
-# turn off enable_ident_normalization
-statement ok
-set datafusion.sql_parser.enable_ident_normalization = false;
-
-query I
-SELECT LENGTH('str');
-----
-3
-
-query T
-SELECT CONCAT('Hello', 'World')
-----
-HelloWorld
-
-# turn on enable_ident_normalization
-statement ok
-set datafusion.sql_parser.enable_ident_normalization = true;
-
 query I
 SELECT LENGTH('str');
 ----
@@ -1871,11 +1974,11 @@ query TT
 EXPLAIN SELECT letter, letter = LEFT('APACHE', 1) FROM simple_string;
 ----
 logical_plan
-01)Projection: simple_string.letter, simple_string.letter = Utf8("A") AS simple_string.letter = left(Utf8("APACHE"),Int64(1))
+01)Projection: simple_string.letter, simple_string.letter = Utf8View("A") AS simple_string.letter = left(Utf8("APACHE"),Int64(1))
 02)--TableScan: simple_string projection=[letter]
 physical_plan
 01)ProjectionExec: expr=[letter@0 as letter, letter@0 = A as simple_string.letter = left(Utf8("APACHE"),Int64(1))]
-02)--MemoryExec: partitions=1, partition_sizes=[1]
+02)--DataSourceExec: partitions=1, partition_sizes=[1]
 
 query TB
 SELECT letter, letter = LEFT('APACHE', 1) FROM simple_string;
@@ -1890,11 +1993,11 @@ query TT
 EXPLAIN SELECT letter, letter = LEFT(letter2, 1) FROM simple_string;
 ----
 logical_plan
-01)Projection: simple_string.letter, simple_string.letter = left(simple_string.letter2, Int64(1))
+01)Projection: simple_string.letter, simple_string.letter = CAST(left(simple_string.letter2, Int64(1)) AS Utf8View)
 02)--TableScan: simple_string projection=[letter, letter2]
 physical_plan
-01)ProjectionExec: expr=[letter@0 as letter, letter@0 = left(letter2@1, 1) as simple_string.letter = left(simple_string.letter2,Int64(1))]
-02)--MemoryExec: partitions=1, partition_sizes=[1]
+01)ProjectionExec: expr=[letter@0 as letter, letter@0 = CAST(left(letter2@1, 1) AS Utf8View) as simple_string.letter = left(simple_string.letter2,Int64(1))]
+02)--DataSourceExec: partitions=1, partition_sizes=[1]
 
 query TB
 SELECT letter, letter = LEFT(letter2, 1) FROM simple_string;
@@ -1906,7 +2009,7 @@ D false
 
 # test string_temporal_coercion
 query BBBBBBBBBB
-select 
+select
   arrow_cast(to_timestamp('2020-01-01 01:01:11.1234567890Z'), 'Timestamp(Second, None)') == '2020-01-01T01:01:11',
   arrow_cast(to_timestamp('2020-01-02 01:01:11.1234567890Z'), 'Timestamp(Second, None)') == arrow_cast('2020-01-02T01:01:11', 'LargeUtf8'),
   arrow_cast(to_timestamp('2020-01-03 01:01:11.1234567890Z'), 'Time32(Second)') == '01:01:11',
@@ -1955,7 +2058,7 @@ select 100000 where position('legend' in 'league of legend') = 11;
 100000
 
 # test null
-query ?
+query I
 select position(null in null)
 ----
 NULL
@@ -1966,10 +2069,8 @@ select position('' in '')
 ----
 1
 
-
-query error DataFusion error: Execution error: The STRPOS/INSTR/POSITION function can only accept strings, but got Int64.
+query error DataFusion error: Error during planning: Internal error: Expect TypeSignatureClass::Native\(LogicalType\(Native\(String\), String\)\) but received NativeType::Int64, DataType: Int64
 select position(1 in 1)
-
 
 query I
 select strpos('abc', 'c');
@@ -2042,3 +2143,37 @@ query I
 select strpos('joséésoj', arrow_cast(null, 'Utf8'));
 ----
 NULL
+
+statement ok
+CREATE TABLE t1 (v1 int) AS VALUES (1), (2), (3);
+
+query I
+SELECT * FROM t1 ORDER BY ACOS(SIN(v1));
+----
+2
+1
+3
+
+query I
+SELECT * FROM t1 ORDER BY ACOSH(SIN(v1));
+----
+1
+2
+3
+
+query I
+SELECT * FROM t1 ORDER BY ASIN(SIN(v1));
+----
+3
+1
+2
+
+query I
+SELECT * FROM t1 ORDER BY ATANH(SIN(v1));
+----
+3
+1
+2
+
+statement ok
+drop table t1;

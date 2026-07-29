@@ -17,22 +17,24 @@
 
 //! This program demonstrates the DataFusion expression simplification API.
 
+use insta::assert_snapshot;
+
+use arrow::array::types::IntervalDayTime;
+use arrow::array::{ArrayRef, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow_array::{ArrayRef, Int32Array};
-use arrow_buffer::IntervalDayTime;
 use chrono::{DateTime, TimeZone, Utc};
 use datafusion::{error::Result, execution::context::ExecutionProps, prelude::*};
-use datafusion_common::cast::as_int32_array;
 use datafusion_common::ScalarValue;
+use datafusion_common::cast::as_int32_array;
 use datafusion_common::{DFSchemaRef, ToDFSchema};
 use datafusion_expr::expr::ScalarFunction;
 use datafusion_expr::logical_plan::builder::table_scan_with_filters;
 use datafusion_expr::simplify::SimplifyInfo;
 use datafusion_expr::{
-    expr, table_scan, Cast, ColumnarValue, ExprSchemable, LogicalPlan,
-    LogicalPlanBuilder, ScalarUDF, Volatility,
+    Cast, ColumnarValue, ExprSchemable, LogicalPlan, LogicalPlanBuilder, ScalarUDF,
+    Volatility, table_scan,
 };
-use datafusion_functions::{math, string};
+use datafusion_functions::math;
 use datafusion_optimizer::optimizer::Optimizer;
 use datafusion_optimizer::simplify_expressions::{ExprSimplifier, SimplifyExpressions};
 use datafusion_optimizer::{OptimizerContext, OptimizerRule};
@@ -119,7 +121,7 @@ fn get_optimized_plan_formatted(plan: LogicalPlan, date_time: &DateTime<Utc>) ->
     let optimizer = Optimizer::with_rules(vec![Arc::new(SimplifyExpressions::new())]);
     let optimized_plan = optimizer.optimize(plan, &config, observe).unwrap();
 
-    format!("{optimized_plan:?}")
+    format!("{optimized_plan}")
 }
 
 // ------------------------------
@@ -155,7 +157,7 @@ fn test_evaluate(input_expr: Expr, expected_expr: Expr) {
 // Make a UDF that adds its two values together, with the specified volatility
 fn make_udf_add(volatility: Volatility) -> Arc<ScalarUDF> {
     let input_types = vec![DataType::Int32, DataType::Int32];
-    let return_type = Arc::new(DataType::Int32);
+    let return_type = DataType::Int32;
 
     let fun = Arc::new(|args: &[ColumnarValue]| {
         let args = ColumnarValue::values_to_arrays(args)?;
@@ -237,11 +239,15 @@ fn to_timestamp_expr_folded() -> Result<()> {
         .project(proj)?
         .build()?;
 
-    let expected = "Projection: TimestampNanosecond(1599566400000000000, None) AS to_timestamp(Utf8(\"2020-09-08T12:00:00+00:00\"))\
-            \n  TableScan: test"
-        .to_string();
-    let actual = get_optimized_plan_formatted(plan, &Utc::now());
-    assert_eq!(expected, actual);
+    let formatted = get_optimized_plan_formatted(plan, &Utc::now());
+    let actual = formatted.trim();
+    assert_snapshot!(
+        actual,
+        @r#"
+    Projection: TimestampNanosecond(1599566400000000000, None) AS to_timestamp(Utf8("2020-09-08T12:00:00+00:00"))
+      TableScan: test
+    "#
+    );
     Ok(())
 }
 
@@ -262,11 +268,16 @@ fn now_less_than_timestamp() -> Result<()> {
 
     // Note that constant folder runs and folds the entire
     // expression down to a single constant (true)
-    let expected = "Filter: Boolean(true)\
-                        \n  TableScan: test";
-    let actual = get_optimized_plan_formatted(plan, &time);
+    let formatted = get_optimized_plan_formatted(plan, &time);
+    let actual = formatted.trim();
 
-    assert_eq!(expected, actual);
+    assert_snapshot!(
+        actual,
+        @r"
+    Filter: Boolean(true)
+      TableScan: test
+    "
+    );
     Ok(())
 }
 
@@ -282,10 +293,13 @@ fn select_date_plus_interval() -> Result<()> {
 
     let date_plus_interval_expr = to_timestamp_expr(ts_string)
         .cast_to(&DataType::Date32, schema)?
-        + Expr::Literal(ScalarValue::IntervalDayTime(Some(IntervalDayTime {
-            days: 123,
-            milliseconds: 0,
-        })));
+        + Expr::Literal(
+            ScalarValue::IntervalDayTime(Some(IntervalDayTime {
+                days: 123,
+                milliseconds: 0,
+            })),
+            None,
+        );
 
     let plan = LogicalPlanBuilder::from(table_scan.clone())
         .project(vec![date_plus_interval_expr])?
@@ -293,11 +307,16 @@ fn select_date_plus_interval() -> Result<()> {
 
     // Note that constant folder runs and folds the entire
     // expression down to a single constant (true)
-    let expected = r#"Projection: Date32("2021-01-09") AS to_timestamp(Utf8("2020-09-08T12:05:00+00:00")) + IntervalDayTime("IntervalDayTime { days: 123, milliseconds: 0 }")
-  TableScan: test"#;
-    let actual = get_optimized_plan_formatted(plan, &time);
+    let formatted = get_optimized_plan_formatted(plan, &time);
+    let actual = formatted.trim();
 
-    assert_eq!(expected, actual);
+    assert_snapshot!(
+        actual,
+        @r#"
+    Projection: Date32("2021-01-09") AS to_timestamp(Utf8("2020-09-08T12:05:00+00:00")) + IntervalDayTime("IntervalDayTime { days: 123, milliseconds: 0 }")
+      TableScan: test
+    "#
+    );
     Ok(())
 }
 
@@ -311,10 +330,15 @@ fn simplify_project_scalar_fn() -> Result<()> {
 
     // before simplify: power(t.f, 1.0)
     // after simplify:  t.f as "power(t.f, 1.0)"
-    let expected = "Projection: test.f AS power(test.f,Float64(1))\
-                      \n  TableScan: test";
-    let actual = get_optimized_plan_formatted(plan, &Utc::now());
-    assert_eq!(expected, actual);
+    let formatter = get_optimized_plan_formatted(plan, &Utc::now());
+    let actual = formatter.trim();
+    assert_snapshot!(
+        actual,
+        @r"
+    Projection: test.f AS power(test.f,Float64(1))
+      TableScan: test
+    "
+    );
     Ok(())
 }
 
@@ -333,10 +357,10 @@ fn simplify_scan_predicate() -> Result<()> {
     .build()?;
 
     // before simplify: t.g = power(t.f, 1.0)
-    // after simplify:  (t.g = t.f) as "t.g = power(t.f, 1.0)"
-    let expected = "TableScan: test, full_filters=[g = f AS g = power(f,Float64(1))]";
-    let actual = get_optimized_plan_formatted(plan, &Utc::now());
-    assert_eq!(expected, actual);
+    // after simplify:  t.g = t.f"
+    let formatted = get_optimized_plan_formatted(plan, &Utc::now());
+    let actual = formatted.trim();
+    assert_snapshot!(actual, @"TableScan: test, full_filters=[g = f]");
     Ok(())
 }
 
@@ -366,15 +390,42 @@ fn test_const_evaluator() {
 }
 
 #[test]
+fn test_const_evaluator_alias() {
+    // true --> true
+    test_evaluate(lit(true).alias("a"), lit(true));
+    // true or true --> true
+    test_evaluate(lit(true).alias("a").or(lit(true).alias("b")), lit(true));
+    // "foo" == "foo" --> true
+    test_evaluate(lit("foo").alias("a").eq(lit("foo").alias("b")), lit(true));
+    // c = 1 + 2 --> c + 3
+    test_evaluate(
+        col("c")
+            .alias("a")
+            .eq(lit(1).alias("b") + lit(2).alias("c")),
+        col("c").alias("a").eq(lit(3)),
+    );
+    // (foo != foo) OR (c = 1) --> false OR (c = 1)
+    test_evaluate(
+        lit("foo")
+            .alias("a")
+            .not_eq(lit("foo").alias("b"))
+            .alias("c")
+            .or(col("c").alias("d").eq(lit(1).alias("e")))
+            .alias("f"),
+        col("c").alias("d").eq(lit(1)).alias("f"),
+    );
+}
+
+#[test]
 fn test_const_evaluator_scalar_functions() {
     // concat("foo", "bar") --> "foobar"
-    let expr = string::expr_fn::concat(vec![lit("foo"), lit("bar")]);
+    let expr = concat(vec![lit("foo"), lit("bar")]);
     test_evaluate(expr, lit("foobar"));
 
     // ensure arguments are also constant folded
     // concat("foo", concat("bar", "baz")) --> "foobarbaz"
-    let concat1 = string::expr_fn::concat(vec![lit("bar"), lit("baz")]);
-    let expr = string::expr_fn::concat(vec![lit("foo"), concat1]);
+    let concat1 = concat(vec![lit("bar"), lit("baz")]);
+    let expr = concat(vec![lit("foo"), concat1]);
     test_evaluate(expr, lit("foobarbaz"));
 
     // Check non string arguments
@@ -407,7 +458,7 @@ fn test_const_evaluator_scalar_functions() {
 #[test]
 fn test_const_evaluator_now() {
     let ts_nanos = 1599566400000000000i64;
-    let time = chrono::Utc.timestamp_nanos(ts_nanos);
+    let time = Utc.timestamp_nanos(ts_nanos);
     let ts_string = "2020-09-08T12:05:00+00:00";
     // now() --> ts
     test_evaluate_with_start_time(now(), lit_timestamp_nano(ts_nanos), &time);
@@ -429,7 +480,7 @@ fn test_evaluator_udfs() {
 
     // immutable UDF should get folded
     // udf_add(1+2, 30+40) --> 73
-    let expr = Expr::ScalarFunction(expr::ScalarFunction::new_udf(
+    let expr = Expr::ScalarFunction(ScalarFunction::new_udf(
         make_udf_add(Volatility::Immutable),
         args.clone(),
     ));
@@ -438,21 +489,16 @@ fn test_evaluator_udfs() {
     // stable UDF should be entirely folded
     // udf_add(1+2, 30+40) --> 73
     let fun = make_udf_add(Volatility::Stable);
-    let expr = Expr::ScalarFunction(expr::ScalarFunction::new_udf(
-        Arc::clone(&fun),
-        args.clone(),
-    ));
+    let expr =
+        Expr::ScalarFunction(ScalarFunction::new_udf(Arc::clone(&fun), args.clone()));
     test_evaluate(expr, lit(73));
 
     // volatile UDF should have args folded
     // udf_add(1+2, 30+40) --> udf_add(3, 70)
     let fun = make_udf_add(Volatility::Volatile);
-    let expr =
-        Expr::ScalarFunction(expr::ScalarFunction::new_udf(Arc::clone(&fun), args));
-    let expected_expr = Expr::ScalarFunction(expr::ScalarFunction::new_udf(
-        Arc::clone(&fun),
-        folded_args,
-    ));
+    let expr = Expr::ScalarFunction(ScalarFunction::new_udf(Arc::clone(&fun), args));
+    let expected_expr =
+        Expr::ScalarFunction(ScalarFunction::new_udf(Arc::clone(&fun), folded_args));
     test_evaluate(expr, expected_expr);
 }
 
@@ -468,8 +514,7 @@ fn multiple_now() -> Result<()> {
     // expect the same timestamp appears in both exprs
     let actual = get_optimized_plan_formatted(plan, &time);
     let expected = format!(
-        "Projection: TimestampNanosecond({}, Some(\"+00:00\")) AS now(), TimestampNanosecond({}, Some(\"+00:00\")) AS t2\
-            \n  TableScan: test",
+        "Projection: TimestampNanosecond({}, None) AS now(), TimestampNanosecond({}, None) AS t2\n  TableScan: test",
         time.timestamp_nanos_opt().unwrap(),
         time.timestamp_nanos_opt().unwrap()
     );
@@ -488,10 +533,12 @@ fn expr_test_schema() -> DFSchemaRef {
         Field::new("c2", DataType::Boolean, true),
         Field::new("c3", DataType::Int64, true),
         Field::new("c4", DataType::UInt32, true),
+        Field::new("c5", DataType::Utf8View, true),
         Field::new("c1_non_null", DataType::Utf8, false),
         Field::new("c2_non_null", DataType::Boolean, false),
         Field::new("c3_non_null", DataType::Int64, false),
         Field::new("c4_non_null", DataType::UInt32, false),
+        Field::new("c5_non_null", DataType::Utf8View, false),
     ])
     .to_dfschema_ref()
     .unwrap()
@@ -523,9 +570,9 @@ fn test_simplify_with_cycle_count(
     };
     let simplifier = ExprSimplifier::new(info);
     let (simplified_expr, count) = simplifier
-        .simplify_with_cycle_count(input_expr.clone())
+        .simplify_with_cycle_count_transformed(input_expr.clone())
         .expect("successfully evaluated");
-
+    let simplified_expr = simplified_expr.data;
     assert_eq!(
         simplified_expr, expected_expr,
         "Mismatch evaluating {input_expr}\n  Expected:{expected_expr}\n  Got:{simplified_expr}"
@@ -670,20 +717,32 @@ fn test_simplify_concat_ws_with_null() {
 }
 
 #[test]
-fn test_simplify_concat() {
+fn test_simplify_concat() -> Result<()> {
+    let schema = expr_test_schema();
     let null = lit(ScalarValue::Utf8(None));
     let expr = concat(vec![
         null.clone(),
-        col("c0"),
+        col("c1"),
         lit("hello "),
         null.clone(),
         lit("rust"),
-        col("c1"),
+        lit(ScalarValue::Utf8View(Some("!".to_string()))),
+        col("c2"),
         lit(""),
         null,
+        col("c5"),
     ]);
-    let expected = concat(vec![col("c0"), lit("hello rust"), col("c1")]);
-    test_simplify(expr, expected)
+    let expr_datatype = expr.get_type(schema.as_ref())?;
+    let expected = concat(vec![
+        col("c1"),
+        lit(ScalarValue::Utf8View(Some("hello rust!".to_string()))),
+        col("c2"),
+        col("c5"),
+    ]);
+    let expected_datatype = expected.get_type(schema.as_ref())?;
+    assert_eq!(expr_datatype, expected_datatype);
+    test_simplify(expr, expected);
+    Ok(())
 }
 #[test]
 fn test_simplify_cycles() {

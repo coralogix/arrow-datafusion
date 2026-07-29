@@ -19,13 +19,10 @@
 
 mod builder;
 mod cursor;
-mod index;
 mod merge;
+mod multi_level_merge;
 pub mod partial_sort;
 pub mod sort;
 pub mod sort_preserving_merge;
 mod stream;
 pub mod streaming_merge;
-
-pub use index::RowIndex;
-pub(crate) use streaming_merge::streaming_merge;

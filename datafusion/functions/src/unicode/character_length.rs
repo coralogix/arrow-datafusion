@@ -17,17 +17,35 @@
 
 use crate::utils::{make_scalar_function, utf8_to_int_type};
 use arrow::array::{
-    ArrayRef, ArrowPrimitiveType, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, OffsetSizeTrait, PrimitiveArray,
+    StringArrayType,
 };
 use arrow::datatypes::{ArrowNativeType, DataType, Int32Type, Int64Type};
-use datafusion_common::cast::as_generic_string_array;
-use datafusion_common::exec_err;
 use datafusion_common::Result;
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
+};
+use datafusion_macros::user_doc;
 use std::any::Any;
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Returns the number of characters in a string.",
+    syntax_example = "character_length(str)",
+    sql_example = r#"```sql
+> select character_length('Ångström');
++------------------------------------+
+| character_length(Utf8("Ångström")) |
++------------------------------------+
+| 8                                  |
++------------------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    related_udf(name = "bit_length"),
+    related_udf(name = "octet_length")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CharacterLengthFunc {
     signature: Signature,
     aliases: Vec<String>,
@@ -45,7 +63,7 @@ impl CharacterLengthFunc {
         Self {
             signature: Signature::uniform(
                 1,
-                vec![Utf8, LargeUtf8],
+                vec![Utf8, LargeUtf8, Utf8View],
                 Volatility::Immutable,
             ),
             aliases: vec![String::from("length"), String::from("char_length")],
@@ -70,105 +88,148 @@ impl ScalarUDFImpl for CharacterLengthFunc {
         utf8_to_int_type(&arg_types[0], "character_length")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        match args[0].data_type() {
-            DataType::Utf8 => {
-                make_scalar_function(character_length::<Int32Type>, vec![])(args)
-            }
-            DataType::LargeUtf8 => {
-                make_scalar_function(character_length::<Int64Type>, vec![])(args)
-            }
-            other => {
-                exec_err!("Unsupported data type {other:?} for function character_length")
-            }
-        }
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> Result<ColumnarValue> {
+        make_scalar_function(character_length, vec![])(&args.args)
     }
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
 /// Returns number of characters in the string.
 /// character_length('josé') = 4
 /// The implementation counts UTF-8 code points to count the number of characters
-fn character_length<T: ArrowPrimitiveType>(args: &[ArrayRef]) -> Result<ArrayRef>
+fn character_length(args: &[ArrayRef]) -> Result<ArrayRef> {
+    match args[0].data_type() {
+        DataType::Utf8 => {
+            let string_array = args[0].as_string::<i32>();
+            character_length_general::<Int32Type, _>(&string_array)
+        }
+        DataType::LargeUtf8 => {
+            let string_array = args[0].as_string::<i64>();
+            character_length_general::<Int64Type, _>(&string_array)
+        }
+        DataType::Utf8View => {
+            let string_array = args[0].as_string_view();
+            character_length_general::<Int32Type, _>(&string_array)
+        }
+        _ => unreachable!("CharacterLengthFunc"),
+    }
+}
+
+fn character_length_general<'a, T, V>(array: &V) -> Result<ArrayRef>
 where
+    T: ArrowPrimitiveType,
     T::Native: OffsetSizeTrait,
+    V: StringArrayType<'a>,
 {
-    let string_array: &GenericStringArray<T::Native> =
-        as_generic_string_array::<T::Native>(&args[0])?;
+    // String characters are variable length encoded in UTF-8, counting the
+    // number of chars requires expensive decoding, however checking if the
+    // string is ASCII only is relatively cheap.
+    // If strings are ASCII only, count bytes instead.
+    let is_array_ascii_only = array.is_ascii();
+    let nulls = array.nulls().cloned();
+    let array = {
+        if is_array_ascii_only {
+            let values: Vec<_> = (0..array.len())
+                .map(|i| {
+                    // Safety: we are iterating with array.len() so the index is always valid
+                    let value = unsafe { array.value_unchecked(i) };
+                    T::Native::usize_as(value.len())
+                })
+                .collect();
+            PrimitiveArray::<T>::new(values.into(), nulls)
+        } else {
+            let values: Vec<_> = (0..array.len())
+                .map(|i| {
+                    // Safety: we are iterating with array.len() so the index is always valid
+                    if array.is_null(i) {
+                        T::default_value()
+                    } else {
+                        let value = unsafe { array.value_unchecked(i) };
+                        if value.is_empty() {
+                            T::default_value()
+                        } else if value.is_ascii() {
+                            T::Native::usize_as(value.len())
+                        } else {
+                            T::Native::usize_as(value.chars().count())
+                        }
+                    }
+                })
+                .collect();
+            PrimitiveArray::<T>::new(values.into(), nulls)
+        }
+    };
 
-    let result = string_array
-        .iter()
-        .map(|string| {
-            string.map(|string: &str| {
-                T::Native::from_usize(string.chars().count())
-                    .expect("should not fail as string.chars will always return integer")
-            })
-        })
-        .collect::<PrimitiveArray<T>>();
-
-    Ok(Arc::new(result) as ArrayRef)
+    Ok(Arc::new(array))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::unicode::character_length::CharacterLengthFunc;
     use crate::utils::test::test_function;
-    use arrow::array::{Array, Int32Array};
-    use arrow::datatypes::DataType::Int32;
+    use arrow::array::{Array, Int32Array, Int64Array};
+    use arrow::datatypes::DataType::{Int32, Int64};
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::{ColumnarValue, ScalarUDFImpl};
+
+    macro_rules! test_character_length {
+        ($INPUT:expr, $EXPECTED:expr) => {
+            test_function!(
+                CharacterLengthFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::Utf8($INPUT))],
+                $EXPECTED,
+                i32,
+                Int32,
+                Int32Array
+            );
+
+            test_function!(
+                CharacterLengthFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::LargeUtf8($INPUT))],
+                $EXPECTED,
+                i64,
+                Int64,
+                Int64Array
+            );
+
+            test_function!(
+                CharacterLengthFunc::new(),
+                vec![ColumnarValue::Scalar(ScalarValue::Utf8View($INPUT))],
+                $EXPECTED,
+                i32,
+                Int32,
+                Int32Array
+            );
+        };
+    }
 
     #[test]
     fn test_functions() -> Result<()> {
         #[cfg(feature = "unicode_expressions")]
-        test_function!(
-            CharacterLengthFunc::new(),
-            &[ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                String::from("chars")
-            )))],
-            Ok(Some(5)),
-            i32,
-            Int32,
-            Int32Array
-        );
-        #[cfg(feature = "unicode_expressions")]
+        {
+            test_character_length!(Some(String::from("chars")), Ok(Some(5)));
+            test_character_length!(Some(String::from("josé")), Ok(Some(4)));
+            // test long strings (more than 12 bytes for StringView)
+            test_character_length!(Some(String::from("joséjoséjoséjosé")), Ok(Some(16)));
+            test_character_length!(Some(String::from("")), Ok(Some(0)));
+            test_character_length!(None, Ok(None));
+        }
+
+        #[cfg(not(feature = "unicode_expressions"))]
         test_function!(
             CharacterLengthFunc::new(),
             &[ColumnarValue::Scalar(ScalarValue::Utf8(Some(
                 String::from("josé")
             )))],
-            Ok(Some(4)),
-            i32,
-            Int32,
-            Int32Array
-        );
-        #[cfg(feature = "unicode_expressions")]
-        test_function!(
-            CharacterLengthFunc::new(),
-            &[ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                String::from("")
-            )))],
-            Ok(Some(0)),
-            i32,
-            Int32,
-            Int32Array
-        );
-        #[cfg(feature = "unicode_expressions")]
-        test_function!(
-            CharacterLengthFunc::new(),
-            &[ColumnarValue::Scalar(ScalarValue::Utf8(None))],
-            Ok(None),
-            i32,
-            Int32,
-            Int32Array
-        );
-        #[cfg(not(feature = "unicode_expressions"))]
-        test_function!(
-            CharacterLengthFunc::new(),
-            &[ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::from("josé"))))],
             internal_err!(
                 "function character_length requires compilation with feature flag: unicode_expressions."
             ),

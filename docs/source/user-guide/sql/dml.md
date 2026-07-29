@@ -28,7 +28,7 @@ Copies the contents of a table or query to file(s). Supported file
 formats are `parquet`, `csv`, `json`, and `arrow`.
 
 <pre>
-COPY { <i><b>table_name</i></b> | <i><b>query</i></b> } 
+COPY { <i><b>table_name</i></b> | <i><b>query</i></b> }
 TO '<i><b>file_name</i></b>'
 [ STORED AS <i><b>format</i></b> ]
 [ PARTITIONED BY <i><b>column_name</i></b> [, ...] ]
@@ -39,14 +39,17 @@ TO '<i><b>file_name</i></b>'
 clause is not specified, it will be inferred from the file extension if possible.
 
 `PARTITIONED BY` specifies the columns to use for partitioning the output files into
-separate hive-style directories.
+separate hive-style directories. By default, columns used in `PARTITIONED BY` will be removed
+from the output format. If you want to keep the columns, you should provide the option
+`execution.keep_partition_by_columns true`. `execution.keep_partition_by_columns` flag can also
+be enabled through `ExecutionOptions` within `SessionConfig`.
 
 The output format is determined by the first match of the following rules:
 
 1. Value of `STORED AS`
 2. Filename extension (e.g. `foo.parquet` implies `PARQUET` format)
 
-For a detailed list of valid OPTIONS, see [Write Options](write_options).
+For a detailed list of valid OPTIONS, see [Format Options](format_options.md).
 
 ### Examples
 
@@ -85,10 +88,10 @@ of hive-style partitioned parquet files:
 +-------+
 ```
 
-If the the data contains values of `x` and `y` in column1 and only `a` in
+If the data contains values of `x` and `y` in column1 and only `a` in
 column2, output files will appear in the following directory structure:
 
-```
+```text
 dir_name/
   column1=x/
     column2=a/

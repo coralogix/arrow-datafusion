@@ -22,19 +22,26 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::{not_impl_err, substrait_err};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
-use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
+use datafusion::datasource::physical_plan::{
+    FileGroup, FileScanConfigBuilder, ParquetSource,
+};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
+use crate::variation_const::{
+    DEFAULT_CONTAINER_TYPE_VARIATION_REF, LARGE_CONTAINER_TYPE_VARIATION_REF,
+    VIEW_CONTAINER_TYPE_VARIATION_REF,
+};
 use async_recursion::async_recursion;
 use chrono::DateTime;
+use datafusion::datasource::memory::DataSourceExec;
 use object_store::ObjectMeta;
-use substrait::proto::r#type::{Kind, Nullability};
-use substrait::proto::read_rel::local_files::file_or_files::PathType;
 use substrait::proto::Type;
+use substrait::proto::read_rel::local_files::file_or_files::PathType;
+use substrait::proto::r#type::{Kind, Nullability};
 use substrait::proto::{
-    expression::MaskExpression, read_rel::ReadType, rel::RelType, Rel,
+    Rel, expression::MaskExpression, read_rel::ReadType, rel::RelType,
 };
 
 /// Convert Substrait Rel to DataFusion ExecutionPlan
@@ -44,7 +51,7 @@ pub async fn from_substrait_rel(
     rel: &Rel,
     _extensions: &HashMap<u32, &String>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let mut base_config;
+    let mut base_config_builder;
 
     match &rel.rel_type {
         Some(RelType::Read(read)) => {
@@ -72,9 +79,11 @@ pub async fn from_substrait_rel(
                 .collect::<Result<Vec<Field>>>()
             {
                 Ok(fields) => {
-                    base_config = FileScanConfig::new(
+                    let schema = Arc::new(Schema::new(fields));
+                    let source = Arc::new(ParquetSource::new(Arc::clone(&schema)));
+                    base_config_builder = FileScanConfigBuilder::new(
                         ObjectStoreUrl::local_filesystem(),
-                        Arc::new(Schema::new(fields)),
+                        source,
                     );
                 }
                 Err(e) => return Err(e),
@@ -122,37 +131,42 @@ pub async fn from_substrait_rel(
                             range: None,
                             statistics: None,
                             extensions: None,
+                            metadata_size_hint: None,
                         };
 
                         let part_index = file.partition_index as usize;
                         while part_index >= file_groups.len() {
-                            file_groups.push(vec![]);
+                            file_groups.push(FileGroup::default());
                         }
                         file_groups[part_index].push(partitioned_file)
                     }
 
-                    base_config = base_config.with_file_groups(file_groups);
+                    base_config_builder =
+                        base_config_builder.with_file_groups(file_groups);
 
-                    if let Some(MaskExpression { select, .. }) = &read.projection {
-                        if let Some(projection) = &select.as_ref() {
-                            let column_indices: Vec<usize> = projection
-                                .struct_items
-                                .iter()
-                                .map(|item| item.field as usize)
-                                .collect();
-                            base_config.projection = Some(column_indices);
-                        }
+                    if let Some(MaskExpression { select, .. }) = &read.projection
+                        && let Some(projection) = &select.as_ref()
+                    {
+                        let column_indices: Vec<usize> = projection
+                            .struct_items
+                            .iter()
+                            .map(|item| item.field as usize)
+                            .collect();
+                        base_config_builder = base_config_builder
+                            .with_projection_indices(Some(column_indices))?;
                     }
 
-                    Ok(ParquetExec::builder(base_config).build_arc()
-                        as Arc<dyn ExecutionPlan>)
+                    Ok(
+                        DataSourceExec::from_data_source(base_config_builder.build())
+                            as Arc<dyn ExecutionPlan>,
+                    )
                 }
                 _ => not_impl_err!(
                     "Only LocalFile reads are supported when parsing physical"
                 ),
             }
         }
-        _ => not_impl_err!("Unsupported RelType: {:?}", rel.rel_type),
+        _ => not_impl_err!("Unsupported Reltype: {:?}", rel.rel_type),
     }
 }
 
@@ -177,7 +191,27 @@ fn to_field(name: &String, r#type: &Type) -> Result<Field> {
         }
         Kind::String(string) => {
             nullable = is_nullable(string.nullability);
-            Ok(DataType::Utf8)
+            match string.type_variation_reference {
+                DEFAULT_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::Utf8),
+                LARGE_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::LargeUtf8),
+                VIEW_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::Utf8View),
+                _ => substrait_err!(
+                    "Invalid type variation found for substrait string type class: {}",
+                    string.type_variation_reference
+                ),
+            }
+        }
+        Kind::Binary(binary) => {
+            nullable = is_nullable(binary.nullability);
+            match binary.type_variation_reference {
+                DEFAULT_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::Binary),
+                LARGE_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::LargeBinary),
+                VIEW_CONTAINER_TYPE_VARIATION_REF => Ok(DataType::BinaryView),
+                _ => substrait_err!(
+                    "Invalid type variation found for substrait binary type class: {}",
+                    binary.type_variation_reference
+                ),
+            }
         }
         _ => substrait_err!(
             "Unsupported kind: {:?} in the type with name {}",

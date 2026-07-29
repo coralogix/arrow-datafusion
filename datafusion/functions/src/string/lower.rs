@@ -15,18 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-
 use arrow::datatypes::DataType;
-
-use datafusion_common::Result;
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use std::any::Any;
 
 use crate::string::common::to_lower;
 use crate::utils::utf8_to_str_type;
+use datafusion_common::Result;
+use datafusion_common::types::logical_string;
+use datafusion_expr::{
+    Coercion, ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    TypeSignatureClass, Volatility,
+};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Converts a string to lower-case.",
+    syntax_example = "lower(str)",
+    sql_example = r#"```sql
+> select lower('Ångström');
++-------------------------+
+| lower(Utf8("Ångström")) |
++-------------------------+
+| ångström                |
++-------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    related_udf(name = "initcap"),
+    related_udf(name = "upper")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct LowerFunc {
     signature: Signature,
 }
@@ -39,11 +57,11 @@ impl Default for LowerFunc {
 
 impl LowerFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(
-                1,
-                vec![Utf8, LargeUtf8],
+            signature: Signature::coercible(
+                vec![Coercion::new_exact(TypeSignatureClass::Native(
+                    logical_string(),
+                ))],
                 Volatility::Immutable,
             ),
         }
@@ -67,23 +85,39 @@ impl ScalarUDFImpl for LowerFunc {
         utf8_to_str_type(&arg_types[0], "lower")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        to_lower(args, "lower")
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        to_lower(&args.args, "lower")
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, StringArray};
+    use arrow::array::{Array, ArrayRef, StringArray};
+    use arrow::datatypes::DataType::Utf8;
+    use arrow::datatypes::Field;
+    use datafusion_common::config::ConfigOptions;
     use std::sync::Arc;
 
     fn to_lower(input: ArrayRef, expected: ArrayRef) -> Result<()> {
         let func = LowerFunc::new();
-        let args = vec![ColumnarValue::Array(input)];
-        let result = match func.invoke(&args)? {
+        let arg_fields = vec![Field::new("a", input.data_type().clone(), true).into()];
+
+        let args = ScalarFunctionArgs {
+            number_rows: input.len(),
+            args: vec![ColumnarValue::Array(input)],
+            arg_fields,
+            return_field: Field::new("f", Utf8, true).into(),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+
+        let result = match func.invoke_with_args(args)? {
             ColumnarValue::Array(result) => result,
-            _ => unreachable!(),
+            _ => unreachable!("lower"),
         };
         assert_eq!(&expected, &result);
         Ok(())

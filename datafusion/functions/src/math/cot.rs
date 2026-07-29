@@ -18,17 +18,31 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Float32Array, Float64Array};
-use arrow::datatypes::DataType;
+use arrow::array::{ArrayRef, AsArray};
 use arrow::datatypes::DataType::{Float32, Float64};
-
-use datafusion_common::{exec_err, DataFusionError, Result};
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use arrow::datatypes::{DataType, Float32Type, Float64Type};
 
 use crate::utils::make_scalar_function;
+use datafusion_common::{Result, exec_err};
+use datafusion_expr::{ColumnarValue, Documentation, ScalarFunctionArgs};
+use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Math Functions"),
+    description = "Returns the cotangent of a number.",
+    syntax_example = r#"cot(numeric_expression)"#,
+    sql_example = r#"```sql
+> SELECT cot(1);
++---------+
+| cot(1)  |
++---------+
+| 0.64209 |
++---------+
+```"#,
+    standard_argument(name = "numeric_expression", prefix = "Numeric")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CotFunc {
     signature: Signature,
 }
@@ -77,26 +91,28 @@ impl ScalarUDFImpl for CotFunc {
         }
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        make_scalar_function(cot, vec![])(args)
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        make_scalar_function(cot, vec![])(&args.args)
     }
 }
 
 ///cot SQL function
 fn cot(args: &[ArrayRef]) -> Result<ArrayRef> {
     match args[0].data_type() {
-        Float64 => Ok(Arc::new(make_function_scalar_inputs!(
-            &args[0],
-            "x",
-            Float64Array,
-            { compute_cot64 }
-        )) as ArrayRef),
-        Float32 => Ok(Arc::new(make_function_scalar_inputs!(
-            &args[0],
-            "x",
-            Float32Array,
-            { compute_cot32 }
-        )) as ArrayRef),
+        Float64 => Ok(Arc::new(
+            args[0]
+                .as_primitive::<Float64Type>()
+                .unary::<_, Float64Type>(|x: f64| compute_cot64(x)),
+        ) as ArrayRef),
+        Float32 => Ok(Arc::new(
+            args[0]
+                .as_primitive::<Float32Type>()
+                .unary::<_, Float32Type>(|x: f32| compute_cot32(x)),
+        ) as ArrayRef),
         other => exec_err!("Unsupported data type {other:?} for function cot"),
     }
 }

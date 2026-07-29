@@ -15,66 +15,221 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt::{Display, Formatter};
+//! Common utilities for implementing string functions
+
 use std::sync::Arc;
 
+use crate::strings::make_and_append_view;
 use arrow::array::{
-    new_null_array, Array, ArrayDataBuilder, ArrayRef, GenericStringArray,
-    GenericStringBuilder, OffsetSizeTrait, StringArray,
+    Array, ArrayRef, GenericStringArray, GenericStringBuilder, NullBufferBuilder,
+    OffsetSizeTrait, StringBuilder, StringViewArray, new_null_array,
 };
-use arrow::buffer::{Buffer, MutableBuffer, NullBuffer};
+use arrow::buffer::{Buffer, ScalarBuffer};
 use arrow::datatypes::DataType;
-
-use datafusion_common::cast::as_generic_string_array;
 use datafusion_common::Result;
-use datafusion_common::{exec_err, ScalarValue};
+use datafusion_common::cast::{as_generic_string_array, as_string_view_array};
+use datafusion_common::{ScalarValue, exec_err};
 use datafusion_expr::ColumnarValue;
 
-pub(crate) enum TrimType {
-    Left,
-    Right,
-    Both,
+/// Trait for trim operations, allowing compile-time dispatch instead of runtime matching.
+///
+/// Each implementation performs its specific trim operation and returns
+/// (trimmed_str, start_offset) where start_offset is the byte offset
+/// from the beginning of the input string where the trimmed result starts.
+pub(crate) trait Trimmer {
+    fn trim<'a>(input: &'a str, pattern: &[char]) -> (&'a str, u32);
 }
 
-impl Display for TrimType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TrimType::Left => write!(f, "ltrim"),
-            TrimType::Right => write!(f, "rtrim"),
-            TrimType::Both => write!(f, "btrim"),
-        }
+/// Left trim - removes leading characters
+pub(crate) struct TrimLeft;
+
+impl Trimmer for TrimLeft {
+    #[inline]
+    fn trim<'a>(input: &'a str, pattern: &[char]) -> (&'a str, u32) {
+        let trimmed = input.trim_start_matches(pattern);
+        let offset = (input.len() - trimmed.len()) as u32;
+        (trimmed, offset)
     }
 }
 
-pub(crate) fn general_trim<T: OffsetSizeTrait>(
-    args: &[ArrayRef],
-    trim_type: TrimType,
-) -> Result<ArrayRef> {
-    let func = match trim_type {
-        TrimType::Left => |input, pattern: &str| {
-            let pattern = pattern.chars().collect::<Vec<char>>();
-            str::trim_start_matches::<&[char]>(input, pattern.as_ref())
-        },
-        TrimType::Right => |input, pattern: &str| {
-            let pattern = pattern.chars().collect::<Vec<char>>();
-            str::trim_end_matches::<&[char]>(input, pattern.as_ref())
-        },
-        TrimType::Both => |input, pattern: &str| {
-            let pattern = pattern.chars().collect::<Vec<char>>();
-            str::trim_end_matches::<&[char]>(
-                str::trim_start_matches::<&[char]>(input, pattern.as_ref()),
-                pattern.as_ref(),
-            )
-        },
-    };
+/// Right trim - removes trailing characters
+pub(crate) struct TrimRight;
 
+impl Trimmer for TrimRight {
+    #[inline]
+    fn trim<'a>(input: &'a str, pattern: &[char]) -> (&'a str, u32) {
+        let trimmed = input.trim_end_matches(pattern);
+        (trimmed, 0)
+    }
+}
+
+/// Both trim - removes both leading and trailing characters
+pub(crate) struct TrimBoth;
+
+impl Trimmer for TrimBoth {
+    #[inline]
+    fn trim<'a>(input: &'a str, pattern: &[char]) -> (&'a str, u32) {
+        let left_trimmed = input.trim_start_matches(pattern);
+        let offset = (input.len() - left_trimmed.len()) as u32;
+        let trimmed = left_trimmed.trim_end_matches(pattern);
+        (trimmed, offset)
+    }
+}
+
+pub(crate) fn general_trim<T: OffsetSizeTrait, Tr: Trimmer>(
+    args: &[ArrayRef],
+    use_string_view: bool,
+) -> Result<ArrayRef> {
+    if use_string_view {
+        string_view_trim::<Tr>(args)
+    } else {
+        string_trim::<T, Tr>(args)
+    }
+}
+
+/// Applies the trim function to the given string view array(s)
+/// and returns a new string view array with the trimmed values.
+///
+/// Pre-computes the pattern characters once for scalar patterns to avoid
+/// repeated allocations per row.
+fn string_view_trim<Tr: Trimmer>(args: &[ArrayRef]) -> Result<ArrayRef> {
+    let string_view_array = as_string_view_array(&args[0])?;
+    let mut views_buf = Vec::with_capacity(string_view_array.len());
+    let mut null_builder = NullBufferBuilder::new(string_view_array.len());
+
+    match args.len() {
+        1 => {
+            // Default whitespace trim - pattern is just space
+            let pattern = [' '];
+            for (src_str_opt, raw_view) in string_view_array
+                .iter()
+                .zip(string_view_array.views().iter())
+            {
+                trim_and_append_view::<Tr>(
+                    src_str_opt,
+                    &pattern,
+                    &mut views_buf,
+                    &mut null_builder,
+                    raw_view,
+                );
+            }
+        }
+        2 => {
+            let characters_array = as_string_view_array(&args[1])?;
+
+            if characters_array.len() == 1 {
+                // Scalar pattern - pre-compute pattern chars once
+                if characters_array.is_null(0) {
+                    return Ok(new_null_array(
+                        &DataType::Utf8View,
+                        string_view_array.len(),
+                    ));
+                }
+
+                let pattern: Vec<char> = characters_array.value(0).chars().collect();
+                for (src_str_opt, raw_view) in string_view_array
+                    .iter()
+                    .zip(string_view_array.views().iter())
+                {
+                    trim_and_append_view::<Tr>(
+                        src_str_opt,
+                        &pattern,
+                        &mut views_buf,
+                        &mut null_builder,
+                        raw_view,
+                    );
+                }
+            } else {
+                // Per-row pattern - must compute pattern chars for each row
+                for ((src_str_opt, raw_view), characters_opt) in string_view_array
+                    .iter()
+                    .zip(string_view_array.views().iter())
+                    .zip(characters_array.iter())
+                {
+                    if let (Some(src_str), Some(characters)) =
+                        (src_str_opt, characters_opt)
+                    {
+                        let pattern: Vec<char> = characters.chars().collect();
+                        let (trimmed, offset) = Tr::trim(src_str, &pattern);
+                        make_and_append_view(
+                            &mut views_buf,
+                            &mut null_builder,
+                            raw_view,
+                            trimmed,
+                            offset,
+                        );
+                    } else {
+                        null_builder.append_null();
+                        views_buf.push(0);
+                    }
+                }
+            }
+        }
+        other => {
+            return exec_err!(
+                "Function TRIM was called with {other} arguments. It requires at least 1 and at most 2."
+            );
+        }
+    }
+
+    let views_buf = ScalarBuffer::from(views_buf);
+    let nulls_buf = null_builder.finish();
+
+    // Safety:
+    // (1) The blocks of the given views are all provided
+    // (2) Each of the range `view.offset+start..end` of view in views_buf is within
+    // the bounds of each of the blocks
+    unsafe {
+        let array = StringViewArray::new_unchecked(
+            views_buf,
+            string_view_array.data_buffers().to_vec(),
+            nulls_buf,
+        );
+        Ok(Arc::new(array) as ArrayRef)
+    }
+}
+
+/// Trims the given string and appends the trimmed string to the views buffer
+/// and the null buffer.
+///
+/// Arguments
+/// - `src_str_opt`: The original string value (represented by the view)
+/// - `pattern`: Pre-computed character pattern to trim
+/// - `views_buf`: The buffer to append the updated views to
+/// - `null_builder`: The buffer to append the null values to
+/// - `original_view`: The original view value (that contains src_str_opt)
+#[inline]
+fn trim_and_append_view<Tr: Trimmer>(
+    src_str_opt: Option<&str>,
+    pattern: &[char],
+    views_buf: &mut Vec<u128>,
+    null_builder: &mut NullBufferBuilder,
+    original_view: &u128,
+) {
+    if let Some(src_str) = src_str_opt {
+        let (trimmed, offset) = Tr::trim(src_str, pattern);
+        make_and_append_view(views_buf, null_builder, original_view, trimmed, offset);
+    } else {
+        null_builder.append_null();
+        views_buf.push(0);
+    }
+}
+
+/// Applies the trim function to the given string array(s)
+/// and returns a new string array with the trimmed values.
+///
+/// Pre-computes the pattern characters once for scalar patterns to avoid
+/// repeated allocations per row.
+fn string_trim<T: OffsetSizeTrait, Tr: Trimmer>(args: &[ArrayRef]) -> Result<ArrayRef> {
     let string_array = as_generic_string_array::<T>(&args[0])?;
 
     match args.len() {
         1 => {
+            // Default whitespace trim - pattern is just space
+            let pattern = [' '];
             let result = string_array
                 .iter()
-                .map(|string| string.map(|string: &str| func(string, " ")))
+                .map(|string| string.map(|s| Tr::trim(s, &pattern).0))
                 .collect::<GenericStringArray<T>>();
 
             Ok(Arc::new(result) as ArrayRef)
@@ -83,23 +238,31 @@ pub(crate) fn general_trim<T: OffsetSizeTrait>(
             let characters_array = as_generic_string_array::<T>(&args[1])?;
 
             if characters_array.len() == 1 {
+                // Scalar pattern - pre-compute pattern chars once
                 if characters_array.is_null(0) {
-                    return Ok(new_null_array(args[0].data_type(), args[0].len()));
+                    return Ok(new_null_array(
+                        string_array.data_type(),
+                        string_array.len(),
+                    ));
                 }
 
-                let characters = characters_array.value(0);
+                let pattern: Vec<char> = characters_array.value(0).chars().collect();
                 let result = string_array
                     .iter()
-                    .map(|item| item.map(|string| func(string, characters)))
+                    .map(|item| item.map(|s| Tr::trim(s, &pattern).0))
                     .collect::<GenericStringArray<T>>();
                 return Ok(Arc::new(result) as ArrayRef);
             }
 
+            // Per-row pattern - must compute pattern chars for each row
             let result = string_array
                 .iter()
                 .zip(characters_array.iter())
                 .map(|(string, characters)| match (string, characters) {
-                    (Some(string), Some(characters)) => Some(func(string, characters)),
+                    (Some(s), Some(c)) => {
+                        let pattern: Vec<char> = c.chars().collect();
+                        Some(Tr::trim(s, &pattern).0)
+                    }
                     _ => None,
                 })
                 .collect::<GenericStringArray<T>>();
@@ -108,8 +271,8 @@ pub(crate) fn general_trim<T: OffsetSizeTrait>(
         }
         other => {
             exec_err!(
-            "{trim_type} was called with {other} arguments. It requires at least 1 and at most 2."
-        )
+                "Function TRIM was called with {other} arguments. It requires at least 1 and at most 2."
+            )
         }
     }
 }
@@ -139,6 +302,23 @@ where
                 i64,
                 _,
             >(array, op)?)),
+            DataType::Utf8View => {
+                let string_array = as_string_view_array(array)?;
+                let mut string_builder = StringBuilder::with_capacity(
+                    string_array.len(),
+                    string_array.get_array_memory_size(),
+                );
+
+                for str in string_array.iter() {
+                    if let Some(str) = str {
+                        string_builder.append_value(op(str));
+                    } else {
+                        string_builder.append_null();
+                    }
+                }
+
+                Ok(ColumnarValue::Array(Arc::new(string_builder.finish())))
+            }
             other => exec_err!("Unsupported data type {other:?} for function {name}"),
         },
         ColumnarValue::Scalar(scalar) => match scalar {
@@ -150,97 +330,12 @@ where
                 let result = a.as_ref().map(|x| op(x));
                 Ok(ColumnarValue::Scalar(ScalarValue::LargeUtf8(result)))
             }
+            ScalarValue::Utf8View(a) => {
+                let result = a.as_ref().map(|x| op(x));
+                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
+            }
             other => exec_err!("Unsupported data type {other:?} for function {name}"),
         },
-    }
-}
-
-pub(crate) enum ColumnarValueRef<'a> {
-    Scalar(&'a [u8]),
-    NullableArray(&'a StringArray),
-    NonNullableArray(&'a StringArray),
-}
-
-impl<'a> ColumnarValueRef<'a> {
-    #[inline]
-    pub fn is_valid(&self, i: usize) -> bool {
-        match &self {
-            Self::Scalar(_) | Self::NonNullableArray(_) => true,
-            Self::NullableArray(array) => array.is_valid(i),
-        }
-    }
-
-    #[inline]
-    pub fn nulls(&self) -> Option<NullBuffer> {
-        match &self {
-            Self::Scalar(_) | Self::NonNullableArray(_) => None,
-            Self::NullableArray(array) => array.nulls().cloned(),
-        }
-    }
-}
-
-/// Optimized version of the StringBuilder in Arrow that:
-/// 1. Precalculating the expected length of the result, avoiding reallocations.
-/// 2. Avoids creating / incrementally creating a `NullBufferBuilder`
-pub(crate) struct StringArrayBuilder {
-    offsets_buffer: MutableBuffer,
-    value_buffer: MutableBuffer,
-}
-
-impl StringArrayBuilder {
-    pub fn with_capacity(item_capacity: usize, data_capacity: usize) -> Self {
-        let mut offsets_buffer = MutableBuffer::with_capacity(
-            (item_capacity + 1) * std::mem::size_of::<i32>(),
-        );
-        // SAFETY: the first offset value is definitely not going to exceed the bounds.
-        unsafe { offsets_buffer.push_unchecked(0_i32) };
-        Self {
-            offsets_buffer,
-            value_buffer: MutableBuffer::with_capacity(data_capacity),
-        }
-    }
-
-    pub fn write<const CHECK_VALID: bool>(
-        &mut self,
-        column: &ColumnarValueRef,
-        i: usize,
-    ) {
-        match column {
-            ColumnarValueRef::Scalar(s) => {
-                self.value_buffer.extend_from_slice(s);
-            }
-            ColumnarValueRef::NullableArray(array) => {
-                if !CHECK_VALID || array.is_valid(i) {
-                    self.value_buffer
-                        .extend_from_slice(array.value(i).as_bytes());
-                }
-            }
-            ColumnarValueRef::NonNullableArray(array) => {
-                self.value_buffer
-                    .extend_from_slice(array.value(i).as_bytes());
-            }
-        }
-    }
-
-    pub fn append_offset(&mut self) {
-        let next_offset: i32 = self
-            .value_buffer
-            .len()
-            .try_into()
-            .expect("byte array offset overflow");
-        unsafe { self.offsets_buffer.push_unchecked(next_offset) };
-    }
-
-    pub fn finish(self, null_buffer: Option<NullBuffer>) -> StringArray {
-        let array_builder = ArrayDataBuilder::new(DataType::Utf8)
-            .len(self.offsets_buffer.len() / std::mem::size_of::<i32>() - 1)
-            .add_buffer(self.offsets_buffer.into())
-            .add_buffer(self.value_buffer.into())
-            .nulls(null_buffer);
-        // SAFETY: all data that was appended was valid UTF8 and the values
-        // and offsets were created correctly
-        let array_data = unsafe { array_builder.build_unchecked() };
-        StringArray::from(array_data)
     }
 }
 

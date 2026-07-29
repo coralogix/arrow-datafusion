@@ -15,17 +15,39 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! "crypto" DataFusion functions
 use crate::crypto::basic::md5;
 use arrow::datatypes::DataType;
-use datafusion_common::{plan_err, Result};
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
+use datafusion_common::{
+    Result,
+    types::{logical_binary, logical_string},
+};
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
+};
+use datafusion_expr_common::signature::{Coercion, TypeSignatureClass};
+use datafusion_macros::user_doc;
 use std::any::Any;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Hashing Functions"),
+    description = "Computes an MD5 128-bit checksum for a string expression.",
+    syntax_example = "md5(expression)",
+    sql_example = r#"```sql
+> select md5('foo');
++----------------------------------+
+| md5(Utf8("foo"))                 |
++----------------------------------+
+| acbd18db4cc2f85cedef654fccc4a4d8 |
++----------------------------------+
+```"#,
+    standard_argument(name = "expression", prefix = "String")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Md5Func {
     signature: Signature,
 }
+
 impl Default for Md5Func {
     fn default() -> Self {
         Self::new()
@@ -34,16 +56,22 @@ impl Default for Md5Func {
 
 impl Md5Func {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(
-                1,
-                vec![Utf8, LargeUtf8, Binary, LargeBinary],
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Coercible(vec![Coercion::new_exact(
+                        TypeSignatureClass::Native(logical_string()),
+                    )]),
+                    TypeSignature::Coercible(vec![Coercion::new_exact(
+                        TypeSignatureClass::Native(logical_binary()),
+                    )]),
+                ],
                 Volatility::Immutable,
             ),
         }
     }
 }
+
 impl ScalarUDFImpl for Md5Func {
     fn as_any(&self) -> &dyn Any {
         self
@@ -57,31 +85,15 @@ impl ScalarUDFImpl for Md5Func {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        use DataType::*;
-        Ok(match &arg_types[0] {
-            LargeUtf8 | LargeBinary => LargeUtf8,
-            Utf8 | Binary => Utf8,
-            Null => Null,
-            Dictionary(_, t) => match **t {
-                LargeUtf8 | LargeBinary => LargeUtf8,
-                Utf8 | Binary => Utf8,
-                Null => Null,
-                _ => {
-                    return plan_err!(
-                        "the md5 can only accept strings but got {:?}",
-                        **t
-                    );
-                }
-            },
-            other => {
-                return plan_err!(
-                    "The md5 function can only accept strings. Got {other}"
-                );
-            }
-        })
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Utf8View)
     }
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        md5(args)
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        md5(&args.args)
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

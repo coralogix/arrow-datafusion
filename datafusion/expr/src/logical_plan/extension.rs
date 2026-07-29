@@ -18,8 +18,11 @@
 //! This module defines the interface for logical nodes
 use crate::{Expr, LogicalPlan};
 use datafusion_common::{DFSchema, DFSchemaRef, Result};
+use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::{any::Any, collections::HashSet, fmt, sync::Arc};
+
+use super::InvariantLevel;
 
 /// This defines the interface for [`LogicalPlan`] nodes that can be
 /// used to extend DataFusion with custom relational operators.
@@ -36,10 +39,10 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
     /// # struct Dummy { }
     ///
     /// # impl Dummy {
-    ///   // canonical boiler plate
-    ///   fn as_any(&self) -> &dyn Any {
-    ///      self
-    ///   }
+    /// // canonical boiler plate
+    /// fn as_any(&self) -> &dyn Any {
+    ///     self
+    /// }
     /// # }
     /// ```
     fn as_any(&self) -> &dyn Any;
@@ -52,6 +55,9 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
 
     /// Return the output schema of this logical plan node.
     fn schema(&self) -> &DFSchemaRef;
+
+    /// Perform check of invariants for the extension node.
+    fn check_invariants(&self, check: InvariantLevel) -> Result<()>;
 
     /// Returns all expressions in the current logical plan node. This should
     /// not include expressions of any inputs (aka non-recursively).
@@ -75,17 +81,6 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
     ///
     /// For example: `TopK: k=10`
     fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result;
-
-    #[deprecated(since = "39.0.0", note = "use with_exprs_and_inputs instead")]
-    #[allow(clippy::wrong_self_convention)]
-    fn from_template(
-        &self,
-        exprs: &[Expr],
-        inputs: &[LogicalPlan],
-    ) -> Arc<dyn UserDefinedLogicalNode> {
-        self.with_exprs_and_inputs(exprs.to_vec(), inputs.to_vec())
-            .unwrap()
-    }
 
     /// Create a new `UserDefinedLogicalNode` with the specified children
     /// and expressions. This function is used during optimization
@@ -136,18 +131,18 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
     /// // User defined node that derives Hash
     /// #[derive(Hash, Debug, PartialEq, Eq)]
     /// struct MyNode {
-    ///   val: u64
+    ///     val: u64,
     /// }
     ///
     /// // impl UserDefinedLogicalNode {
     /// // ...
     /// # impl MyNode {
-    ///   // Boiler plate to call the derived Hash impl
-    ///   fn dyn_hash(&self, state: &mut dyn std::hash::Hasher) {
+    /// // Boiler plate to call the derived Hash impl
+    /// fn dyn_hash(&self, state: &mut dyn std::hash::Hasher) {
     ///     use std::hash::Hash;
     ///     let mut s = state;
     ///     self.hash(&mut s);
-    ///   }
+    /// }
     /// // }
     /// # }
     /// ```
@@ -155,7 +150,7 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
     /// directly because it must remain object safe.
     fn dyn_hash(&self, state: &mut dyn Hasher);
 
-    /// Compare `other`, respecting requirements from [std::cmp::Eq].
+    /// Compare `other`, respecting requirements from [Eq].
     ///
     /// Note: consider using [`UserDefinedLogicalNodeCore`] instead of
     /// [`UserDefinedLogicalNode`] directly.
@@ -174,25 +169,39 @@ pub trait UserDefinedLogicalNode: fmt::Debug + Send + Sync {
     /// // User defined node that derives Eq
     /// #[derive(Hash, Debug, PartialEq, Eq)]
     /// struct MyNode {
-    ///   val: u64
+    ///     val: u64,
     /// }
     ///
     /// // impl UserDefinedLogicalNode {
     /// // ...
     /// # impl MyNode {
-    ///   // Boiler plate to call the derived Eq impl
-    ///   fn dyn_eq(&self, other: &dyn UserDefinedLogicalNode) -> bool {
+    /// // Boiler plate to call the derived Eq impl
+    /// fn dyn_eq(&self, other: &dyn UserDefinedLogicalNode) -> bool {
     ///     match other.as_any().downcast_ref::<Self>() {
-    ///       Some(o) => self == o,
-    ///       None => false,
+    ///         Some(o) => self == o,
+    ///         None => false,
     ///     }
-    ///   }
+    /// }
     /// // }
     /// # }
     /// ```
     /// Note: [`UserDefinedLogicalNode`] is not constrained by [`Eq`]
     /// directly because it must remain object safe.
     fn dyn_eq(&self, other: &dyn UserDefinedLogicalNode) -> bool;
+
+    /// Compare `other`, respecting requirements from [PartialOrd].
+    /// Must return `Some(Equal)` if and only if `self.dyn_eq(other)`.
+    fn dyn_ord(&self, other: &dyn UserDefinedLogicalNode) -> Option<Ordering>;
+
+    /// Returns `true` if a limit can be safely pushed down through this
+    /// `UserDefinedLogicalNode` node.
+    ///
+    /// If this method returns `true`, and the query plan contains a limit at
+    /// the output of this node, DataFusion will push the limit to the input
+    /// of this node.
+    fn supports_limit_pushdown(&self) -> bool {
+        false
+    }
 }
 
 impl Hash for dyn UserDefinedLogicalNode {
@@ -201,9 +210,15 @@ impl Hash for dyn UserDefinedLogicalNode {
     }
 }
 
-impl std::cmp::PartialEq for dyn UserDefinedLogicalNode {
+impl PartialEq for dyn UserDefinedLogicalNode {
     fn eq(&self, other: &Self) -> bool {
         self.dyn_eq(other)
+    }
+}
+
+impl PartialOrd for dyn UserDefinedLogicalNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.dyn_ord(other)
     }
 }
 
@@ -212,10 +227,10 @@ impl Eq for dyn UserDefinedLogicalNode {}
 /// This trait facilitates implementation of the [`UserDefinedLogicalNode`].
 ///
 /// See the example in
-/// [user_defined_plan.rs](../../tests/user_defined_plan.rs) for an
-/// example of how to use this extension API.
+/// [user_defined_plan.rs](https://github.com/apache/datafusion/blob/main/datafusion/core/tests/user_defined/user_defined_plan.rs)
+/// file for an example of how to use this extension API.
 pub trait UserDefinedLogicalNodeCore:
-    fmt::Debug + Eq + Hash + Sized + Send + Sync + 'static
+    fmt::Debug + Eq + PartialOrd + Hash + Sized + Send + Sync + 'static
 {
     /// Return the plan's name.
     fn name(&self) -> &str;
@@ -225,6 +240,13 @@ pub trait UserDefinedLogicalNodeCore:
 
     /// Return the output schema of this logical plan node.
     fn schema(&self) -> &DFSchemaRef;
+
+    /// Perform check of invariants for the extension node.
+    ///
+    /// This is the default implementation for extension nodes.
+    fn check_invariants(&self, _check: InvariantLevel) -> Result<()> {
+        Ok(())
+    }
 
     /// Returns all expressions in the current logical plan node. This
     /// should not include expressions of any inputs (aka
@@ -247,13 +269,6 @@ pub trait UserDefinedLogicalNodeCore:
     ///
     /// For example: `TopK: k=10`
     fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result;
-
-    #[deprecated(since = "39.0.0", note = "use with_exprs_and_inputs instead")]
-    #[allow(clippy::wrong_self_convention)]
-    fn from_template(&self, exprs: &[Expr], inputs: &[LogicalPlan]) -> Self {
-        self.with_exprs_and_inputs(exprs.to_vec(), inputs.to_vec())
-            .unwrap()
-    }
 
     /// Create a new `UserDefinedLogicalNode` with the specified children
     /// and expressions. This function is used during optimization
@@ -287,10 +302,20 @@ pub trait UserDefinedLogicalNodeCore:
     ) -> Option<Vec<Vec<usize>>> {
         None
     }
+
+    /// Returns `true` if a limit can be safely pushed down through this
+    /// `UserDefinedLogicalNode` node.
+    ///
+    /// If this method returns `true`, and the query plan contains a limit at
+    /// the output of this node, DataFusion will push the limit to the input
+    /// of this node.
+    fn supports_limit_pushdown(&self) -> bool {
+        false // Disallow limit push-down by default
+    }
 }
 
 /// Automatically derive UserDefinedLogicalNode to `UserDefinedLogicalNode`
-/// to avoid boiler plate for implementing `as_any`, `Hash` and `PartialEq`
+/// to avoid boiler plate for implementing `as_any`, `Hash`, `PartialEq` and `PartialOrd`.
 impl<T: UserDefinedLogicalNodeCore> UserDefinedLogicalNode for T {
     fn as_any(&self) -> &dyn Any {
         self
@@ -306,6 +331,10 @@ impl<T: UserDefinedLogicalNodeCore> UserDefinedLogicalNode for T {
 
     fn schema(&self) -> &DFSchemaRef {
         self.schema()
+    }
+
+    fn check_invariants(&self, check: InvariantLevel) -> Result<()> {
+        self.check_invariants(check)
     }
 
     fn expressions(&self) -> Vec<Expr> {
@@ -345,6 +374,17 @@ impl<T: UserDefinedLogicalNodeCore> UserDefinedLogicalNode for T {
             Some(o) => self == o,
             None => false,
         }
+    }
+
+    fn dyn_ord(&self, other: &dyn UserDefinedLogicalNode) -> Option<Ordering> {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .and_then(|other| self.partial_cmp(other))
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        self.supports_limit_pushdown()
     }
 }
 

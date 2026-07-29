@@ -16,39 +16,52 @@
 // under the License.
 
 use crate::planner::{ContextProvider, PlannerContext, SqlToRel};
-use datafusion_common::{not_impl_err, Column, Result};
+use datafusion_common::{Column, Result, not_impl_err, plan_datafusion_err};
 use datafusion_expr::{JoinType, LogicalPlan, LogicalPlanBuilder};
-use sqlparser::ast::{Join, JoinConstraint, JoinOperator, TableWithJoins};
+use sqlparser::ast::{
+    Join, JoinConstraint, JoinOperator, ObjectName, TableFactor, TableWithJoins,
+};
 use std::collections::HashSet;
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
     pub(crate) fn plan_table_with_joins(
         &self,
         t: TableWithJoins,
         planner_context: &mut PlannerContext,
     ) -> Result<LogicalPlan> {
-        let mut left = self.create_relation(t.relation, planner_context)?;
-        for join in t.joins.into_iter() {
+        let mut left = if is_lateral(&t.relation) {
+            self.create_relation_subquery(t.relation, planner_context)?
+        } else {
+            self.create_relation(t.relation, planner_context)?
+        };
+        let old_outer_from_schema = planner_context.outer_from_schema();
+        for join in t.joins {
+            planner_context.extend_outer_from_schema(left.schema())?;
             left = self.parse_relation_join(left, join, planner_context)?;
         }
+        planner_context.set_outer_from_schema(old_outer_from_schema);
         Ok(left)
     }
 
-    fn parse_relation_join(
+    pub(crate) fn parse_relation_join(
         &self,
         left: LogicalPlan,
         join: Join,
         planner_context: &mut PlannerContext,
     ) -> Result<LogicalPlan> {
-        let right = self.create_relation(join.relation, planner_context)?;
+        let right = if is_lateral_join(&join)? {
+            self.create_relation_subquery(join.relation, planner_context)?
+        } else {
+            self.create_relation(join.relation, planner_context)?
+        };
         match join.join_operator {
-            JoinOperator::LeftOuter(constraint) => {
+            JoinOperator::LeftOuter(constraint) | JoinOperator::Left(constraint) => {
                 self.parse_join(left, right, constraint, JoinType::Left, planner_context)
             }
-            JoinOperator::RightOuter(constraint) => {
+            JoinOperator::RightOuter(constraint) | JoinOperator::Right(constraint) => {
                 self.parse_join(left, right, constraint, JoinType::Right, planner_context)
             }
-            JoinOperator::Inner(constraint) => {
+            JoinOperator::Inner(constraint) | JoinOperator::Join(constraint) => {
                 self.parse_join(left, right, constraint, JoinType::Inner, planner_context)
             }
             JoinOperator::LeftSemi(constraint) => self.parse_join(
@@ -82,7 +95,9 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             JoinOperator::FullOuter(constraint) => {
                 self.parse_join(left, right, constraint, JoinType::Full, planner_context)
             }
-            JoinOperator::CrossJoin => self.parse_cross_join(left, right),
+            JoinOperator::CrossJoin(JoinConstraint::None) => {
+                self.parse_cross_join(left, right)
+            }
             other => not_impl_err!("Unsupported JOIN operator {other:?}"),
         }
     }
@@ -112,11 +127,28 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                     .join_on(right, join_type, Some(expr))?
                     .build()
             }
-            JoinConstraint::Using(idents) => {
-                let keys: Vec<Column> = idents
+            JoinConstraint::Using(object_names) => {
+                let keys = object_names
                     .into_iter()
-                    .map(|x| Column::from_name(self.normalizer.normalize(x)))
-                    .collect();
+                    .map(|object_name| {
+                        let ObjectName(mut object_names) = object_name;
+                        if object_names.len() != 1 {
+                            not_impl_err!(
+                                "Invalid identifier in USING clause. Expected single identifier, got {}", ObjectName(object_names)
+                            )
+                        } else {
+                            let id = object_names.swap_remove(0);
+                            id.as_ident()
+                                .ok_or_else(|| {
+                                    plan_datafusion_err!(
+                                        "Expected identifier in USING clause"
+                                    )
+                                })
+                                .map(|ident| Column::from_name(self.ident_normalizer.normalize(ident.clone())))
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
                 LogicalPlanBuilder::from(left)
                     .join_using(right, join_type, keys)?
                     .build()
@@ -140,7 +172,41 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                         .build()
                 }
             }
-            JoinConstraint::None => not_impl_err!("NONE constraint is not supported"),
+            JoinConstraint::None => LogicalPlanBuilder::from(left)
+                .join_on(right, join_type, [])?
+                .build(),
         }
     }
+}
+
+/// Return `true` iff the given [`TableFactor`] is lateral.
+pub(crate) fn is_lateral(factor: &TableFactor) -> bool {
+    match factor {
+        TableFactor::Derived { lateral, .. } => *lateral,
+        TableFactor::Function { lateral, .. } => *lateral,
+        TableFactor::UNNEST { .. } => true,
+        _ => false,
+    }
+}
+
+/// Return `true` iff the given [`Join`] is lateral.
+pub(crate) fn is_lateral_join(join: &Join) -> Result<bool> {
+    let is_lateral_syntax = is_lateral(&join.relation);
+    let is_apply_syntax = match join.join_operator {
+        JoinOperator::FullOuter(..)
+        | JoinOperator::Right(..)
+        | JoinOperator::RightOuter(..)
+        | JoinOperator::RightAnti(..)
+        | JoinOperator::RightSemi(..)
+            if is_lateral_syntax =>
+        {
+            return not_impl_err!(
+                "LATERAL syntax is not supported for \
+                 FULL OUTER and RIGHT [OUTER | ANTI | SEMI] joins"
+            );
+        }
+        JoinOperator::CrossApply | JoinOperator::OuterApply => true,
+        _ => false,
+    };
+    Ok(is_lateral_syntax || is_apply_syntax)
 }

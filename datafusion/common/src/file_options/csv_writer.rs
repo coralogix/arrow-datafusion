@@ -31,6 +31,8 @@ pub struct CsvWriterOptions {
     /// Compression to apply after ArrowWriter serializes RecordBatches.
     /// This compression is applied by DataFusion not the ArrowWriter itself.
     pub compression: CompressionTypeVariant,
+    /// Compression level for the output file.
+    pub compression_level: Option<u32>,
 }
 
 impl CsvWriterOptions {
@@ -41,6 +43,20 @@ impl CsvWriterOptions {
         Self {
             writer_options,
             compression,
+            compression_level: None,
+        }
+    }
+
+    /// Create a new `CsvWriterOptions` with the specified compression level.
+    pub fn new_with_level(
+        writer_options: WriterBuilder,
+        compression: CompressionTypeVariant,
+        compression_level: u32,
+    ) -> Self {
+        Self {
+            writer_options,
+            compression,
+            compression_level: Some(compression_level),
         }
     }
 }
@@ -50,7 +66,7 @@ impl TryFrom<&CsvOptions> for CsvWriterOptions {
 
     fn try_from(value: &CsvOptions) -> Result<Self> {
         let mut builder = WriterBuilder::default()
-            .with_header(value.has_header.unwrap_or(false))
+            .with_header(value.has_header.unwrap_or(true))
             .with_quote(value.quote)
             .with_delimiter(value.delimiter);
 
@@ -63,15 +79,25 @@ impl TryFrom<&CsvOptions> for CsvWriterOptions {
         if let Some(v) = &value.timestamp_format {
             builder = builder.with_timestamp_format(v.into())
         }
+        if let Some(v) = &value.timestamp_tz_format {
+            builder = builder.with_timestamp_tz_format(v.into())
+        }
         if let Some(v) = &value.time_format {
             builder = builder.with_time_format(v.into())
         }
         if let Some(v) = &value.null_value {
             builder = builder.with_null(v.into())
         }
+        if let Some(v) = &value.escape {
+            builder = builder.with_escape(*v)
+        }
+        if let Some(v) = &value.double_quote {
+            builder = builder.with_double_quote(*v)
+        }
         Ok(CsvWriterOptions {
             writer_options: builder,
             compression: value.compression,
+            compression_level: value.compression_level,
         })
     }
 }

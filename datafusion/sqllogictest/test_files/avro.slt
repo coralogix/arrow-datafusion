@@ -15,6 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
+# Currently, the avro not support Utf8View type, so we disable the map_string_types_to_utf8view
+# After https://github.com/apache/arrow-rs/issues/7262 released, we can remove this setting
+statement ok
+set datafusion.sql_parser.map_string_types_to_utf8view = false;
 
 statement ok
 CREATE EXTERNAL TABLE alltypes_plain (
@@ -198,29 +202,29 @@ NULL
 query IT
 SELECT id, CAST(string_col AS varchar) FROM alltypes_plain_multi_files
 ----
-4  0
-5  1
-6  0
-7  1
-2  0
-3  1
-0  0
-1  1
-4  0
-5  1
-6  0
-7  1
-2  0
-3  1
-0  0
-1  1
+4 0
+5 1
+6 0
+7 1
+2 0
+3 1
+0 0
+1 1
+4 0
+5 1
+6 0
+7 1
+2 0
+3 1
+0 0
+1 1
 
 # test avro nested records
 query ????
 SELECT f1, f2, f3, f4 FROM nested_records
 ----
-{f1_1: aaa, f1_2: 10, f1_3: {f1_3_1: 3.14}} [{f2_1: true, f2_2: 1.2}, {f2_1: true, f2_2: 2.2}] {f3_1: xyz} [{f4_1: 200}, ]
-{f1_1: bbb, f1_2: 20, f1_3: {f1_3_1: 3.14}} [{f2_1: false, f2_2: 10.2}] NULL [, {f4_1: 300}]
+{f1_1: aaa, f1_2: 10, f1_3: {f1_3_1: 3.14}} [{f2_1: true, f2_2: 1.2}, {f2_1: true, f2_2: 2.2}] {f3_1: xyz} [{f4_1: 200}, NULL]
+{f1_1: bbb, f1_2: 20, f1_3: {f1_3_1: 3.14}} [{f2_1: false, f2_2: 10.2}] NULL [NULL, {f4_1: 300}]
 
 # test avro enum
 query TTT
@@ -243,11 +247,23 @@ query TT
 EXPLAIN SELECT count(*) from alltypes_plain
 ----
 logical_plan
-01)Aggregate: groupBy=[[]], aggr=[[COUNT(Int64(1)) AS COUNT(*)]]
-02)--TableScan: alltypes_plain projection=[]
+01)Projection: count(Int64(1)) AS count(*)
+02)--Aggregate: groupBy=[[]], aggr=[[count(Int64(1))]]
+03)----TableScan: alltypes_plain projection=[]
 physical_plan
-01)AggregateExec: mode=Final, gby=[], aggr=[COUNT(*)]
-02)--CoalescePartitionsExec
-03)----AggregateExec: mode=Partial, gby=[], aggr=[COUNT(*)]
-04)------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-05)--------AvroExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/avro/alltypes_plain.avro]]}
+01)ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+02)--AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+03)----CoalescePartitionsExec
+04)------AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+05)--------RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+06)----------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/testing/data/avro/alltypes_plain.avro]]}, file_type=avro
+
+# test column projection order from avro file
+query ITII
+SELECT id, string_col, int_col, bigint_col FROM alltypes_plain ORDER BY id LIMIT 5
+----
+0 0 0 0
+1 1 1 10
+2 0 0 0
+3 1 1 10
+4 0 0 0

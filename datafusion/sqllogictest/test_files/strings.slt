@@ -17,7 +17,7 @@
 
 statement ok
 CREATE TABLE test(
-  s TEXT,
+  s TEXT
 ) as VALUES
   ('p1'),
   ('p1e1'),
@@ -46,6 +46,51 @@ P1m1e1
 p1m1e1
 p2m1e1
 
+# REGEX
+query T rowsort
+SELECT s FROM test WHERE s ~ 'p[12].*';
+----
+p1
+p1e1
+p1m1e1
+p2
+p2e1
+p2m1e1
+
+# REGEX nocase
+query T rowsort
+SELECT s FROM test WHERE s ~* 'p[12].*';
+----
+P1
+P1e1
+P1m1e1
+p1
+p1e1
+p1m1e1
+p2
+p2e1
+p2m1e1
+
+# SIMILAR TO
+query T rowsort
+SELECT s FROM test WHERE s SIMILAR TO 'p[12].*';
+----
+p1
+p1e1
+p1m1e1
+p2
+p2e1
+p2m1e1
+
+# NOT SIMILAR TO
+query T rowsort
+SELECT s FROM test WHERE s NOT SIMILAR TO 'p[12].*';
+----
+P1
+P1e1
+P1m1e1
+e1
+
 # NOT LIKE
 query T rowsort
 SELECT s FROM test WHERE s NOT LIKE 'p1%';
@@ -70,6 +115,12 @@ p1
 p1e1
 p1m1e1
 
+query T rowsort
+SELECT s FROM test WHERE s ILIKE 'p1';
+----
+P1
+p1
+
 # NOT ILIKE
 query T rowsort
 SELECT s FROM test WHERE s NOT ILIKE 'p1%';
@@ -78,3 +129,52 @@ e1
 p2
 p2e1
 p2m1e1
+
+## VARCHAR with length support
+
+# Lengths can be used by default
+query T
+SELECT '12345'::VARCHAR(2);
+----
+12345
+
+# Lengths can not be used when the config setting is disabled
+
+statement ok
+set datafusion.sql_parser.support_varchar_with_length = false;
+
+query error
+SELECT '12345'::VARCHAR(2);
+
+query error
+SELECT s::VARCHAR(2) FROM (VALUES ('12345')) t(s);
+
+statement ok
+create table vals(s char) as values('abc'), ('def');
+
+query error
+SELECT s::VARCHAR(2) FROM vals
+
+# Lengths can be used when the config setting is enabled
+
+statement ok
+set datafusion.sql_parser.support_varchar_with_length = true;
+
+query T
+SELECT '12345'::VARCHAR(2)
+----
+12345
+
+query T
+SELECT s::VARCHAR(2) FROM (VALUES ('12345')) t(s)
+----
+12345
+
+query T
+SELECT s::VARCHAR(2) FROM vals
+----
+abc
+def
+
+statement ok
+drop table vals;

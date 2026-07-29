@@ -20,20 +20,22 @@
 use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::context::TaskContext;
 use datafusion::{
     datasource::{TableProvider, TableType},
     error::Result,
     logical_expr::Expr,
     physical_plan::{
-        ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan,
-        Partitioning, PlanProperties, SendableRecordBatchStream, Statistics,
+        ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+        PlanProperties, SendableRecordBatchStream, Statistics,
     },
     prelude::SessionContext,
     scalar::ScalarValue,
 };
+use datafusion_catalog::Session;
 use datafusion_common::{project_schema, stats::Precision};
 use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 
 use async_trait::async_trait;
 
@@ -63,12 +65,11 @@ impl StatisticsValidation {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(2),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -89,7 +90,7 @@ impl TableProvider for StatisticsValidation {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         // limit is ignored because it is not mandatory for a `TableProvider` to honor it
@@ -140,11 +141,19 @@ impl DisplayAs for StatisticsValidation {
                     self.stats.num_rows,
                 )
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for StatisticsValidation {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -175,6 +184,14 @@ impl ExecutionPlan for StatisticsValidation {
     fn statistics(&self) -> Result<Statistics> {
         Ok(self.stats.clone())
     }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if partition.is_some() {
+            Ok(Statistics::new_unknown(&self.schema))
+        } else {
+            Ok(self.stats.clone())
+        }
+    }
 }
 
 fn init_ctx(stats: Statistics, schema: Schema) -> Result<SessionContext> {
@@ -195,13 +212,17 @@ fn fully_defined() -> (Statistics, Schema) {
                     distinct_count: Precision::Exact(2),
                     max_value: Precision::Exact(ScalarValue::Int32(Some(1023))),
                     min_value: Precision::Exact(ScalarValue::Int32(Some(-24))),
+                    sum_value: Precision::Exact(ScalarValue::Int64(Some(10))),
                     null_count: Precision::Exact(0),
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Exact(13),
                     max_value: Precision::Exact(ScalarValue::Int64(Some(5486))),
                     min_value: Precision::Exact(ScalarValue::Int64(Some(-6783))),
+                    sum_value: Precision::Exact(ScalarValue::Int64(Some(10))),
                     null_count: Precision::Exact(5),
+                    byte_size: Precision::Absent,
                 },
             ],
         },
@@ -221,7 +242,7 @@ async fn sql_basic() -> Result<()> {
     let physical_plan = df.create_physical_plan().await.unwrap();
 
     // the statistics should be those of the source
-    assert_eq!(stats, physical_plan.statistics()?);
+    assert_eq!(stats, physical_plan.partition_statistics(None)?);
 
     Ok(())
 }
@@ -237,7 +258,7 @@ async fn sql_filter() -> Result<()> {
         .unwrap();
 
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let stats = physical_plan.statistics()?;
+    let stats = physical_plan.partition_statistics(None)?;
     assert_eq!(stats.num_rows, Precision::Inexact(1));
 
     Ok(())
@@ -246,20 +267,22 @@ async fn sql_filter() -> Result<()> {
 #[tokio::test]
 async fn sql_limit() -> Result<()> {
     let (stats, schema) = fully_defined();
-    let col_stats = Statistics::unknown_column(&schema);
     let ctx = init_ctx(stats.clone(), schema)?;
 
     let df = ctx.sql("SELECT * FROM stats_table LIMIT 5").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    // when the limit is smaller than the original number of lines
-    // we loose all statistics except the for number of rows which becomes the limit
+    // when the limit is smaller than the original number of lines we mark the statistics as inexact
     assert_eq!(
         Statistics {
             num_rows: Precision::Exact(5),
-            column_statistics: col_stats,
+            column_statistics: stats
+                .column_statistics
+                .iter()
+                .map(|c| c.clone().to_inexact())
+                .collect(),
             total_byte_size: Precision::Absent
         },
-        physical_plan.statistics()?
+        physical_plan.partition_statistics(None)?
     );
 
     let df = ctx
@@ -268,7 +291,7 @@ async fn sql_limit() -> Result<()> {
         .unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
     // when the limit is larger than the original number of lines, statistics remain unchanged
-    assert_eq!(stats, physical_plan.statistics()?);
+    assert_eq!(stats, physical_plan.partition_statistics(None)?);
 
     Ok(())
 }
@@ -285,7 +308,7 @@ async fn sql_window() -> Result<()> {
 
     let physical_plan = df.create_physical_plan().await.unwrap();
 
-    let result = physical_plan.statistics()?;
+    let result = physical_plan.partition_statistics(None)?;
 
     assert_eq!(stats.num_rows, result.num_rows);
     let col_stats = result.column_statistics;

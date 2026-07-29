@@ -56,47 +56,54 @@
 //!
 //! The same answer can be produced by simply keeping track of the top
 //! N elements, reducing the total amount of required buffer memory.
-//!
 
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::task::{Context, Poll};
 use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
 
+use arrow::array::{Array, ArrayRef, StringViewArray};
 use arrow::{
-    array::{Int64Array, StringArray},
-    datatypes::SchemaRef,
-    record_batch::RecordBatch,
+    array::Int64Array, datatypes::SchemaRef, record_batch::RecordBatch,
     util::pretty::pretty_format_batches,
 };
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::{
-    common::cast::{as_int64_array, as_string_array},
-    common::{arrow_datafusion_err, internal_err, DFSchemaRef},
+    common::cast::as_int64_array,
+    common::{DFSchemaRef, arrow_datafusion_err},
     error::{DataFusionError, Result},
     execution::{
         context::{QueryPlanner, SessionState, TaskContext},
         runtime_env::RuntimeEnv,
     },
     logical_expr::{
-        Expr, Extension, Limit, LogicalPlan, Sort, UserDefinedLogicalNode,
+        Expr, Extension, LogicalPlan, Sort, UserDefinedLogicalNode,
         UserDefinedLogicalNodeCore,
     },
-    optimizer::{optimize_children, OptimizerConfig, OptimizerRule},
+    optimizer::{OptimizerConfig, OptimizerRule},
     physical_expr::EquivalenceProperties,
     physical_plan::{
-        DisplayAs, DisplayFormatType, Distribution, ExecutionMode, ExecutionPlan,
-        Partitioning, PlanProperties, RecordBatchStream, SendableRecordBatchStream,
-        Statistics,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, Partitioning,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_common::config::ConfigOptions;
+use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::{ScalarValue, assert_eq_or_internal_err, assert_or_internal_err};
+use datafusion_expr::{FetchType, InvariantLevel, Projection, SortExpr};
+use datafusion_optimizer::AnalyzerRule;
+use datafusion_optimizer::optimizer::ApplyOrder;
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 
 use async_trait::async_trait;
+use datafusion_common::cast::as_string_view_array;
 use futures::{Stream, StreamExt};
 
 /// Execute the specified sql and return the resulting record batches
 /// pretty printed as a String.
-async fn exec_sql(ctx: &mut SessionContext, sql: &str) -> Result<String> {
+async fn exec_sql(ctx: &SessionContext, sql: &str) -> Result<String> {
     let df = ctx.sql(sql).await?;
     let batches = df.collect().await?;
     pretty_format_batches(&batches)
@@ -105,90 +112,117 @@ async fn exec_sql(ctx: &mut SessionContext, sql: &str) -> Result<String> {
 }
 
 /// Create a test table.
-async fn setup_table(mut ctx: SessionContext) -> Result<SessionContext> {
-    let sql = "CREATE EXTERNAL TABLE sales(customer_id VARCHAR, revenue BIGINT) STORED AS CSV location 'tests/data/customer.csv'";
+async fn setup_table(ctx: SessionContext) -> Result<SessionContext> {
+    let sql = "
+        CREATE EXTERNAL TABLE sales(customer_id VARCHAR, revenue BIGINT)
+        STORED AS CSV location 'tests/data/customer.csv'
+        OPTIONS('format.has_header' 'false')
+    ";
 
     let expected = vec!["++", "++"];
 
-    let s = exec_sql(&mut ctx, sql).await?;
+    let s = exec_sql(&ctx, sql).await?;
     let actual = s.lines().collect::<Vec<_>>();
 
     assert_eq!(expected, actual, "Creating table");
     Ok(ctx)
 }
 
-async fn setup_table_without_schemas(mut ctx: SessionContext) -> Result<SessionContext> {
-    let sql =
-        "CREATE EXTERNAL TABLE sales STORED AS CSV location 'tests/data/customer.csv'";
+async fn setup_table_without_schemas(ctx: SessionContext) -> Result<SessionContext> {
+    let sql = "
+        CREATE EXTERNAL TABLE sales
+        STORED AS CSV location 'tests/data/customer.csv'
+        OPTIONS('format.has_header' 'false')
+    ";
 
     let expected = vec!["++", "++"];
 
-    let s = exec_sql(&mut ctx, sql).await?;
+    let s = exec_sql(&ctx, sql).await?;
     let actual = s.lines().collect::<Vec<_>>();
 
     assert_eq!(expected, actual, "Creating table");
     Ok(ctx)
 }
-
-const QUERY1: &str = "SELECT * FROM sales limit 3";
 
 const QUERY: &str =
     "SELECT customer_id, revenue FROM sales ORDER BY revenue DESC limit 3";
 
+const QUERY1: &str = "SELECT * FROM sales limit 3";
+
+const QUERY2: &str = "SELECT 42, arrow_typeof(42)";
+
 // Run the query using the specified execution context and compare it
 // to the known result
-async fn run_and_compare_query(mut ctx: SessionContext, description: &str) -> Result<()> {
-    let expected = vec![
-        "+-------------+---------+",
-        "| customer_id | revenue |",
-        "+-------------+---------+",
-        "| paul        | 300     |",
-        "| jorge       | 200     |",
-        "| andy        | 150     |",
-        "+-------------+---------+",
-    ];
+async fn run_and_compare_query(ctx: SessionContext, description: &str) -> Result<()> {
+    let s = exec_sql(&ctx, QUERY).await?;
+    let actual = s.lines().collect::<Vec<_>>().join("\n");
 
-    let s = exec_sql(&mut ctx, QUERY).await?;
-    let actual = s.lines().collect::<Vec<_>>();
+    insta::allow_duplicates! {
+        insta::with_settings!({
+            description => description,
+        }, {
+            insta::assert_snapshot!(actual, @r"
+            +-------------+---------+
+            | customer_id | revenue |
+            +-------------+---------+
+            | paul        | 300     |
+            | jorge       | 200     |
+            | andy        | 150     |
+            +-------------+---------+
+            ");
+        });
+    }
 
-    assert_eq!(
-        expected,
-        actual,
-        "output mismatch for {}. Expectedn\n{}Actual:\n{}",
-        description,
-        expected.join("\n"),
-        s
-    );
+    Ok(())
+}
+
+// Run the query using the specified execution context and compare it
+// to the known result
+async fn run_and_compare_query_with_analyzer_rule(
+    ctx: SessionContext,
+    description: &str,
+) -> Result<()> {
+    let s = exec_sql(&ctx, QUERY2).await?;
+    let actual = s.lines().collect::<Vec<_>>().join("\n");
+
+    insta::with_settings!({
+        description => description,
+    }, {
+        insta::assert_snapshot!(actual, @r"
+        +------------+--------------------------+
+        | UInt64(42) | arrow_typeof(UInt64(42)) |
+        +------------+--------------------------+
+        | 42         | UInt64                   |
+        +------------+--------------------------+
+        ");
+    });
+
     Ok(())
 }
 
 // Run the query using the specified execution context and compare it
 // to the known result
 async fn run_and_compare_query_with_auto_schemas(
-    mut ctx: SessionContext,
+    ctx: SessionContext,
     description: &str,
 ) -> Result<()> {
-    let expected = vec![
-        "+----------+----------+",
-        "| column_1 | column_2 |",
-        "+----------+----------+",
-        "| andrew   | 100      |",
-        "| jorge    | 200      |",
-        "| andy     | 150      |",
-        "+----------+----------+",
-    ];
+    let s = exec_sql(&ctx, QUERY1).await?;
+    let actual = s.lines().collect::<Vec<_>>().join("\n");
 
-    let s = exec_sql(&mut ctx, QUERY1).await?;
-    let actual = s.lines().collect::<Vec<_>>();
+    insta::with_settings!({
+            description => description,
+        }, {
+            insta::assert_snapshot!(actual, @r"
+            +----------+----------+
+            | column_1 | column_2 |
+            +----------+----------+
+            | andrew   | 100      |
+            | jorge    | 200      |
+            | andy     | 150      |
+            +----------+----------+
+            ");
+    });
 
-    assert_eq!(
-        expected,
-        actual,
-        "output mismatch for {}. Expectedn\n{}Actual:\n{}",
-        description,
-        expected.join("\n"),
-        s
-    );
     Ok(())
 }
 
@@ -207,6 +241,14 @@ async fn normal_query() -> Result<()> {
 }
 
 #[tokio::test]
+// Run the query using default planners, optimizer and custom analyzer rule
+async fn normal_query_with_analyzer() -> Result<()> {
+    let ctx = SessionContext::new();
+    ctx.add_analyzer_rule(Arc::new(MyAnalyzerRule {}));
+    run_and_compare_query_with_analyzer_rule(ctx, "MyAnalyzerRule").await
+}
+
+#[tokio::test]
 // Run the query using topk optimization
 async fn topk_query() -> Result<()> {
     // Note the only difference is that the top
@@ -217,13 +259,13 @@ async fn topk_query() -> Result<()> {
 #[tokio::test]
 // Run EXPLAIN PLAN and show the plan was in fact rewritten
 async fn topk_plan() -> Result<()> {
-    let mut ctx = setup_table(make_topk_context()).await?;
+    let ctx = setup_table(make_topk_context()).await?;
 
     let mut expected = ["| logical_plan after topk                               | TopK: k=3                                                                     |",
         "|                                                       |   TableScan: sales projection=[customer_id,revenue]                                  |"].join("\n");
 
     let explain_query = format!("EXPLAIN VERBOSE {QUERY}");
-    let actual_output = exec_sql(&mut ctx, &explain_query).await?;
+    let actual_output = exec_sql(&ctx, &explain_query).await?;
 
     // normalize newlines (output on windows uses \r\n)
     let mut actual_output = actual_output.replace("\r\n", "\n");
@@ -243,17 +285,178 @@ async fn topk_plan() -> Result<()> {
     Ok(())
 }
 
-fn make_topk_context() -> SessionContext {
+#[tokio::test]
+/// Run invariant checks on the logical plan extension [`TopKPlanNode`].
+async fn topk_invariants() -> Result<()> {
+    // Test: pass an InvariantLevel::Always
+    let pass = InvariantMock {
+        should_fail_invariant: false,
+        kind: InvariantLevel::Always,
+    };
+    let ctx = setup_table(make_topk_context_with_invariants(Some(pass))).await?;
+    run_and_compare_query(ctx, "Topk context").await?;
+
+    // Test: fail an InvariantLevel::Always
+    let fail = InvariantMock {
+        should_fail_invariant: true,
+        kind: InvariantLevel::Always,
+    };
+    let ctx = setup_table(make_topk_context_with_invariants(Some(fail))).await?;
+    matches!(
+        &*run_and_compare_query(ctx, "Topk context")
+            .await
+            .unwrap_err()
+            .message(),
+        "node fails check, such as improper inputs"
+    );
+
+    // Test: pass an InvariantLevel::Executable
+    let pass = InvariantMock {
+        should_fail_invariant: false,
+        kind: InvariantLevel::Executable,
+    };
+    let ctx = setup_table(make_topk_context_with_invariants(Some(pass))).await?;
+    run_and_compare_query(ctx, "Topk context").await?;
+
+    // Test: fail an InvariantLevel::Executable
+    let fail = InvariantMock {
+        should_fail_invariant: true,
+        kind: InvariantLevel::Executable,
+    };
+    let ctx = setup_table(make_topk_context_with_invariants(Some(fail))).await?;
+    matches!(
+        &*run_and_compare_query(ctx, "Topk context")
+            .await
+            .unwrap_err()
+            .message(),
+        "node fails check, such as improper inputs"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn topk_invariants_after_invalid_mutation() -> Result<()> {
+    // CONTROL
+    // Build a valid topK plan.
     let config = SessionConfig::new().with_target_partitions(48);
     let runtime = Arc::new(RuntimeEnv::default());
-    let state = SessionState::new_with_config_rt(config, runtime)
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .with_default_features()
         .with_query_planner(Arc::new(TopKQueryPlanner {}))
-        .add_optimizer_rule(Arc::new(TopKOptimizerRule {}));
+        // 1. adds a valid TopKPlanNode
+        .with_optimizer_rule(Arc::new(TopKOptimizerRule {
+            invariant_mock: Some(InvariantMock {
+                should_fail_invariant: false,
+                kind: InvariantLevel::Always,
+            }),
+        }))
+        .with_analyzer_rule(Arc::new(MyAnalyzerRule {}))
+        .build();
+    let ctx = setup_table(SessionContext::new_with_state(state)).await?;
+    run_and_compare_query(ctx, "Topk context").await?;
+
+    // Test
+    // Build a valid topK plan.
+    // Then have an invalid mutation in an optimizer run.
+    let config = SessionConfig::new().with_target_partitions(48);
+    let runtime = Arc::new(RuntimeEnv::default());
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .with_default_features()
+        .with_query_planner(Arc::new(TopKQueryPlanner {}))
+        // 1. adds a valid TopKPlanNode
+        .with_optimizer_rule(Arc::new(TopKOptimizerRule {
+            invariant_mock: Some(InvariantMock {
+                should_fail_invariant: false,
+                kind: InvariantLevel::Always,
+            }),
+        }))
+        // 2. break the TopKPlanNode
+        .with_optimizer_rule(Arc::new(OptimizerMakeExtensionNodeInvalid {}))
+        .with_analyzer_rule(Arc::new(MyAnalyzerRule {}))
+        .build();
+    let ctx = setup_table(SessionContext::new_with_state(state)).await?;
+    matches!(
+        &*run_and_compare_query(ctx, "Topk context")
+            .await
+            .unwrap_err()
+            .message(),
+        "node fails check, such as improper inputs"
+    );
+
+    Ok(())
+}
+
+fn make_topk_context() -> SessionContext {
+    make_topk_context_with_invariants(None)
+}
+
+fn make_topk_context_with_invariants(
+    invariant_mock: Option<InvariantMock>,
+) -> SessionContext {
+    let config = SessionConfig::new().with_target_partitions(48);
+    let runtime = Arc::new(RuntimeEnv::default());
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .with_default_features()
+        .with_query_planner(Arc::new(TopKQueryPlanner {}))
+        .with_optimizer_rule(Arc::new(TopKOptimizerRule { invariant_mock }))
+        .with_analyzer_rule(Arc::new(MyAnalyzerRule {}))
+        .build();
     SessionContext::new_with_state(state)
+}
+
+#[derive(Debug)]
+struct OptimizerMakeExtensionNodeInvalid;
+
+impl OptimizerRule for OptimizerMakeExtensionNodeInvalid {
+    fn name(&self) -> &str {
+        "OptimizerMakeExtensionNodeInvalid"
+    }
+
+    fn apply_order(&self) -> Option<ApplyOrder> {
+        Some(ApplyOrder::TopDown)
+    }
+
+    fn supports_rewrite(&self) -> bool {
+        true
+    }
+
+    // Example rewrite pass which impacts validity of the extension node.
+    fn rewrite(
+        &self,
+        plan: LogicalPlan,
+        _config: &dyn OptimizerConfig,
+    ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
+        if let LogicalPlan::Extension(Extension { node }) = &plan
+            && let Some(prev) = node.as_any().downcast_ref::<TopKPlanNode>()
+        {
+            return Ok(Transformed::yes(LogicalPlan::Extension(Extension {
+                node: Arc::new(TopKPlanNode {
+                    k: prev.k,
+                    input: prev.input.clone(),
+                    expr: prev.expr.clone(),
+                    // In a real use case, this rewriter could have change the number of inputs, etc
+                    invariant_mock: Some(InvariantMock {
+                        should_fail_invariant: true,
+                        kind: InvariantLevel::Always,
+                    }),
+                }),
+            })));
+        };
+
+        Ok(Transformed::no(plan))
+    }
 }
 
 // ------ The implementation of the TopK code follows -----
 
+#[derive(Debug)]
 struct TopKQueryPlanner {}
 
 #[async_trait]
@@ -277,61 +480,70 @@ impl QueryPlanner for TopKQueryPlanner {
     }
 }
 
-struct TopKOptimizerRule {}
+#[derive(Default, Debug)]
+struct TopKOptimizerRule {
+    /// A testing-only hashable fixture.
+    invariant_mock: Option<InvariantMock>,
+}
+
 impl OptimizerRule for TopKOptimizerRule {
-    // Example rewrite pass to insert a user defined LogicalPlanNode
-    fn try_optimize(
-        &self,
-        plan: &LogicalPlan,
-        config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        // Note: this code simply looks for the pattern of a Limit followed by a
-        // Sort and replaces it by a TopK node. It does not handle many
-        // edge cases (e.g multiple sort columns, sort ASC / DESC), etc.
-        if let LogicalPlan::Limit(Limit {
-            fetch: Some(fetch),
-            input,
-            ..
-        }) = plan
-        {
-            if let LogicalPlan::Sort(Sort {
-                ref expr,
-                ref input,
-                ..
-            }) = **input
-            {
-                if expr.len() == 1 {
-                    // we found a sort with a single sort expr, replace with a a TopK
-                    return Ok(Some(LogicalPlan::Extension(Extension {
-                        node: Arc::new(TopKPlanNode {
-                            k: *fetch,
-                            input: self
-                                .try_optimize(input.as_ref(), config)?
-                                .unwrap_or_else(|| input.as_ref().clone()),
-                            expr: expr[0].clone(),
-                        }),
-                    })));
-                }
-            }
-        }
-
-        // If we didn't find the Limit/Sort combination, recurse as
-        // normal and build the result.
-        optimize_children(self, plan, config)
-    }
-
     fn name(&self) -> &str {
         "topk"
     }
+
+    fn apply_order(&self) -> Option<ApplyOrder> {
+        Some(ApplyOrder::TopDown)
+    }
+
+    fn supports_rewrite(&self) -> bool {
+        true
+    }
+
+    // Example rewrite pass to insert a user defined LogicalPlanNode
+    fn rewrite(
+        &self,
+        plan: LogicalPlan,
+        _config: &dyn OptimizerConfig,
+    ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
+        // Note: this code simply looks for the pattern of a Limit followed by a
+        // Sort and replaces it by a TopK node. It does not handle many
+        // edge cases (e.g multiple sort columns, sort ASC / DESC), etc.
+        let LogicalPlan::Limit(ref limit) = plan else {
+            return Ok(Transformed::no(plan));
+        };
+        let FetchType::Literal(Some(fetch)) = limit.get_fetch_type()? else {
+            return Ok(Transformed::no(plan));
+        };
+
+        if let LogicalPlan::Sort(Sort { expr, input, .. }) = limit.input.as_ref()
+            && expr.len() == 1
+        {
+            // we found a sort with a single sort expr, replace with a a TopK
+            return Ok(Transformed::yes(LogicalPlan::Extension(Extension {
+                node: Arc::new(TopKPlanNode {
+                    k: fetch,
+                    input: input.as_ref().clone(),
+                    expr: expr[0].clone(),
+                    invariant_mock: self.invariant_mock.clone(),
+                }),
+            })));
+        }
+
+        Ok(Transformed::no(plan))
+    }
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Hash)]
 struct TopKPlanNode {
     k: usize,
     input: LogicalPlan,
     /// The sort expression (this example only supports a single sort
     /// expr)
-    expr: Expr,
+    expr: SortExpr,
+
+    /// A testing-only hashable fixture.
+    /// For actual use, define the [`Invariant`] in the [`UserDefinedLogicalNodeCore::invariants`].
+    invariant_mock: Option<InvariantMock>,
 }
 
 impl Debug for TopKPlanNode {
@@ -340,6 +552,12 @@ impl Debug for TopKPlanNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         UserDefinedLogicalNodeCore::fmt_for_explain(self, f)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
+struct InvariantMock {
+    should_fail_invariant: bool,
+    kind: InvariantLevel,
 }
 
 impl UserDefinedLogicalNodeCore for TopKPlanNode {
@@ -356,8 +574,22 @@ impl UserDefinedLogicalNodeCore for TopKPlanNode {
         self.input.schema()
     }
 
+    fn check_invariants(&self, check: InvariantLevel) -> Result<()> {
+        if let Some(InvariantMock {
+            should_fail_invariant,
+            kind,
+        }) = self.invariant_mock.clone()
+        {
+            assert_or_internal_err!(
+                !(should_fail_invariant && check == kind),
+                "node fails check, such as improper inputs"
+            );
+        }
+        Ok(())
+    }
+
     fn expressions(&self) -> Vec<Expr> {
-        vec![self.expr.clone()]
+        vec![self.expr.expr.clone()]
     }
 
     /// For example: `TopK: k=10`
@@ -375,8 +607,13 @@ impl UserDefinedLogicalNodeCore for TopKPlanNode {
         Ok(Self {
             k: self.k,
             input: inputs.swap_remove(0),
-            expr: exprs.swap_remove(0),
+            expr: self.expr.with_expr(exprs.swap_remove(0)),
+            invariant_mock: self.invariant_mock.clone(),
         })
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        false // Disallow limit push-down by default
     }
 }
 
@@ -414,7 +651,7 @@ impl ExtensionPlanner for TopKPlanner {
 /// code is not general and is meant as an illustration only
 struct TopKExec {
     input: Arc<dyn ExecutionPlan>,
-    /// The maxium number of values
+    /// The maximum number of values
     k: usize,
     cache: PlanProperties,
 }
@@ -427,12 +664,11 @@ impl TopKExec {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -444,14 +680,14 @@ impl Debug for TopKExec {
 }
 
 impl DisplayAs for TopKExec {
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "TopKExec: k={}", self.k)
+            }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
             }
         }
     }
@@ -459,6 +695,10 @@ impl DisplayAs for TopKExec {
 
 #[async_trait]
 impl ExecutionPlan for TopKExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
@@ -489,9 +729,11 @@ impl ExecutionPlan for TopKExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        if 0 != partition {
-            return internal_err!("TopKExec invalid partition {partition}");
-        }
+        assert_eq_or_internal_err!(
+            partition,
+            0,
+            "TopKExec invalid partition {partition}"
+        );
 
         Ok(Box::pin(TopKReader {
             input: self.input.execute(partition, context)?,
@@ -551,22 +793,26 @@ fn accumulate_batch(
     k: &usize,
 ) -> BTreeMap<i64, String> {
     let num_rows = input_batch.num_rows();
-    // Assuming the input columns are
-    // column[0]: customer_id / UTF8
-    // column[1]: revenue: Int64
-    let customer_id =
-        as_string_array(input_batch.column(0)).expect("Column 0 is not customer_id");
 
+    // Assuming the input columns are
+    // column[0]: customer_id UTF8View
+    // column[1]: revenue: Int64
+
+    let customer_id_column = input_batch.column(0);
     let revenue = as_int64_array(input_batch.column(1)).unwrap();
 
     for row in 0..num_rows {
-        add_row(
-            &mut top_values,
-            customer_id.value(row),
-            revenue.value(row),
-            k,
-        );
+        let customer_id = match customer_id_column.data_type() {
+            arrow::datatypes::DataType::Utf8View => {
+                let array = as_string_view_array(customer_id_column).unwrap();
+                array.value(row)
+            }
+            _ => panic!("Unsupported customer_id type"),
+        };
+
+        add_row(&mut top_values, customer_id, revenue.value(row), k);
     }
+
     top_values
 }
 
@@ -598,11 +844,19 @@ impl Stream for TopKReader {
                     self.state.iter().rev().unzip();
 
                 let customer: Vec<&str> = customer.iter().map(|&s| &**s).collect();
+
+                let customer_array: ArrayRef = match schema.field(0).data_type() {
+                    arrow::datatypes::DataType::Utf8View => {
+                        Arc::new(StringViewArray::from(customer))
+                    }
+                    other => panic!("Unsupported customer_id output type: {other:?}"),
+                };
+
                 Poll::Ready(Some(
                     RecordBatch::try_new(
                         schema,
                         vec![
-                            Arc::new(StringArray::from(customer)),
+                            Arc::new(customer_array),
                             Arc::new(Int64Array::from(revenue)),
                         ],
                     )
@@ -617,5 +871,56 @@ impl Stream for TopKReader {
 impl RecordBatchStream for TopKReader {
     fn schema(&self) -> SchemaRef {
         self.input.schema()
+    }
+}
+
+#[derive(Default, Debug)]
+struct MyAnalyzerRule {}
+
+impl AnalyzerRule for MyAnalyzerRule {
+    fn analyze(&self, plan: LogicalPlan, _config: &ConfigOptions) -> Result<LogicalPlan> {
+        Self::analyze_plan(plan)
+    }
+
+    fn name(&self) -> &str {
+        "my_analyzer_rule"
+    }
+}
+
+impl MyAnalyzerRule {
+    fn analyze_plan(plan: LogicalPlan) -> Result<LogicalPlan> {
+        plan.transform(|plan| {
+            Ok(match plan {
+                LogicalPlan::Projection(projection) => {
+                    let expr = Self::analyze_expr(projection.expr.clone())?;
+                    Transformed::yes(LogicalPlan::Projection(Projection::try_new(
+                        expr,
+                        projection.input,
+                    )?))
+                }
+                _ => Transformed::no(plan),
+            })
+        })
+        .data()
+    }
+
+    fn analyze_expr(expr: Vec<Expr>) -> Result<Vec<Expr>> {
+        expr.into_iter()
+            .map(|e| {
+                e.transform(|e| {
+                    Ok(match e {
+                        Expr::Literal(ScalarValue::Int64(i), _) => {
+                            // transform to UInt64
+                            Transformed::yes(Expr::Literal(
+                                ScalarValue::UInt64(i.map(|i| i as u64)),
+                                None,
+                            ))
+                        }
+                        _ => Transformed::no(e),
+                    })
+                })
+                .data()
+            })
+            .collect()
     }
 }

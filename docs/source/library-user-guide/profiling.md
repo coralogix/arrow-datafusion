@@ -21,43 +21,104 @@
 
 The section contains examples how to perform CPU profiling for Apache DataFusion on different operating systems.
 
+## Building a flame graph
+
+[Video: how to CPU profile DataFusion with a Flamegraph](https://youtu.be/2z11xtYw_xs)
+
+A flamegraph is a visual representation of which functions are being run
+You can create flamegraphs in many ways; The instructions below are for
+[cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph) which results
+in images such as this:
+
+![Flamegraph](../_static/images/flamegraph.svg)
+
 ## MacOS
 
-### Building a flamegraph
+### Step 1: Install the flamegraph Tool
 
-- [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph)
+To install flamegraph, run:
 
-Test:
+```shell
+cargo install flamegraph
+```
+
+### Step 2: Prepare Your Environment
+
+Ensure that you're in the directory containing the necessary data files for your DataFusion query. The flamegraph tool will profile the execution of your query against this data.
+
+### Step 3: Running the Flamegraph Tool
+
+To generate a flamegraph, you'll need to use the `--` separator to pass arguments to the binary you're profiling. For datafusion-cli, you need to make sure to run the command with sudo permissions (especially on macOS, where DTrace requires elevated privileges).
+
+Here is a general example:
+
+```shell
+sudo flamegraph -- datafusion-cli -f <path_to_sql_file/sql_file.sql>
+```
+
+#### Example: Generating a Flamegraph for a Specific Query
+
+Here is an example using `28.sql`:
+
+```shell
+sudo flamegraph -- datafusion-cli -f 28.sql
+```
+
+You can also invoke the flamegraph tool with `cargo` to profile a specific test or benchmark.
+
+#### Example: Flamegraph for a specific test:
 
 ```bash
 CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --root --unit-test datafusion  -- dataframe::tests::test_array_agg
 ```
 
-Benchmark:
+#### Example: Flamegraph for a benchmark
 
 ```bash
 CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --root --bench sql_planner -- --bench
 ```
 
-Open `flamegraph.svg` file with the browser
-
-- dtrace with DataFusion CLI
-
-```bash
-git clone https://github.com/brendangregg/FlameGraph.git /tmp/fg
-cd datafusion-cli
-CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
-echo "select * from table;" >> test.sql
-sudo dtrace -c './target/debug/datafusion-cli -f test.sql' -o out.stacks -n 'profile-997 /execname == "datafusion-cli"/ { @[ustack(100)] = count(); }'
-/tmp/fg/FlameGraph/stackcollapse.pl out.stacks | /tmp/fg/FlameGraph/flamegraph.pl > flamegraph.svg
-```
-
-Open `flamegraph.svg` file with the browser
-
 ### CPU profiling with XCode Instruments
 
 [Video: how to CPU profile DataFusion with XCode Instruments](https://youtu.be/P3dXH61Kr5U)
 
-## Linux
+## Profiling using Samply cross platform profiler
 
-## Windows
+There is an opportunity to build flamegraphs, call trees and stack charts on any platform using
+[Samply](https://github.com/mstange/samply)
+
+Install Samply profiler
+
+```shell
+cargo install --locked samply
+```
+
+More Samply [installation options](https://github.com/mstange/samply?tab=readme-ov-file#installation)
+
+Run the profiler
+
+```shell
+samply record --profile profiling ./my-application my-arguments
+```
+
+### Profile the benchmark
+
+[Set up benchmarks](https://github.com/apache/datafusion/blob/main/benchmarks/README.md#running-the-benchmarks) if not yet done
+
+Example: Profile Q22 query from TPC-H benchmark.
+Note: `--profile profiling` to profile release optimized artifact with debug symbols
+
+```shell
+cargo build --profile profiling --bin tpch
+samply record ./target/profiling/tpch benchmark datafusion --iterations 5 --path datafusion/benchmarks/data/tpch_sf10 --prefer_hash_join true --format parquet -o datafusion/benchmarks/results/dev2/tpch_sf10.json --query 22
+```
+
+After sampling has completed the Samply starts a local server and navigates to the profiler
+
+```shell
+Local server listening at http://127.0.0.1:3000
+```
+
+![img.png](samply_profiler.png)
+
+Note: The Firefox profiler cannot be opened in Safari, please use Chrome or Firefox instead

@@ -19,34 +19,34 @@
 mod sp_repartition_fuzz_tests {
     use std::sync::Arc;
 
-    use arrow::compute::{concat_batches, lexsort, SortColumn};
-    use arrow_array::{ArrayRef, Int64Array, RecordBatch, UInt64Array};
-    use arrow_schema::{DataType, Field, Schema, SchemaRef, SortOptions};
+    use arrow::array::{ArrayRef, Int64Array, RecordBatch, UInt64Array};
+    use arrow::compute::{SortColumn, SortOptions, concat_batches, lexsort};
+    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::{
-        collect,
-        memory::MemoryExec,
+        ExecutionPlan, Partitioning, collect,
         metrics::{BaselineMetrics, ExecutionPlanMetricsSet},
         repartition::RepartitionExec,
         sorts::sort_preserving_merge::SortPreservingMergeExec,
-        sorts::streaming_merge::streaming_merge,
+        sorts::streaming_merge::StreamingMergeBuilder,
         stream::RecordBatchStreamAdapter,
-        ExecutionPlan, Partitioning,
     };
     use datafusion::prelude::SessionContext;
     use datafusion_common::Result;
-    use datafusion_execution::{
-        config::SessionConfig, memory_pool::MemoryConsumer, SendableRecordBatchStream,
+    use datafusion_execution::{config::SessionConfig, memory_pool::MemoryConsumer};
+    use datafusion_physical_expr::ConstExpr;
+    use datafusion_physical_expr::equivalence::{
+        EquivalenceClass, EquivalenceProperties,
     };
-    use datafusion_physical_expr::{
-        equivalence::{EquivalenceClass, EquivalenceProperties},
-        expressions::{col, Column},
-        PhysicalExpr, PhysicalSortExpr,
-    };
+    use datafusion_physical_expr::expressions::{Column, col};
+    use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+    use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
     use test_utils::add_empty_batches;
 
     use itertools::izip;
-    use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 
     // Generate a schema which consists of 6 columns (a, b, c, d, e, f)
     fn create_test_schema() -> Result<SchemaRef> {
@@ -78,9 +78,9 @@ mod sp_repartition_fuzz_tests {
 
         let mut eq_properties = EquivalenceProperties::new(test_schema.clone());
         // Define a and f are aliases
-        eq_properties.add_equal_conditions(col_a, col_f)?;
+        eq_properties.add_equal_conditions(Arc::clone(col_a), Arc::clone(col_f))?;
         // Column e has constant value.
-        eq_properties = eq_properties.add_constants([col_e.clone()]);
+        eq_properties.add_constants([ConstExpr::from(Arc::clone(col_e))])?;
 
         // Randomly order columns for sorting
         let mut rng = StdRng::seed_from_u64(seed);
@@ -92,18 +92,18 @@ mod sp_repartition_fuzz_tests {
         };
 
         while !remaining_exprs.is_empty() {
-            let n_sort_expr = rng.gen_range(0..remaining_exprs.len() + 1);
+            let n_sort_expr = rng.random_range(1..remaining_exprs.len() + 1);
             remaining_exprs.shuffle(&mut rng);
 
-            let ordering = remaining_exprs
-                .drain(0..n_sort_expr)
-                .map(|expr| PhysicalSortExpr {
-                    expr: expr.clone(),
-                    options: options_asc,
-                })
-                .collect();
+            let ordering =
+                remaining_exprs
+                    .drain(0..n_sort_expr)
+                    .map(|expr| PhysicalSortExpr {
+                        expr: expr.clone(),
+                        options: options_asc,
+                    });
 
-            eq_properties.add_new_orderings([ordering]);
+            eq_properties.add_ordering(ordering);
         }
 
         Ok((test_schema, eq_properties))
@@ -142,14 +142,14 @@ mod sp_repartition_fuzz_tests {
         // Utility closure to generate random array
         let mut generate_random_array = |num_elems: usize, max_val: usize| -> ArrayRef {
             let values: Vec<u64> = (0..num_elems)
-                .map(|_| rng.gen_range(0..max_val) as u64)
+                .map(|_| rng.random_range(0..max_val) as u64)
                 .collect();
             Arc::new(UInt64Array::from_iter_values(values))
         };
 
         // Fill constant columns
         for constant in eq_properties.constants() {
-            let col = constant.as_any().downcast_ref::<Column>().unwrap();
+            let col = constant.expr.as_any().downcast_ref::<Column>().unwrap();
             let (idx, _field) = schema.column_with_name(col.name()).unwrap();
             let arr =
                 Arc::new(UInt64Array::from_iter_values(vec![0; n_elem])) as ArrayRef;
@@ -174,7 +174,7 @@ mod sp_repartition_fuzz_tests {
                 })
                 .unzip();
 
-            let sort_arrs = arrow::compute::lexsort(&sort_columns, None)?;
+            let sort_arrs = lexsort(&sort_columns, None)?;
             for (idx, arr) in izip!(indices, sort_arrs) {
                 schema_vec[idx] = Some(arr);
             }
@@ -225,54 +225,53 @@ mod sp_repartition_fuzz_tests {
             let table_data_with_properties =
                 generate_table_for_eq_properties(&eq_properties, N_ELEM, N_DISTINCT)?;
             let schema = table_data_with_properties.schema();
-            let streams: Vec<SendableRecordBatchStream> = (0..N_PARTITION)
+            let streams = (0..N_PARTITION)
                 .map(|_idx| {
                     let batch = table_data_with_properties.clone();
                     Box::pin(RecordBatchStreamAdapter::new(
                         schema.clone(),
                         futures::stream::once(async { Ok(batch) }),
-                    )) as SendableRecordBatchStream
+                    )) as _
                 })
                 .collect::<Vec<_>>();
 
-            // Returns concatenated version of the all available orderings
-            let exprs = eq_properties
-                .oeq_class()
-                .output_ordering()
-                .unwrap_or_default();
+            // Returns concatenated version of the all available orderings:
+            let Some(exprs) = eq_properties.oeq_class().output_ordering() else {
+                // We always should have an ordering due to the way we generate the schema:
+                unreachable!("No ordering found in eq_properties: {:?}", eq_properties);
+            };
 
             let context = SessionContext::new().task_ctx();
             let mem_reservation =
                 MemoryConsumer::new("test".to_string()).register(context.memory_pool());
 
             // Internally SortPreservingMergeExec uses this function for merging.
-            let res = streaming_merge(
-                streams,
-                schema,
-                &exprs,
-                BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
-                1,
-                None,
-                mem_reservation,
-            )?;
+            let res = StreamingMergeBuilder::new()
+                .with_streams(streams)
+                .with_schema(schema)
+                .with_expressions(&exprs)
+                .with_metrics(BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0))
+                .with_batch_size(1)
+                .with_reservation(mem_reservation)
+                .build()?;
             let res = collect(res).await?;
             // Contains the merged result.
             let res = concat_batches(&res[0].schema(), &res)?;
 
             for ordering in eq_properties.oeq_class().iter() {
-                let err_msg = format!("error in eq properties: {:?}", eq_properties);
-                let sort_solumns = ordering
+                let err_msg = format!("error in eq properties: {eq_properties:?}");
+                let sort_columns = ordering
                     .iter()
                     .map(|sort_expr| sort_expr.evaluate_to_sort_column(&res))
                     .collect::<Result<Vec<_>>>()?;
-                let orig_columns = sort_solumns
+                let orig_columns = sort_columns
                     .iter()
                     .map(|sort_column| sort_column.values.clone())
                     .collect::<Vec<_>>();
-                let sorted_columns = lexsort(&sort_solumns, None)?;
+                let sorted_columns = lexsort(&sort_columns, None)?;
 
                 // Make sure after merging ordering is still valid.
-                assert_eq!(orig_columns.len(), sorted_columns.len(), "{}", err_msg);
+                assert_eq!(orig_columns.len(), sorted_columns.len(), "{err_msg}");
                 assert!(
                     izip!(orig_columns.into_iter(), sorted_columns.into_iter())
                         .all(|(lhs, rhs)| { lhs == rhs }),
@@ -323,44 +322,42 @@ mod sp_repartition_fuzz_tests {
     ///     "SortPreservingMergeExec: [a@0 ASC,b@1 ASC,c@2 ASC]",
     ///     "  SortPreservingRepartitionExec: partitioning=Hash([Column { name: \"c\", index: 2 }], 2), input_partitions=2", (Partitioning can be roundrobin also)
     ///     "    SortPreservingRepartitionExec: partitioning=Hash([Column { name: \"c\", index: 2 }], 2), input_partitions=1", (Partitioning can be roundrobin also)
-    ///     "      MemoryExec: partitions=1, partition_sizes=[75]",
+    ///     "      DataSourceExec: partitions=1, partition_sizes=[75]",
     /// and / or
     ///     "SortPreservingMergeExec: [a@0 ASC,b@1 ASC,c@2 ASC]",
     ///     "  SortPreservingRepartitionExec: partitioning=Hash([Column { name: \"c\", index: 2 }], 2), input_partitions=2", (Partitioning can be roundrobin also)
     ///     "    RepartitionExec: partitioning=Hash([Column { name: \"c\", index: 2 }], 2), input_partitions=1", (Partitioning can be roundrobin also)
-    ///     "      MemoryExec: partitions=1, partition_sizes=[75]",
+    ///     "      DataSourceExec: partitions=1, partition_sizes=[75]",
     /// preserves ordering. Input fed to the plan above should be same with the output of the plan.
     async fn run_sort_preserving_repartition_test(
         input1: Vec<RecordBatch>,
-        // If `true`, first repartition executor after `MemoryExec` will be in `RoundRobin` mode
+        // If `true`, first repartition executor after `DataSourceExec` will be in `RoundRobin` mode
         // else it will be in `Hash` mode
         is_first_roundrobin: bool,
-        // If `true`, first repartition executor after `MemoryExec` will be `SortPreservingRepartitionExec`
-        // If `false`, first repartition executor after `MemoryExec` will be `RepartitionExec` (Since its input
+        // If `true`, first repartition executor after `DataSourceExec` will be `SortPreservingRepartitionExec`
+        // If `false`, first repartition executor after `DataSourceExec` will be `RepartitionExec` (Since its input
         // partition number is 1, `RepartitionExec` also preserves ordering.).
         is_first_sort_preserving: bool,
-        // If `true`, second repartition executor after `MemoryExec` will be in `RoundRobin` mode
+        // If `true`, second repartition executor after `DataSourceExec` will be in `RoundRobin` mode
         // else it will be in `Hash` mode
         is_second_roundrobin: bool,
     ) {
         let schema = input1[0].schema();
         let session_config = SessionConfig::new().with_batch_size(50);
         let ctx = SessionContext::new_with_config(session_config);
-        let mut sort_keys = vec![];
-        for ordering_col in ["a", "b", "c"] {
-            sort_keys.push(PhysicalSortExpr {
-                expr: col(ordering_col, &schema).unwrap(),
-                options: SortOptions::default(),
-            })
-        }
+        let sort_keys = ["a", "b", "c"].map(|ordering_col| {
+            PhysicalSortExpr::new_default(col(ordering_col, &schema).unwrap())
+        });
 
         let concat_input_record = concat_batches(&schema, &input1).unwrap();
 
         let running_source = Arc::new(
-            MemoryExec::try_new(&[input1.clone()], schema.clone(), None)
+            MemorySourceConfig::try_new(&[input1], schema.clone(), None)
                 .unwrap()
-                .with_sort_information(vec![sort_keys.clone()]),
+                .try_with_sort_information(vec![sort_keys.clone().into()])
+                .unwrap(),
         );
+        let running_source = Arc::new(DataSourceExec::new(running_source));
         let hash_exprs = vec![col("c", &schema).unwrap()];
 
         let intermediate = match (is_first_roundrobin, is_first_sort_preserving) {
@@ -378,7 +375,7 @@ mod sp_repartition_fuzz_tests {
             sort_preserving_repartition_exec_hash(intermediate, hash_exprs.clone())
         };
 
-        let final_plan = sort_preserving_merge_exec(sort_keys.clone(), intermediate);
+        let final_plan = sort_preserving_merge_exec(sort_keys.into(), intermediate);
         let task_ctx = ctx.task_ctx();
 
         let collected_running = collect(final_plan, task_ctx.clone()).await.unwrap();
@@ -425,10 +422,9 @@ mod sp_repartition_fuzz_tests {
     }
 
     fn sort_preserving_merge_exec(
-        sort_exprs: impl IntoIterator<Item = PhysicalSortExpr>,
+        sort_exprs: LexOrdering,
         input: Arc<dyn ExecutionPlan>,
     ) -> Arc<dyn ExecutionPlan> {
-        let sort_exprs = sort_exprs.into_iter().collect();
         Arc::new(SortPreservingMergeExec::new(sort_exprs, input))
     }
 
@@ -444,9 +440,9 @@ mod sp_repartition_fuzz_tests {
         let mut input123: Vec<(i64, i64, i64)> = vec![(0, 0, 0); len];
         input123.iter_mut().for_each(|v| {
             *v = (
-                rng.gen_range(0..n_distinct) as i64,
-                rng.gen_range(0..n_distinct) as i64,
-                rng.gen_range(0..n_distinct) as i64,
+                rng.random_range(0..n_distinct) as i64,
+                rng.random_range(0..n_distinct) as i64,
+                rng.random_range(0..n_distinct) as i64,
             )
         });
         input123.sort();
@@ -468,7 +464,7 @@ mod sp_repartition_fuzz_tests {
         let mut batches = vec![];
         if STREAM {
             while remainder.num_rows() > 0 {
-                let batch_size = rng.gen_range(0..50);
+                let batch_size = rng.random_range(0..50);
                 if remainder.num_rows() < batch_size {
                     break;
                 }
@@ -478,7 +474,7 @@ mod sp_repartition_fuzz_tests {
             }
         } else {
             while remainder.num_rows() > 0 {
-                let batch_size = rng.gen_range(0..remainder.num_rows() + 1);
+                let batch_size = rng.random_range(0..remainder.num_rows() + 1);
                 batches.push(remainder.slice(0, batch_size));
                 remainder =
                     remainder.slice(batch_size, remainder.num_rows() - batch_size);

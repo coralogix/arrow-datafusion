@@ -18,15 +18,20 @@
 extern crate criterion;
 
 use arrow::array::builder::StringBuilder;
-use arrow::array::{ArrayRef, StringArray};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use arrow::array::{ArrayRef, AsArray, Int64Array, StringArray, StringViewArray};
+use arrow::compute::cast;
+use arrow::datatypes::DataType;
+use criterion::{Criterion, criterion_group, criterion_main};
+use datafusion_functions::regex::regexpcount::regexp_count_func;
+use datafusion_functions::regex::regexpinstr::regexp_instr_func;
 use datafusion_functions::regex::regexplike::regexp_like;
 use datafusion_functions::regex::regexpmatch::regexp_match;
 use datafusion_functions::regex::regexpreplace::regexp_replace;
-use rand::distributions::Alphanumeric;
-use rand::rngs::ThreadRng;
-use rand::seq::SliceRandom;
 use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::prelude::IndexedRandom;
+use rand::rngs::ThreadRng;
+use std::hint::black_box;
 use std::iter;
 use std::sync::Arc;
 fn data(rng: &mut ThreadRng) -> StringArray {
@@ -59,6 +64,24 @@ fn regex(rng: &mut ThreadRng) -> StringArray {
     StringArray::from(data)
 }
 
+fn start(rng: &mut ThreadRng) -> Int64Array {
+    let mut data: Vec<i64> = vec![];
+    for _ in 0..1000 {
+        data.push(rng.random_range(1..5));
+    }
+
+    Int64Array::from(data)
+}
+
+fn n(rng: &mut ThreadRng) -> Int64Array {
+    let mut data: Vec<i64> = vec![];
+    for _ in 0..1000 {
+        data.push(rng.random_range(1..5));
+    }
+
+    Int64Array::from(data)
+}
+
 fn flags(rng: &mut ThreadRng) -> StringArray {
     let samples = [Some("i".to_string()), Some("im".to_string()), None];
     let mut sb = StringBuilder::new();
@@ -74,52 +97,205 @@ fn flags(rng: &mut ThreadRng) -> StringArray {
     sb.finish()
 }
 
+fn subexp(rng: &mut ThreadRng) -> Int64Array {
+    let mut data: Vec<i64> = vec![];
+    for _ in 0..1000 {
+        data.push(rng.random_range(1..5));
+    }
+
+    Int64Array::from(data)
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
+    c.bench_function("regexp_count_1000 string", |b| {
+        let mut rng = rand::rng();
+        let data = Arc::new(data(&mut rng)) as ArrayRef;
+        let regex = Arc::new(regex(&mut rng)) as ArrayRef;
+        let start = Arc::new(start(&mut rng)) as ArrayRef;
+        let flags = Arc::new(flags(&mut rng)) as ArrayRef;
+
+        b.iter(|| {
+            black_box(
+                regexp_count_func(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&start),
+                    Arc::clone(&flags),
+                ])
+                .expect("regexp_count should work on utf8"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_count_1000 utf8view", |b| {
+        let mut rng = rand::rng();
+        let data = cast(&data(&mut rng), &DataType::Utf8View).unwrap();
+        let regex = cast(&regex(&mut rng), &DataType::Utf8View).unwrap();
+        let start = Arc::new(start(&mut rng)) as ArrayRef;
+        let flags = cast(&flags(&mut rng), &DataType::Utf8View).unwrap();
+
+        b.iter(|| {
+            black_box(
+                regexp_count_func(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&start),
+                    Arc::clone(&flags),
+                ])
+                .expect("regexp_count should work on utf8view"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_instr_1000 string", |b| {
+        let mut rng = rand::rng();
+        let data = Arc::new(data(&mut rng)) as ArrayRef;
+        let regex = Arc::new(regex(&mut rng)) as ArrayRef;
+        let start = Arc::new(start(&mut rng)) as ArrayRef;
+        let n = Arc::new(n(&mut rng)) as ArrayRef;
+        let flags = Arc::new(flags(&mut rng)) as ArrayRef;
+        let subexp = Arc::new(subexp(&mut rng)) as ArrayRef;
+
+        b.iter(|| {
+            black_box(
+                regexp_instr_func(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&start),
+                    Arc::clone(&n),
+                    Arc::clone(&flags),
+                    Arc::clone(&subexp),
+                ])
+                .expect("regexp_instr should work on utf8"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_instr_1000 utf8view", |b| {
+        let mut rng = rand::rng();
+        let data = cast(&data(&mut rng), &DataType::Utf8View).unwrap();
+        let regex = cast(&regex(&mut rng), &DataType::Utf8View).unwrap();
+        let start = Arc::new(start(&mut rng)) as ArrayRef;
+        let n = Arc::new(n(&mut rng)) as ArrayRef;
+        let flags = cast(&flags(&mut rng), &DataType::Utf8View).unwrap();
+
+        b.iter(|| {
+            black_box(
+                regexp_instr_func(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&start),
+                    Arc::clone(&n),
+                    Arc::clone(&flags),
+                ])
+                .expect("regexp_instr should work on utf8view"),
+            )
+        })
+    });
+
     c.bench_function("regexp_like_1000", |b| {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let data = Arc::new(data(&mut rng)) as ArrayRef;
         let regex = Arc::new(regex(&mut rng)) as ArrayRef;
         let flags = Arc::new(flags(&mut rng)) as ArrayRef;
 
         b.iter(|| {
             black_box(
-                regexp_like::<i32>(&[data.clone(), regex.clone(), flags.clone()])
+                regexp_like(&[Arc::clone(&data), Arc::clone(&regex), Arc::clone(&flags)])
+                    .expect("regexp_like should work on valid values"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_like_1000 utf8view", |b| {
+        let mut rng = rand::rng();
+        let data = cast(&data(&mut rng), &DataType::Utf8View).unwrap();
+        let regex = cast(&regex(&mut rng), &DataType::Utf8View).unwrap();
+        let flags = cast(&flags(&mut rng), &DataType::Utf8View).unwrap();
+
+        b.iter(|| {
+            black_box(
+                regexp_like(&[Arc::clone(&data), Arc::clone(&regex), Arc::clone(&flags)])
                     .expect("regexp_like should work on valid values"),
             )
         })
     });
 
     c.bench_function("regexp_match_1000", |b| {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let data = Arc::new(data(&mut rng)) as ArrayRef;
         let regex = Arc::new(regex(&mut rng)) as ArrayRef;
         let flags = Arc::new(flags(&mut rng)) as ArrayRef;
 
         b.iter(|| {
             black_box(
-                regexp_match::<i32>(&[data.clone(), regex.clone(), flags.clone()])
-                    .expect("regexp_match should work on valid values"),
+                regexp_match(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&flags),
+                ])
+                .expect("regexp_match should work on valid values"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_match_1000 utf8view", |b| {
+        let mut rng = rand::rng();
+        let data = cast(&data(&mut rng), &DataType::Utf8View).unwrap();
+        let regex = cast(&regex(&mut rng), &DataType::Utf8View).unwrap();
+        let flags = cast(&flags(&mut rng), &DataType::Utf8View).unwrap();
+
+        b.iter(|| {
+            black_box(
+                regexp_match(&[
+                    Arc::clone(&data),
+                    Arc::clone(&regex),
+                    Arc::clone(&flags),
+                ])
+                .expect("regexp_match should work on valid values"),
             )
         })
     });
 
     c.bench_function("regexp_replace_1000", |b| {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let data = Arc::new(data(&mut rng)) as ArrayRef;
         let regex = Arc::new(regex(&mut rng)) as ArrayRef;
         let flags = Arc::new(flags(&mut rng)) as ArrayRef;
         let replacement =
-            Arc::new(StringArray::from_iter_values(iter::repeat("XX").take(1000)))
+            Arc::new(StringArray::from_iter_values(iter::repeat_n("XX", 1000)))
                 as ArrayRef;
 
         b.iter(|| {
             black_box(
-                regexp_replace::<i32>(&[
-                    data.clone(),
-                    regex.clone(),
-                    replacement.clone(),
-                    flags.clone(),
-                ])
+                regexp_replace::<i32, _>(
+                    data.as_string::<i32>(),
+                    regex.as_string::<i32>(),
+                    replacement.as_string::<i32>(),
+                    Some(flags.as_string::<i32>()),
+                )
+                .expect("regexp_replace should work on valid values"),
+            )
+        })
+    });
+
+    c.bench_function("regexp_replace_1000 utf8view", |b| {
+        let mut rng = rand::rng();
+        let data = cast(&data(&mut rng), &DataType::Utf8View).unwrap();
+        let regex = cast(&regex(&mut rng), &DataType::Utf8View).unwrap();
+        let flags = cast(&flags(&mut rng), &DataType::Utf8View).unwrap();
+        let replacement = Arc::new(StringViewArray::from_iter_values(iter::repeat_n(
+            "XX", 1000,
+        )));
+
+        b.iter(|| {
+            black_box(
+                regexp_replace::<i32, _>(
+                    data.as_string_view(),
+                    regex.as_string_view(),
+                    &*replacement,
+                    Some(flags.as_string_view()),
+                )
                 .expect("regexp_replace should work on valid values"),
             )
         })

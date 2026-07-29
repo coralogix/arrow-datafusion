@@ -15,18 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::ArrayRef;
+use arrow::datatypes::{DataType, Field};
 use arrow::util::bench_util::create_string_array_with_len;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion_common::ScalarValue;
-use datafusion_expr::ColumnarValue;
+use datafusion_common::config::ConfigOptions;
+use datafusion_expr::{ColumnarValue, ScalarFunctionArgs};
 use datafusion_functions::string::concat;
+use std::hint::black_box;
 use std::sync::Arc;
 
 fn create_args(size: usize, str_len: usize) -> Vec<ColumnarValue> {
     let array = Arc::new(create_string_array_with_len::<i32>(size, 0.2, str_len));
     let scalar = ScalarValue::Utf8(Some(", ".to_string()));
     vec![
-        ColumnarValue::Array(array.clone()),
+        ColumnarValue::Array(Arc::clone(&array) as ArrayRef),
         ColumnarValue::Scalar(scalar),
         ColumnarValue::Array(array),
     ]
@@ -35,9 +39,31 @@ fn create_args(size: usize, str_len: usize) -> Vec<ColumnarValue> {
 fn criterion_benchmark(c: &mut Criterion) {
     for size in [1024, 4096, 8192] {
         let args = create_args(size, 32);
+        let arg_fields = args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| {
+                Field::new(format!("arg_{idx}"), arg.data_type(), true).into()
+            })
+            .collect::<Vec<_>>();
+        let config_options = Arc::new(ConfigOptions::default());
+
         let mut group = c.benchmark_group("concat function");
         group.bench_function(BenchmarkId::new("concat", size), |b| {
-            b.iter(|| criterion::black_box(concat().invoke(&args).unwrap()))
+            b.iter(|| {
+                let args_cloned = args.clone();
+                black_box(
+                    concat()
+                        .invoke_with_args(ScalarFunctionArgs {
+                            args: args_cloned,
+                            arg_fields: arg_fields.clone(),
+                            number_rows: size,
+                            return_field: Field::new("f", DataType::Utf8, true).into(),
+                            config_options: Arc::clone(&config_options),
+                        })
+                        .unwrap(),
+                )
+            })
         });
         group.finish();
     }

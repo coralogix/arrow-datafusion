@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::{error::Result, DATAFUSION_VERSION};
+use datafusion::{DATAFUSION_VERSION, error::Result};
+use datafusion_common::utils::get_available_parallelism;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use std::{
@@ -68,7 +69,7 @@ impl RunContext {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
-            num_cpus: num_cpus::get(),
+            num_cpus: get_available_parallelism(),
             start_time: SystemTime::now(),
             arguments: std::env::args().skip(1).collect::<Vec<String>>(),
         }
@@ -89,8 +90,13 @@ pub struct BenchQuery {
     iterations: Vec<QueryIter>,
     #[serde(serialize_with = "serialize_start_time")]
     start_time: SystemTime,
+    success: bool,
 }
-
+/// Internal representation of a single benchmark query iteration result.
+pub struct QueryResult {
+    pub elapsed: Duration,
+    pub row_count: usize,
+}
 /// collects benchmark run data and then serializes it at the end
 pub struct BenchmarkRun {
     context: RunContext,
@@ -119,6 +125,7 @@ impl BenchmarkRun {
             query: id.to_owned(),
             iterations: vec![],
             start_time: SystemTime::now(),
+            success: true,
         });
         if let Some(c) = self.current_case.as_mut() {
             *c += 1;
@@ -134,6 +141,28 @@ impl BenchmarkRun {
                 .push(QueryIter { elapsed, row_count })
         } else {
             panic!("no cases existed yet");
+        }
+    }
+
+    /// Print the names of failed queries, if any
+    pub fn maybe_print_failures(&self) {
+        let failed_queries: Vec<&str> = self
+            .queries
+            .iter()
+            .filter_map(|q| (!q.success).then_some(q.query.as_str()))
+            .collect();
+
+        if !failed_queries.is_empty() {
+            println!("Failed Queries: {}", failed_queries.join(", "));
+        }
+    }
+
+    /// Mark current query
+    pub fn mark_failed(&mut self) {
+        if let Some(idx) = self.current_case {
+            self.queries[idx].success = false;
+        } else {
+            unreachable!("Cannot mark failure: no current case");
         }
     }
 

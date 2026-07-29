@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion_common::TableReference;
+use datafusion_datasource_csv::source::plan_to_csv;
 use std::sync::Arc;
-
-use crate::datasource::physical_plan::plan_to_csv;
 
 use super::super::options::{CsvReadOptions, ReadOptions};
 use super::{DataFilePaths, DataFrame, ExecutionPlan, Result, SessionContext};
@@ -37,9 +37,16 @@ impl SessionContext {
     /// # async fn main() -> Result<()> {
     /// let ctx = SessionContext::new();
     /// // You can read a single file using `read_csv`
-    /// let df = ctx.read_csv("tests/data/example.csv", CsvReadOptions::new()).await?;
+    /// let df = ctx
+    ///     .read_csv("tests/data/example.csv", CsvReadOptions::new())
+    ///     .await?;
     /// // you can also read multiple files:
-    /// let df = ctx.read_csv(vec!["tests/data/example.csv", "tests/data/example.csv"], CsvReadOptions::new()).await?;
+    /// let df = ctx
+    ///     .read_csv(
+    ///         vec!["tests/data/example.csv", "tests/data/example.csv"],
+    ///         CsvReadOptions::new(),
+    ///     )
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -55,15 +62,17 @@ impl SessionContext {
     /// statements executed against this context.
     pub async fn register_csv(
         &self,
-        name: &str,
-        table_path: &str,
+        table_ref: impl Into<TableReference>,
+        table_path: impl AsRef<str>,
         options: CsvReadOptions<'_>,
     ) -> Result<()> {
         let listing_options = options
             .to_listing_options(&self.copied_config(), self.copied_table_options());
 
+        self.register_type_check(table_path.as_ref(), &listing_options.file_extension)?;
+
         self.register_listing_table(
-            name,
+            table_ref,
             table_path,
             listing_options,
             options.schema.map(|s| Arc::new(s.to_owned())),
@@ -87,8 +96,9 @@ impl SessionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_batches_eq;
     use crate::test_util::{plan_and_collect, populate_csv_partitions};
+    use datafusion_common::test_util::batches_to_string;
+    use insta::assert_snapshot;
 
     use tempfile::TempDir;
 
@@ -110,17 +120,16 @@ mod tests {
         )
         .await?;
         let results =
-            plan_and_collect(&ctx, "SELECT sum(c1), sum(c2), COUNT(*) FROM test").await?;
+            plan_and_collect(&ctx, "SELECT sum(c1), sum(c2), count(*) FROM test").await?;
 
         assert_eq!(results.len(), 1);
-        let expected = [
-            "+--------------+--------------+----------+",
-            "| sum(test.c1) | sum(test.c2) | COUNT(*) |",
-            "+--------------+--------------+----------+",
-            "| 10           | 110          | 20       |",
-            "+--------------+--------------+----------+",
-        ];
-        assert_batches_eq!(expected, &results);
+        assert_snapshot!(batches_to_string(&results), @r"
+        +--------------+--------------+----------+
+        | sum(test.c1) | sum(test.c2) | count(*) |
+        +--------------+--------------+----------+
+        | 10           | 110          | 20       |
+        +--------------+--------------+----------+
+        ");
 
         Ok(())
     }

@@ -18,14 +18,23 @@
 //! This module contains end to end demonstrations of creating
 //! user defined aggregate functions
 
-use arrow::{array::AsArray, datatypes::Fields};
-use arrow_array::{types::UInt64Type, Int32Array, PrimitiveArray, StructArray};
-use arrow_schema::Schema;
+use std::any::Any;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::mem::{size_of, size_of_val};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
+use arrow::array::{
+    Array, AsArray, Int32Array, PrimitiveArray, StringArray, StructArray, UInt64Array,
+    record_batch, types::UInt64Type,
+};
+use arrow::datatypes::{Fields, Schema};
+use arrow_schema::FieldRef;
+use datafusion::common::test_util::batches_to_string;
+use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
 use datafusion::test_util::plan_and_collect;
 use datafusion::{
@@ -34,7 +43,6 @@ use datafusion::{
         datatypes::{DataType, Field, Float64Type, TimeUnit, TimestampNanosecondType},
         record_batch::RecordBatch,
     },
-    assert_batches_eq,
     error::Result,
     logical_expr::{
         AccumulatorFactoryFunction, AggregateUDF, Signature, TypeSignature, Volatility,
@@ -43,29 +51,35 @@ use datafusion::{
     prelude::SessionContext,
     scalar::ScalarValue,
 };
-use datafusion_common::{assert_contains, cast::as_primitive_array, exec_err};
+use datafusion_common::{assert_contains, exec_datafusion_err};
+use datafusion_common::{cast::as_primitive_array, exec_err};
+
+use datafusion_expr::expr::WindowFunction;
 use datafusion_expr::{
-    create_udaf, function::AccumulatorArgs, AggregateUDFImpl, GroupsAccumulator,
-    SimpleAggregateUDF,
+    AggregateUDFImpl, Expr, GroupsAccumulator, LogicalPlanBuilder, SimpleAggregateUDF,
+    WindowFunctionDefinition, col, create_udaf, function::AccumulatorArgs,
 };
-use datafusion_physical_expr::expressions::AvgAccumulator;
+use datafusion_functions_aggregate::average::AvgAccumulator;
+
 /// Test to show the contents of the setup
 #[tokio::test]
 async fn test_setup() {
     let TestContext { ctx, test_state: _ } = TestContext::new();
     let sql = "SELECT * from t order by time";
-    let expected = [
-        "+-------+----------------------------+",
-        "| value | time                       |",
-        "+-------+----------------------------+",
-        "| 2.0   | 1970-01-01T00:00:00.000002 |",
-        "| 3.0   | 1970-01-01T00:00:00.000003 |",
-        "| 1.0   | 1970-01-01T00:00:00.000004 |",
-        "| 5.0   | 1970-01-01T00:00:00.000005 |",
-        "| 5.0   | 1970-01-01T00:00:00.000005 |",
-        "+-------+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +-------+----------------------------+
+    | value | time                       |
+    +-------+----------------------------+
+    | 2.0   | 1970-01-01T00:00:00.000002 |
+    | 3.0   | 1970-01-01T00:00:00.000003 |
+    | 1.0   | 1970-01-01T00:00:00.000004 |
+    | 5.0   | 1970-01-01T00:00:00.000005 |
+    | 5.0   | 1970-01-01T00:00:00.000005 |
+    +-------+----------------------------+
+    ");
 }
 
 /// Basic user defined aggregate
@@ -74,14 +88,17 @@ async fn test_udaf() {
     let TestContext { ctx, test_state } = TestContext::new();
     assert!(!test_state.update_batch());
     let sql = "SELECT time_sum(time) from t";
-    let expected = [
-        "+----------------------------+",
-        "| time_sum(t.time)           |",
-        "+----------------------------+",
-        "| 1970-01-01T00:00:00.000019 |",
-        "+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +----------------------------+
+    | time_sum(t.time)           |
+    +----------------------------+
+    | 1970-01-01T00:00:00.000019 |
+    +----------------------------+
+    ");
+
     // normal aggregates call update_batch
     assert!(test_state.update_batch());
     assert!(!test_state.retract_batch());
@@ -92,18 +109,21 @@ async fn test_udaf() {
 async fn test_udaf_as_window() {
     let TestContext { ctx, test_state } = TestContext::new();
     let sql = "SELECT time_sum(time) OVER() as time_sum from t";
-    let expected = [
-        "+----------------------------+",
-        "| time_sum                   |",
-        "+----------------------------+",
-        "| 1970-01-01T00:00:00.000019 |",
-        "| 1970-01-01T00:00:00.000019 |",
-        "| 1970-01-01T00:00:00.000019 |",
-        "| 1970-01-01T00:00:00.000019 |",
-        "| 1970-01-01T00:00:00.000019 |",
-        "+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +----------------------------+
+    | time_sum                   |
+    +----------------------------+
+    | 1970-01-01T00:00:00.000019 |
+    | 1970-01-01T00:00:00.000019 |
+    | 1970-01-01T00:00:00.000019 |
+    | 1970-01-01T00:00:00.000019 |
+    | 1970-01-01T00:00:00.000019 |
+    +----------------------------+
+    ");
+
     // aggregate over the entire window function call update_batch
     assert!(test_state.update_batch());
     assert!(!test_state.retract_batch());
@@ -114,18 +134,21 @@ async fn test_udaf_as_window() {
 async fn test_udaf_as_window_with_frame() {
     let TestContext { ctx, test_state } = TestContext::new();
     let sql = "SELECT time_sum(time) OVER(ORDER BY time ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as time_sum from t";
-    let expected = [
-        "+----------------------------+",
-        "| time_sum                   |",
-        "+----------------------------+",
-        "| 1970-01-01T00:00:00.000005 |",
-        "| 1970-01-01T00:00:00.000009 |",
-        "| 1970-01-01T00:00:00.000012 |",
-        "| 1970-01-01T00:00:00.000014 |",
-        "| 1970-01-01T00:00:00.000010 |",
-        "+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +----------------------------+
+    | time_sum                   |
+    +----------------------------+
+    | 1970-01-01T00:00:00.000005 |
+    | 1970-01-01T00:00:00.000009 |
+    | 1970-01-01T00:00:00.000012 |
+    | 1970-01-01T00:00:00.000014 |
+    | 1970-01-01T00:00:00.000010 |
+    +----------------------------+
+    ");
+
     // user defined aggregates with window frame should be calling retract batch
     assert!(test_state.update_batch());
     assert!(test_state.retract_batch());
@@ -141,7 +164,10 @@ async fn test_udaf_as_window_with_frame_without_retract_batch() {
     let sql = "SELECT time_sum(time) OVER(ORDER BY time ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as time_sum from t";
     // Note if this query ever does start working
     let err = execute(&ctx, sql).await.unwrap_err();
-    assert_contains!(err.to_string(), "This feature is not implemented: Aggregate can not be used as a sliding accumulator because `retract_batch` is not implemented: time_sum(t.time) ORDER BY [t.time ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING");
+    assert_contains!(
+        err.to_string(),
+        "This feature is not implemented: Aggregate can not be used as a sliding accumulator because `retract_batch` is not implemented: time_sum(t.time) ORDER BY [t.time ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING"
+    );
 }
 
 /// Basic query for with a udaf returning a structure
@@ -149,14 +175,16 @@ async fn test_udaf_as_window_with_frame_without_retract_batch() {
 async fn test_udaf_returning_struct() {
     let TestContext { ctx, test_state: _ } = TestContext::new();
     let sql = "SELECT first(value, time) from t";
-    let expected = [
-        "+------------------------------------------------+",
-        "| first(t.value,t.time)                          |",
-        "+------------------------------------------------+",
-        "| {value: 2.0, time: 1970-01-01T00:00:00.000002} |",
-        "+------------------------------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +------------------------------------------------+
+    | first(t.value,t.time)                          |
+    +------------------------------------------------+
+    | {value: 2.0, time: 1970-01-01T00:00:00.000002} |
+    +------------------------------------------------+
+    ");
 }
 
 /// Demonstrate extracting the fields from a structure using a subquery
@@ -164,14 +192,16 @@ async fn test_udaf_returning_struct() {
 async fn test_udaf_returning_struct_subquery() {
     let TestContext { ctx, test_state: _ } = TestContext::new();
     let sql = "select sq.first['value'], sq.first['time'] from (SELECT first(value, time) as first from t) as sq";
-    let expected = [
-        "+-----------------+----------------------------+",
-        "| sq.first[value] | sq.first[time]             |",
-        "+-----------------+----------------------------+",
-        "| 2.0             | 1970-01-01T00:00:00.000002 |",
-        "+-----------------+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +-----------------+----------------------------+
+    | sq.first[value] | sq.first[time]             |
+    +-----------------+----------------------------+
+    | 2.0             | 1970-01-01T00:00:00.000002 |
+    +-----------------+----------------------------+
+    ");
 }
 
 #[tokio::test]
@@ -183,26 +213,29 @@ async fn test_udaf_shadows_builtin_fn() {
     let sql = "SELECT sum(arrow_cast(time, 'Int64')) from t";
 
     // compute with builtin `sum` aggregator
-    let expected = [
-        "+---------------------------------------+",
-        "| sum(arrow_cast(t.time,Utf8(\"Int64\"))) |",
-        "+---------------------------------------+",
-        "| 19000                                 |",
-        "+---------------------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r#"
+    +---------------------------------------+
+    | sum(arrow_cast(t.time,Utf8("Int64"))) |
+    +---------------------------------------+
+    | 19000                                 |
+    +---------------------------------------+
+    "#);
 
     // Register `TimeSum` with name `sum`. This will shadow the builtin one
-    let sql = "SELECT sum(time) from t";
     TimeSum::register(&mut ctx, test_state.clone(), "sum");
-    let expected = [
-        "+----------------------------+",
-        "| sum(t.time)                |",
-        "+----------------------------+",
-        "| 1970-01-01T00:00:00.000019 |",
-        "+----------------------------+",
-    ];
-    assert_batches_eq!(expected, &execute(&ctx, sql).await.unwrap());
+    let sql = "SELECT sum(time) from t";
+
+    let actual = execute(&ctx, sql).await.unwrap();
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +----------------------------+
+    | sum(t.time)                |
+    +----------------------------+
+    | 1970-01-01T00:00:00.000019 |
+    +----------------------------+
+    ");
 }
 
 async fn execute(ctx: &SessionContext, sql: &str) -> Result<Vec<RecordBatch>> {
@@ -242,14 +275,13 @@ async fn simple_udaf() -> Result<()> {
 
     let result = ctx.sql("SELECT MY_AVG(a) FROM t").await?.collect().await?;
 
-    let expected = [
-        "+-------------+",
-        "| my_avg(t.a) |",
-        "+-------------+",
-        "| 3.0         |",
-        "+-------------+",
-    ];
-    assert_batches_eq!(expected, &result);
+    insta::assert_snapshot!(batches_to_string(&result), @r"
+    +-------------+
+    | my_avg(t.a) |
+    +-------------+
+    | 3.0         |
+    +-------------+
+    ");
 
     Ok(())
 }
@@ -266,13 +298,15 @@ async fn deregister_udaf() -> Result<()> {
         Arc::new(vec![DataType::UInt64, DataType::Float64]),
     );
 
-    ctx.register_udaf(my_avg.clone());
+    ctx.register_udaf(my_avg);
 
     assert!(ctx.state().aggregate_functions().contains_key("my_avg"));
+    assert!(datafusion_execution::FunctionRegistry::udafs(&ctx).contains("my_avg"));
 
     ctx.deregister_udaf("my_avg");
 
     assert!(!ctx.state().aggregate_functions().contains_key("my_avg"));
+    assert!(!datafusion_execution::FunctionRegistry::udafs(&ctx).contains("my_avg"));
 
     Ok(())
 }
@@ -298,9 +332,10 @@ async fn case_sensitive_identifiers_user_defined_aggregates() -> Result<()> {
 
     // doesn't work as it was registered as non lowercase
     let err = ctx.sql("SELECT MY_AVG(i) FROM t").await.unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("Error during planning: Invalid function \'my_avg\'"));
+    assert!(
+        err.to_string()
+            .contains("Error during planning: Invalid function \'my_avg\'")
+    );
 
     // Can call it if you put quotes
     let result = ctx
@@ -309,14 +344,13 @@ async fn case_sensitive_identifiers_user_defined_aggregates() -> Result<()> {
         .collect()
         .await?;
 
-    let expected = [
-        "+-------------+",
-        "| MY_AVG(t.i) |",
-        "+-------------+",
-        "| 1.0         |",
-        "+-------------+",
-    ];
-    assert_batches_eq!(expected, &result);
+    insta::assert_snapshot!(batches_to_string(&result), @r"
+    +-------------+
+    | MY_AVG(t.i) |
+    +-------------+
+    | 1.0         |
+    +-------------+
+    ");
 
     Ok(())
 }
@@ -340,19 +374,25 @@ async fn test_user_defined_functions_with_alias() -> Result<()> {
 
     ctx.register_udaf(my_avg);
 
-    let expected = [
-        "+------------+",
-        "| dummy(t.i) |",
-        "+------------+",
-        "| 1.0        |",
-        "+------------+",
-    ];
-
     let result = plan_and_collect(&ctx, "SELECT dummy(i) FROM t").await?;
-    assert_batches_eq!(expected, &result);
+
+    insta::assert_snapshot!(batches_to_string(&result), @r"
+    +------------+
+    | dummy(t.i) |
+    +------------+
+    | 1.0        |
+    +------------+
+    ");
 
     let alias_result = plan_and_collect(&ctx, "SELECT dummy_alias(i) FROM t").await?;
-    assert_batches_eq!(expected, &alias_result);
+
+    insta::assert_snapshot!(batches_to_string(&alias_result), @r"
+    +------------------+
+    | dummy_alias(t.i) |
+    +------------------+
+    | 1.0              |
+    +------------------+
+    ");
 
     Ok(())
 }
@@ -373,6 +413,55 @@ async fn test_groups_accumulator() -> Result<()> {
     let sql_df = ctx.sql("SELECT geo_mean(a) FROM t group by a").await?;
     sql_df.show().await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameterized_aggregate_udf() -> Result<()> {
+    let batch = RecordBatch::try_from_iter([(
+        "text",
+        Arc::new(StringArray::from(vec!["foo"])) as ArrayRef,
+    )])?;
+
+    let ctx = SessionContext::new();
+    ctx.register_batch("t", batch)?;
+    let t = ctx.table("t").await?;
+    let signature = Signature::exact(vec![DataType::Utf8], Volatility::Immutable);
+    let udf1 = AggregateUDF::from(TestGroupsAccumulator {
+        signature: signature.clone(),
+        result: 1,
+    });
+    let udf2 = AggregateUDF::from(TestGroupsAccumulator {
+        signature: signature.clone(),
+        result: 2,
+    });
+
+    let plan = LogicalPlanBuilder::from(t.into_optimized_plan()?)
+        .aggregate(
+            [col("text")],
+            [
+                udf1.call(vec![col("text")]).alias("a"),
+                udf2.call(vec![col("text")]).alias("b"),
+            ],
+        )?
+        .build()?;
+
+    assert_eq!(
+        format!("{plan}"),
+        "Aggregate: groupBy=[[t.text]], aggr=[[geo_mean(t.text) AS a, geo_mean(t.text) AS b]]\n  TableScan: t projection=[text]"
+    );
+
+    let actual = DataFrame::new(ctx.state(), plan).collect().await?;
+
+    insta::assert_snapshot!(batches_to_string(&actual), @r"
+    +------+---+---+
+    | text | a | b |
+    +------+---+---+
+    | foo  | 1 | 2 |
+    +------+---+---+
+    ");
+
+    ctx.deregister_table("t")?;
     Ok(())
 }
 
@@ -484,6 +573,7 @@ impl TimeSum {
         Self { sum: 0, test_state }
     }
 
+    #[expect(clippy::needless_pass_by_value)]
     fn register(ctx: &mut SessionContext, test_state: Arc<TestState>, name: &str) {
         let timestamp_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
         let input_type = vec![timestamp_type.clone()];
@@ -491,7 +581,7 @@ impl TimeSum {
         // Returns the same type as its input
         let return_type = timestamp_type.clone();
 
-        let state_fields = vec![Field::new("sum", timestamp_type, true)];
+        let state_fields = vec![Field::new("sum", timestamp_type, true).into()];
 
         let volatility = Volatility::Immutable;
 
@@ -591,7 +681,7 @@ impl FirstSelector {
         let state_fields = state_type
             .into_iter()
             .enumerate()
-            .map(|(i, t)| Field::new(format!("{i}"), t, true))
+            .map(|(i, t)| Field::new(format!("{i}"), t, true).into())
             .collect::<Vec<_>>();
 
         // Possible input signatures
@@ -668,18 +758,18 @@ impl Accumulator for FirstSelector {
     }
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        // cast argumets to the appropriate type (DataFusion will type
+        // cast arguments to the appropriate type (DataFusion will type
         // check these based on the declared allowed input types)
         let v = as_primitive_array::<Float64Type>(&values[0])?;
         let t = as_primitive_array::<TimestampNanosecondType>(&values[1])?;
 
         // Update the actual values
         for (value, time) in v.iter().zip(t.iter()) {
-            if let (Some(time), Some(value)) = (time, value) {
-                if time < self.time {
-                    self.value = value;
-                    self.time = time;
-                }
+            if let (Some(time), Some(value)) = (time, value)
+                && time < self.time
+            {
+                self.value = value;
+                self.time = time;
             }
         }
 
@@ -692,18 +782,18 @@ impl Accumulator for FirstSelector {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TestGroupsAccumulator {
     signature: Signature,
     result: u64,
 }
 
 impl AggregateUDFImpl for TestGroupsAccumulator {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -746,7 +836,7 @@ impl Accumulator for TestGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of::<u64>()
+        size_of::<u64>()
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -763,7 +853,7 @@ impl GroupsAccumulator for TestGroupsAccumulator {
         &mut self,
         _values: &[ArrayRef],
         _group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         _total_num_groups: usize,
     ) -> Result<()> {
         Ok(())
@@ -787,13 +877,294 @@ impl GroupsAccumulator for TestGroupsAccumulator {
         &mut self,
         _values: &[ArrayRef],
         _group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         _total_num_groups: usize,
     ) -> Result<()> {
         Ok(())
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of::<u64>()
+        size_of::<u64>()
     }
+}
+
+#[derive(Debug)]
+struct MetadataBasedAggregateUdf {
+    name: String,
+    signature: Signature,
+    metadata: HashMap<String, String>,
+}
+
+impl PartialEq for MetadataBasedAggregateUdf {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            name,
+            signature,
+            metadata,
+        } = self;
+        name == &other.name
+            && signature == &other.signature
+            && metadata == &other.metadata
+    }
+}
+impl Eq for MetadataBasedAggregateUdf {}
+impl Hash for MetadataBasedAggregateUdf {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let Self {
+            name,
+            signature,
+            metadata: _, // unhashable
+        } = self;
+        std::any::type_name::<Self>().hash(state);
+        name.hash(state);
+        signature.hash(state);
+    }
+}
+
+impl MetadataBasedAggregateUdf {
+    fn new(metadata: HashMap<String, String>) -> Self {
+        // The name we return must be unique. Otherwise we will not call distinct
+        // instances of this UDF. This is a small hack for the unit tests to get unique
+        // names, but you could do something more elegant with the metadata.
+        let name = format!("metadata_based_udf_{}", metadata.len());
+        Self {
+            name,
+            signature: Signature::exact(vec![DataType::UInt64], Volatility::Immutable),
+            metadata,
+        }
+    }
+}
+
+impl AggregateUDFImpl for MetadataBasedAggregateUdf {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        unimplemented!("this should never be called since return_field is implemented");
+    }
+
+    fn return_field(&self, _arg_fields: &[FieldRef]) -> Result<FieldRef> {
+        Ok(Field::new(self.name(), DataType::UInt64, true)
+            .with_metadata(self.metadata.clone())
+            .into())
+    }
+
+    fn accumulator(&self, acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        let double_output = acc_args.expr_fields[0]
+            .metadata()
+            .get("modify_values")
+            .map(|v| v == "double_output")
+            .unwrap_or(false);
+
+        Ok(Box::new(MetadataBasedAccumulator {
+            double_output,
+            curr_sum: 0,
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct MetadataBasedAccumulator {
+    double_output: bool,
+    curr_sum: u64,
+}
+
+impl Accumulator for MetadataBasedAccumulator {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        let arr = values[0]
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or(exec_datafusion_err!("Expected UInt64Array"))?;
+
+        self.curr_sum = arr.iter().fold(self.curr_sum, |a, b| a + b.unwrap_or(0));
+
+        Ok(())
+    }
+
+    fn evaluate(&mut self) -> Result<ScalarValue> {
+        let v = match self.double_output {
+            true => self.curr_sum * 2,
+            false => self.curr_sum,
+        };
+
+        Ok(ScalarValue::from(v))
+    }
+
+    fn size(&self) -> usize {
+        9
+    }
+
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        Ok(vec![ScalarValue::from(self.curr_sum)])
+    }
+
+    fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
+        self.update_batch(states)
+    }
+}
+
+#[tokio::test]
+async fn test_metadata_based_aggregate() -> Result<()> {
+    let data_array = Arc::new(UInt64Array::from(vec![0, 5, 10, 15, 20])) as ArrayRef;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("no_metadata", DataType::UInt64, true),
+        Field::new("with_metadata", DataType::UInt64, true).with_metadata(
+            [("modify_values".to_string(), "double_output".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+    ]));
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::clone(&data_array), Arc::clone(&data_array)],
+    )?;
+
+    let ctx = SessionContext::new();
+    ctx.register_batch("t", batch)?;
+    let df = ctx.table("t").await?;
+
+    let no_output_meta_udf =
+        AggregateUDF::from(MetadataBasedAggregateUdf::new(HashMap::new()));
+    let with_output_meta_udf = AggregateUDF::from(MetadataBasedAggregateUdf::new(
+        [("output_metatype".to_string(), "custom_value".to_string())]
+            .into_iter()
+            .collect(),
+    ));
+
+    let df = df.aggregate(
+        vec![],
+        vec![
+            no_output_meta_udf
+                .call(vec![col("no_metadata")])
+                .alias("meta_no_in_no_out"),
+            no_output_meta_udf
+                .call(vec![col("with_metadata")])
+                .alias("meta_with_in_no_out"),
+            with_output_meta_udf
+                .call(vec![col("no_metadata")])
+                .alias("meta_no_in_with_out"),
+            with_output_meta_udf
+                .call(vec![col("with_metadata")])
+                .alias("meta_with_in_with_out"),
+        ],
+    )?;
+
+    let actual = df.collect().await?;
+
+    // To test for output metadata handling, we set the expected values on the result
+    // To test for input metadata handling, we check the numbers returned
+    let mut output_meta = HashMap::new();
+    let _ = output_meta.insert("output_metatype".to_string(), "custom_value".to_string());
+    let expected_schema = Schema::new(vec![
+        Field::new("meta_no_in_no_out", DataType::UInt64, true),
+        Field::new("meta_with_in_no_out", DataType::UInt64, true),
+        Field::new("meta_no_in_with_out", DataType::UInt64, true)
+            .with_metadata(output_meta.clone()),
+        Field::new("meta_with_in_with_out", DataType::UInt64, true)
+            .with_metadata(output_meta.clone()),
+    ]);
+
+    let expected = record_batch!(
+        ("meta_no_in_no_out", UInt64, [50]),
+        ("meta_with_in_no_out", UInt64, [100]),
+        ("meta_no_in_with_out", UInt64, [50]),
+        ("meta_with_in_with_out", UInt64, [100])
+    )?
+    .with_schema(Arc::new(expected_schema))?;
+
+    assert_eq!(expected, actual[0]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_metadata_based_aggregate_as_window() -> Result<()> {
+    let data_array = Arc::new(UInt64Array::from(vec![0, 5, 10, 15, 20])) as ArrayRef;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("no_metadata", DataType::UInt64, true),
+        Field::new("with_metadata", DataType::UInt64, true).with_metadata(
+            [("modify_values".to_string(), "double_output".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+    ]));
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::clone(&data_array), Arc::clone(&data_array)],
+    )?;
+
+    let ctx = SessionContext::new();
+    ctx.register_batch("t", batch)?;
+    let df = ctx.table("t").await?;
+
+    let no_output_meta_udf = Arc::new(AggregateUDF::from(
+        MetadataBasedAggregateUdf::new(HashMap::new()),
+    ));
+    let with_output_meta_udf =
+        Arc::new(AggregateUDF::from(MetadataBasedAggregateUdf::new(
+            [("output_metatype".to_string(), "custom_value".to_string())]
+                .into_iter()
+                .collect(),
+        )));
+
+    let df = df.select(vec![
+        Expr::from(WindowFunction::new(
+            WindowFunctionDefinition::AggregateUDF(Arc::clone(&no_output_meta_udf)),
+            vec![col("no_metadata")],
+        ))
+        .alias("meta_no_in_no_out"),
+        Expr::from(WindowFunction::new(
+            WindowFunctionDefinition::AggregateUDF(no_output_meta_udf),
+            vec![col("with_metadata")],
+        ))
+        .alias("meta_with_in_no_out"),
+        Expr::from(WindowFunction::new(
+            WindowFunctionDefinition::AggregateUDF(Arc::clone(&with_output_meta_udf)),
+            vec![col("no_metadata")],
+        ))
+        .alias("meta_no_in_with_out"),
+        Expr::from(WindowFunction::new(
+            WindowFunctionDefinition::AggregateUDF(with_output_meta_udf),
+            vec![col("with_metadata")],
+        ))
+        .alias("meta_with_in_with_out"),
+    ])?;
+
+    let actual = df.collect().await?;
+
+    // To test for output metadata handling, we set the expected values on the result
+    // To test for input metadata handling, we check the numbers returned
+    let mut output_meta = HashMap::new();
+    let _ = output_meta.insert("output_metatype".to_string(), "custom_value".to_string());
+    let expected_schema = Schema::new(vec![
+        Field::new("meta_no_in_no_out", DataType::UInt64, true),
+        Field::new("meta_with_in_no_out", DataType::UInt64, true),
+        Field::new("meta_no_in_with_out", DataType::UInt64, true)
+            .with_metadata(output_meta.clone()),
+        Field::new("meta_with_in_with_out", DataType::UInt64, true)
+            .with_metadata(output_meta.clone()),
+    ]);
+
+    let expected = record_batch!(
+        ("meta_no_in_no_out", UInt64, [50, 50, 50, 50, 50]),
+        ("meta_with_in_no_out", UInt64, [100, 100, 100, 100, 100]),
+        ("meta_no_in_with_out", UInt64, [50, 50, 50, 50, 50]),
+        ("meta_with_in_with_out", UInt64, [100, 100, 100, 100, 100])
+    )?
+    .with_schema(Arc::new(expected_schema))?;
+
+    assert_eq!(expected, actual[0]);
+
+    Ok(())
 }

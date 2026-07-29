@@ -16,7 +16,7 @@
 // under the License.
 
 //! Special channel construction to distribute data from various inputs into N outputs
-//! minimizing buffering but preventing deadlocks when repartitoning
+//! minimizing buffering but preventing deadlocks when repartitioning
 //!
 //! # Design
 //!
@@ -43,8 +43,8 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -151,7 +151,7 @@ impl<T> Clone for DistributionSender<T> {
 impl<T> Drop for DistributionSender<T> {
     fn drop(&mut self) {
         let n_senders_pre = self.channel.n_senders.fetch_sub(1, Ordering::SeqCst);
-        // is the the last copy of the sender side?
+        // is the last copy of the sender side?
         if n_senders_pre > 1 {
             return;
         }
@@ -167,11 +167,11 @@ impl<T> Drop for DistributionSender<T> {
             //
             // If the last sender is dropped first, `state.data` will still exists and the sender side decrements the
             // signal. The receiver side then MUST check the `n_senders` counter during the section and if it is zero,
-            // it inferres that it is dropped afterwards and MUST NOT decrement the counter.
+            // it infers that it is dropped afterwards and MUST NOT decrement the counter.
             //
-            // If the receiver end is dropped first, it will inferr -- based on `n_senders` -- that there are still
+            // If the receiver end is dropped first, it will infer -- based on `n_senders` -- that there are still
             // senders and it will decrement the `empty_channels` counter. It will also set `data` to `None`. The sender
-            // side will then see that `data` is `None` and can therefore inferr that the receiver end was dropped, and
+            // side will then see that `data` is `None` and can therefore infer that the receiver end was dropped, and
             // hence it MUST NOT decrement the `empty_channels` counter.
             if state
                 .data
@@ -203,7 +203,7 @@ pub struct SendFuture<'a, T> {
     element: Box<Option<T>>,
 }
 
-impl<'a, T> Future for SendFuture<'a, T> {
+impl<T> Future for SendFuture<'_, T> {
     type Output = Result<(), SendError<T>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -295,7 +295,7 @@ pub struct RecvFuture<'a, T> {
     rdy: bool,
 }
 
-impl<'a, T> Future for RecvFuture<'a, T> {
+impl<T> Future for RecvFuture<'_, T> {
     type Output = Option<T>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -476,7 +476,7 @@ type SharedGate = Arc<Gate>;
 mod tests {
     use std::sync::atomic::AtomicBool;
 
-    use futures::{task::ArcWake, FutureExt};
+    use futures::{FutureExt, task::ArcWake};
 
     use super::*;
 
@@ -829,7 +829,7 @@ mod tests {
     {
         let test_waker = Arc::new(TestWaker::default());
         let waker = futures::task::waker(Arc::clone(&test_waker));
-        let mut cx = std::task::Context::from_waker(&waker);
+        let mut cx = Context::from_waker(&waker);
         let res = fut.poll_unpin(&mut cx);
         (res, test_waker)
     }

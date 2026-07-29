@@ -19,17 +19,25 @@
 
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
+use std::hash::Hash;
+use std::mem::align_of_val;
+use std::sync::Arc;
 
+use arrow::array::Float64Array;
+use arrow::datatypes::FieldRef;
 use arrow::{array::ArrayRef, datatypes::DataType, datatypes::Field};
-
-use datafusion_common::{internal_err, not_impl_err, Result};
-use datafusion_common::{plan_err, ScalarValue};
+use datafusion_common::{Result, internal_err, not_impl_err};
+use datafusion_common::{ScalarValue, plan_err};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::utils::format_state_name;
-use datafusion_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
-use datafusion_physical_expr_common::aggregate::stats::StatsType;
+use datafusion_expr::{
+    Accumulator, AggregateUDFImpl, Documentation, GroupsAccumulator, Signature,
+    Volatility,
+};
+use datafusion_functions_aggregate_common::stats::StatsType;
+use datafusion_macros::user_doc;
 
-use crate::variance::VarianceAccumulator;
+use crate::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
 
 make_udaf_expr_and_func!(
     Stddev,
@@ -39,7 +47,22 @@ make_udaf_expr_and_func!(
     stddev_udaf
 );
 
+#[user_doc(
+    doc_section(label = "Statistical Functions"),
+    description = "Returns the standard deviation of a set of numbers.",
+    syntax_example = "stddev(expression)",
+    sql_example = r#"```sql
+> SELECT stddev(column_name) FROM table_name;
++----------------------+
+| stddev(column_name)   |
++----------------------+
+| 12.34                |
++----------------------+
+```"#,
+    standard_argument(name = "expression",)
+)]
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression
+#[derive(PartialEq, Eq, Hash)]
 pub struct Stddev {
     signature: Signature,
     alias: Vec<String>,
@@ -84,15 +107,11 @@ impl AggregateUDFImpl for Stddev {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        if !arg_types[0].is_numeric() {
-            return plan_err!("Stddev requires numeric input types");
-        }
-
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Float64)
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
             Field::new(
                 format_state_name(args.name, "count"),
@@ -105,7 +124,10 @@ impl AggregateUDFImpl for Stddev {
                 true,
             ),
             Field::new(format_state_name(args.name, "m2"), DataType::Float64, true),
-        ])
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect())
     }
 
     fn accumulator(&self, acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
@@ -118,6 +140,21 @@ impl AggregateUDFImpl for Stddev {
     fn aliases(&self) -> &[String] {
         &self.alias
     }
+
+    fn groups_accumulator_supported(&self, acc_args: AccumulatorArgs) -> bool {
+        !acc_args.is_distinct
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        Ok(Box::new(StddevGroupsAccumulator::new(StatsType::Sample)))
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
+    }
 }
 
 make_udaf_expr_and_func!(
@@ -128,7 +165,22 @@ make_udaf_expr_and_func!(
     stddev_pop_udaf
 );
 
+#[user_doc(
+    doc_section(label = "Statistical Functions"),
+    description = "Returns the population standard deviation of a set of numbers.",
+    syntax_example = "stddev_pop(expression)",
+    sql_example = r#"```sql
+> SELECT stddev_pop(column_name) FROM table_name;
++--------------------------+
+| stddev_pop(column_name)   |
++--------------------------+
+| 10.56                    |
++--------------------------+
+```"#,
+    standard_argument(name = "expression",)
+)]
 /// STDDEV_POP population aggregate expression
+#[derive(PartialEq, Eq, Hash)]
 pub struct StddevPop {
     signature: Signature,
 }
@@ -171,7 +223,7 @@ impl AggregateUDFImpl for StddevPop {
         &self.signature
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
             Field::new(
                 format_state_name(args.name, "count"),
@@ -184,7 +236,10 @@ impl AggregateUDFImpl for StddevPop {
                 true,
             ),
             Field::new(format_state_name(args.name, "m2"), DataType::Float64, true),
-        ])
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect())
     }
 
     fn accumulator(&self, acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
@@ -200,6 +255,23 @@ impl AggregateUDFImpl for StddevPop {
         }
 
         Ok(DataType::Float64)
+    }
+
+    fn groups_accumulator_supported(&self, acc_args: AccumulatorArgs) -> bool {
+        !acc_args.is_distinct
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        Ok(Box::new(StddevGroupsAccumulator::new(
+            StatsType::Population,
+        )))
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
@@ -258,8 +330,7 @@ impl Accumulator for StddevAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::align_of_val(self) - std::mem::align_of_val(&self.variance)
-            + self.variance.size()
+        align_of_val(self) - align_of_val(&self.variance) + self.variance.size()
     }
 
     fn supports_retract_batch(&self) -> bool {
@@ -267,17 +338,65 @@ impl Accumulator for StddevAccumulator {
     }
 }
 
+#[derive(Debug)]
+pub struct StddevGroupsAccumulator {
+    variance: VarianceGroupsAccumulator,
+}
+
+impl StddevGroupsAccumulator {
+    pub fn new(s_type: StatsType) -> Self {
+        Self {
+            variance: VarianceGroupsAccumulator::new(s_type),
+        }
+    }
+}
+
+impl GroupsAccumulator for StddevGroupsAccumulator {
+    fn update_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&arrow::array::BooleanArray>,
+        total_num_groups: usize,
+    ) -> Result<()> {
+        self.variance
+            .update_batch(values, group_indices, opt_filter, total_num_groups)
+    }
+
+    fn merge_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&arrow::array::BooleanArray>,
+        total_num_groups: usize,
+    ) -> Result<()> {
+        self.variance
+            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+    }
+
+    fn evaluate(&mut self, emit_to: datafusion_expr::EmitTo) -> Result<ArrayRef> {
+        let (mut variances, nulls) = self.variance.variance(emit_to);
+        variances.iter_mut().for_each(|v| *v = v.sqrt());
+        Ok(Arc::new(Float64Array::new(variances.into(), Some(nulls))))
+    }
+
+    fn state(&mut self, emit_to: datafusion_expr::EmitTo) -> Result<Vec<ArrayRef>> {
+        self.variance.state(emit_to)
+    }
+
+    fn size(&self) -> usize {
+        self.variance.size()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arrow::{array::*, datatypes::*};
-
-    use datafusion_expr::AggregateUDF;
-    use datafusion_physical_expr_common::aggregate::utils::get_accum_scalar_values_as_arrays;
-    use datafusion_physical_expr_common::expressions::column::col;
-
     use super::*;
+    use arrow::{array::*, datatypes::*};
+    use datafusion_expr::AggregateUDF;
+    use datafusion_functions_aggregate_common::utils::get_accum_scalar_values_as_arrays;
+    use datafusion_physical_expr::expressions::col;
+    use std::sync::Arc;
 
     #[test]
     fn stddev_f64_merge_1() -> Result<()> {
@@ -324,37 +443,46 @@ mod tests {
         agg2: Arc<AggregateUDF>,
         schema: &Schema,
     ) -> Result<ScalarValue> {
+        let expr = col("a", schema)?;
+        let expr_field = expr.return_field(schema)?;
+
         let args1 = AccumulatorArgs {
-            data_type: &DataType::Float64,
+            return_field: Field::new("f", DataType::Float64, true).into(),
             schema,
+            expr_fields: &[Arc::clone(&expr_field)],
             ignore_nulls: false,
-            sort_exprs: &[],
+            order_bys: &[],
             name: "a",
             is_distinct: false,
-            input_type: &DataType::Float64,
-            input_exprs: &[datafusion_expr::col("a")],
+            is_reversed: false,
+            exprs: &[Arc::clone(&expr)],
         };
 
         let args2 = AccumulatorArgs {
-            data_type: &DataType::Float64,
+            return_field: Field::new("f", DataType::Float64, true).into(),
             schema,
+            expr_fields: &[expr_field],
             ignore_nulls: false,
-            sort_exprs: &[],
+            order_bys: &[],
             name: "a",
             is_distinct: false,
-            input_type: &DataType::Float64,
-            input_exprs: &[datafusion_expr::col("a")],
+            is_reversed: false,
+            exprs: &[expr],
         };
 
         let mut accum1 = agg1.accumulator(args1)?;
         let mut accum2 = agg2.accumulator(args2)?;
 
-        let value1 = vec![col("a", schema)?
-            .evaluate(batch1)
-            .and_then(|v| v.into_array(batch1.num_rows()))?];
-        let value2 = vec![col("a", schema)?
-            .evaluate(batch2)
-            .and_then(|v| v.into_array(batch2.num_rows()))?];
+        let value1 = vec![
+            col("a", schema)?
+                .evaluate(batch1)
+                .and_then(|v| v.into_array(batch1.num_rows()))?,
+        ];
+        let value2 = vec![
+            col("a", schema)?
+                .evaluate(batch2)
+                .and_then(|v| v.into_array(batch2.num_rows()))?,
+        ];
 
         accum1.update_batch(&value1)?;
         accum2.update_batch(&value2)?;

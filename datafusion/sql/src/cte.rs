@@ -19,16 +19,14 @@ use std::sync::Arc;
 
 use crate::planner::{ContextProvider, PlannerContext, SqlToRel};
 
-use arrow::datatypes::Schema;
 use datafusion_common::{
-    not_impl_err, plan_err,
+    Result, not_impl_err, plan_err,
     tree_node::{TreeNode, TreeNodeRecursion},
-    Result,
 };
 use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, TableSource};
 use sqlparser::ast::{Query, SetExpr, SetOperator, With};
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
     pub(super) fn plan_with_clause(
         &self,
         with: With,
@@ -38,7 +36,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         // Process CTEs from top to bottom
         for cte in with.cte_tables {
             // A `WITH` block can't use the same name more than once
-            let cte_name = self.normalizer.normalize(cte.alias.name.clone());
+            let cte_name = self.ident_normalizer.normalize(cte.alias.name.clone());
             if planner_context.contains_cte(&cte_name) {
                 return plan_err!(
                     "WITH query name {cte_name:?} specified more than once"
@@ -47,7 +45,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
 
             // Create a logical plan for the CTE
             let cte_plan = if is_recursive {
-                self.recursive_cte(cte_name.clone(), *cte.query, planner_context)?
+                self.recursive_cte(&cte_name, *cte.query, planner_context)?
             } else {
                 self.non_recursive_cte(*cte.query, planner_context)?
             };
@@ -71,7 +69,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
 
     fn recursive_cte(
         &self,
-        cte_name: String,
+        cte_name: &str,
         mut cte_query: Query,
         planner_context: &mut PlannerContext,
     ) -> Result<LogicalPlan> {
@@ -93,13 +91,13 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             } => (left, right, set_quantifier),
             other => {
                 // If the query is not a UNION, then it is not a recursive CTE
-                cte_query.body = Box::new(other);
+                *cte_query.body = other;
                 return self.non_recursive_cte(cte_query, planner_context);
             }
         };
 
-        // Each recursive CTE consists from two parts in the logical plan:
-        //   1. A static term   (the left hand side on the SQL, where the
+        // Each recursive CTE consists of two parts in the logical plan:
+        //   1. A static term   (the left-hand side on the SQL, where the
         //                       referencing to the same CTE is not allowed)
         //
         //   2. A recursive term (the right hand side, and the recursive
@@ -135,28 +133,27 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
 
         // ---------- Step 2: Create a temporary relation ------------------
         // Step 2.1: Create a table source for the temporary relation
-        let work_table_source = self.context_provider.create_cte_work_table(
-            &cte_name,
-            Arc::new(Schema::from(static_plan.schema().as_ref())),
-        )?;
+        let work_table_source = self
+            .context_provider
+            .create_cte_work_table(cte_name, Arc::clone(static_plan.schema().inner()))?;
 
         // Step 2.2: Create a temporary relation logical plan that will be used
         // as the input to the recursive term
         let work_table_plan = LogicalPlanBuilder::scan(
             cte_name.to_string(),
-            work_table_source.clone(),
+            Arc::clone(&work_table_source),
             None,
         )?
         .build()?;
 
-        let name = cte_name.clone();
+        let name = cte_name.to_string();
 
         // Step 2.3: Register the temporary relation in the planning context
         // For all the self references in the variadic term, we'll replace it
         // with the temporary relation we created above by temporarily registering
         // it as a CTE. This temporary relation in the planning context will be
         // replaced by the actual CTE plan once we're done with the planning.
-        planner_context.insert_cte(cte_name.clone(), work_table_plan);
+        planner_context.insert_cte(cte_name.to_string(), work_table_plan);
 
         // ---------- Step 3: Compile the recursive term ------------------
         // this uses the named_relation we inserted above to resolve the
@@ -168,7 +165,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         // if not, it is a non-recursive CTE
         if !has_work_table_reference(&recursive_plan, &work_table_source) {
             // Remove the work table plan from the context
-            planner_context.remove_cte(&cte_name);
+            planner_context.remove_cte(cte_name);
             // Compile it as a non-recursive CTE
             return self.set_operation_to_plan(
                 SetOperator::Union,
@@ -193,11 +190,11 @@ fn has_work_table_reference(
 ) -> bool {
     let mut has_reference = false;
     plan.apply(|node| {
-        if let LogicalPlan::TableScan(scan) = node {
-            if Arc::ptr_eq(&scan.source, work_table_source) {
-                has_reference = true;
-                return Ok(TreeNodeRecursion::Stop);
-            }
+        if let LogicalPlan::TableScan(scan) = node
+            && Arc::ptr_eq(&scan.source, work_table_source)
+        {
+            has_reference = true;
+            return Ok(TreeNodeRecursion::Stop);
         }
         Ok(TreeNodeRecursion::Continue)
     })

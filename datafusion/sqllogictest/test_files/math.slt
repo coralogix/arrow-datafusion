@@ -102,7 +102,12 @@ SELECT nanvl(asin(10), 1.0), nanvl(1.0, 2.0), nanvl(asin(10), asin(10))
 
 # isnan
 query BBBB
-SELECT isnan(1.0), isnan('NaN'::DOUBLE), isnan(-'NaN'::DOUBLE), isnan(NULL)
+SELECT isnan(1.0::DOUBLE), isnan('NaN'::DOUBLE), isnan(-'NaN'::DOUBLE), isnan(NULL)
+----
+false true true NULL
+
+query BBBB
+SELECT isnan(1.0::FLOAT), isnan('NaN'::FLOAT), isnan(-'NaN'::FLOAT), isnan(NULL::FLOAT)
 ----
 false true true NULL
 
@@ -112,7 +117,7 @@ SELECT iszero(1.0), iszero(0.0), iszero(-0.0), iszero(NULL)
 ----
 false true true NULL
 
-# abs: empty argumnet
+# abs: empty argument
 statement error
 SELECT abs();
 
@@ -121,22 +126,29 @@ statement error
 SELECT abs(1, 2);
 
 # abs: unsupported argument type
-query error DataFusion error: This feature is not implemented: Unsupported data type Utf8 for function abs
+query error DataFusion error: Error during planning: Function 'abs' expects NativeType::Numeric but received NativeType::String
 SELECT abs('foo');
 
+# abs: numeric string
+# TODO: In Postgres, '-1.2' is unknown type and interpreted to float8 so they don't fail on this query
+query error DataFusion error: Error during planning: Function 'abs' expects NativeType::Numeric but received NativeType::String
+select abs('-1.2');
+
+query error DataFusion error: Error during planning: Function 'abs' expects NativeType::Numeric but received NativeType::String
+select abs(arrow_cast('-1.2', 'Utf8'));
 
 statement ok
 CREATE TABLE test_nullable_integer(
-    c1 TINYINT, 
-    c2 SMALLINT, 
-    c3 INT, 
-    c4 BIGINT, 
-    c5 TINYINT UNSIGNED, 
-    c6 SMALLINT UNSIGNED, 
-    c7 INT UNSIGNED, 
-    c8 BIGINT UNSIGNED, 
+    c1 TINYINT,
+    c2 SMALLINT,
+    c3 INT,
+    c4 BIGINT,
+    c5 TINYINT UNSIGNED,
+    c6 SMALLINT UNSIGNED,
+    c7 INT UNSIGNED,
+    c8 BIGINT UNSIGNED,
     dataset TEXT
-    ) 
+    )
     AS VALUES
     (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'nulls'),
     (0, 0, 0, 0, 0, 0, 0, 0, 'zeros'),
@@ -152,22 +164,22 @@ INSERT into test_nullable_integer values(127, 32767, 2147483647, 922337203685477
 ----
 1
 
-query IIIIIIII
+query IIIIIIIR
 SELECT c1*0, c2*0, c3*0, c4*0, c5*0, c6*0, c7*0, c8*0 FROM test_nullable_integer where dataset = 'nulls'
 ----
 NULL NULL NULL NULL NULL NULL NULL NULL
 
-query IIIIIIII
+query IIIIIIIR
 SELECT c1/0, c2/0, c3/0, c4/0, c5/0, c6/0, c7/0, c8/0 FROM test_nullable_integer where dataset = 'nulls'
 ----
 NULL NULL NULL NULL NULL NULL NULL NULL
 
-query IIIIIIII
+query IIIIIIIR
 SELECT c1%0, c2%0, c3%0, c4%0, c5%0, c6%0, c7%0, c8%0 FROM test_nullable_integer where dataset = 'nulls'
 ----
 NULL NULL NULL NULL NULL NULL NULL NULL
 
-query IIIIIIII rowsort
+query IIIIIIIR rowsort
 select c1*0, c2*0, c3*0, c4*0, c5*0, c6*0, c7*0, c8*0 from test_nullable_integer where dataset != 'maxs'
 ----
 0 0 0 0 0 0 0 0
@@ -225,7 +237,7 @@ SELECT c8%0 FROM test_nullable_integer
 
 # abs: return type
 query TTTTTTTT rowsort
-select 
+select
    arrow_typeof(abs(c1)), arrow_typeof(abs(c2)), arrow_typeof(abs(c3)), arrow_typeof(abs(c4)),
    arrow_typeof(abs(c5)), arrow_typeof(abs(c6)), arrow_typeof(abs(c7)), arrow_typeof(abs(c8))
 from test_nullable_integer limit 1
@@ -273,14 +285,14 @@ drop table test_nullable_integer
 
 statement ok
 CREATE TABLE test_non_nullable_integer(
-    c1 TINYINT NOT NULL, 
-    c2 SMALLINT NOT NULL, 
-    c3 INT NOT NULL, 
-    c4 BIGINT NOT NULL, 
-    c5 TINYINT UNSIGNED NOT NULL, 
-    c6 SMALLINT UNSIGNED NOT NULL, 
-    c7 INT UNSIGNED NOT NULL, 
-    c8 BIGINT UNSIGNED NOT NULL, 
+    c1 TINYINT NOT NULL,
+    c2 SMALLINT NOT NULL,
+    c3 INT NOT NULL,
+    c4 BIGINT NOT NULL,
+    c5 TINYINT UNSIGNED NOT NULL,
+    c6 SMALLINT UNSIGNED NOT NULL,
+    c7 INT UNSIGNED NOT NULL,
+    c8 BIGINT UNSIGNED NOT NULL
     );
 
 query I
@@ -288,7 +300,7 @@ INSERT INTO test_non_nullable_integer VALUES(1, 1, 1, 1, 1, 1, 1, 1)
 ----
 1
 
-query IIIIIIII rowsort
+query IIIIIIIR rowsort
 select c1*0, c2*0, c3*0, c4*0, c5*0, c6*0, c7*0, c8*0 from test_non_nullable_integer
 ----
 0 0 0 0 0 0 0 0
@@ -348,10 +360,10 @@ drop table test_non_nullable_integer
 statement ok
 CREATE TABLE test_nullable_float(
     c1 float,
-    c2 double, 
+    c2 double
     ) AS VALUES
     (-1.0, -1.0),
-    (1.0, 1.0), 
+    (1.0, 1.0),
     (NULL, NULL),
     (0., 0.),
     ('NaN'::double, 'NaN'::double);
@@ -400,13 +412,24 @@ Float32 Float64
 
 # abs: floats
 query RR rowsort
-SELECT abs(c1), abs(c2) from test_nullable_float 
+SELECT abs(c1), abs(c2) from test_nullable_float
 ----
 0 0
 1 1
 1 1
 NULL NULL
 NaN NaN
+
+# f16
+query TR rowsort
+SELECT arrow_typeof(abs(arrow_cast(c1, 'Float16'))), abs(arrow_cast(c1, 'Float16'))
+FROM test_nullable_float
+----
+Float16 0
+Float16 1
+Float16 1
+Float16 NULL
+Float16 NaN
 
 statement ok
 drop table test_nullable_float
@@ -415,8 +438,8 @@ drop table test_nullable_float
 statement ok
 CREATE TABLE test_non_nullable_float(
     c1 float NOT NULL,
-    c2 double NOT NULL, 
-    ); 
+    c2 double NOT NULL
+    );
 
 query I
 INSERT INTO test_non_nullable_float VALUES
@@ -466,27 +489,27 @@ drop table test_non_nullable_float
 statement ok
 CREATE TABLE test_nullable_decimal(
     c1 DECIMAL(10, 2),    /* Decimal128 */
-    c2 DECIMAL(38, 10),   /* Decimal128 with max precision */ 
+    c2 DECIMAL(38, 10),   /* Decimal128 with max precision */
     c3 DECIMAL(40, 2),    /* Decimal256 */
-    c4 DECIMAL(76, 10)    /* Decimal256 with max precision */ 
- ) AS VALUES 
-    (0, 0, 0, 0), 
+    c4 DECIMAL(76, 10)    /* Decimal256 with max precision */
+ ) AS VALUES
+    (0, 0, 0, 0),
     (NULL, NULL, NULL, NULL);
 
 query I
 INSERT into test_nullable_decimal values
     (
-        -99999999.99, 
-        '-9999999999999999999999999999.9999999999', 
-        '-99999999999999999999999999999999999999.99', 
+        -99999999.99,
+        '-9999999999999999999999999999.9999999999',
+        '-99999999999999999999999999999999999999.99',
         '-999999999999999999999999999999999999999999999999999999999999999999.9999999999'
-    ), 
+    ),
     (
-        99999999.99, 
-        '9999999999999999999999999999.9999999999', 
-        '99999999999999999999999999999999999999.99', 
+        99999999.99,
+        '9999999999999999999999999999.9999999999',
+        '99999999999999999999999999999999999999.99',
         '999999999999999999999999999999999999999999999999999999999999999999.9999999999'
-    ) 
+    )
 ----
 2
 
@@ -521,9 +544,9 @@ SELECT c1%0 FROM test_nullable_decimal WHERE c1 IS NOT NULL;
 
 # abs: return type
 query TTTT
-SELECT 
-    arrow_typeof(abs(c1)), 
-    arrow_typeof(abs(c2)), 
+SELECT
+    arrow_typeof(abs(c1)),
+    arrow_typeof(abs(c2)),
     arrow_typeof(abs(c3)),
     arrow_typeof(abs(c4))
 FROM test_nullable_decimal limit 1
@@ -540,11 +563,11 @@ SELECT abs(c1), abs(c2), abs(c3), abs(c4) FROM test_nullable_decimal
 NULL NULL NULL NULL
 
 statement ok
-drop table test_nullable_decimal  
+drop table test_nullable_decimal
 
 
 statement ok
-CREATE TABLE test_non_nullable_decimal(c1 DECIMAL(9,2) NOT NULL); 
+CREATE TABLE test_non_nullable_decimal(c1 DECIMAL(9,2) NOT NULL);
 
 query I
 INSERT INTO test_non_nullable_decimal VALUES(1)
@@ -557,10 +580,248 @@ SELECT c1*0 FROM test_non_nullable_decimal
 0
 
 query error DataFusion error: Arrow error: Divide by zero error
-SELECT c1/0 FROM test_non_nullable_decimal 
+SELECT c1/0 FROM test_non_nullable_decimal
 
 query error DataFusion error: Arrow error: Divide by zero error
-SELECT c1%0 FROM test_non_nullable_decimal 
+SELECT c1%0 FROM test_non_nullable_decimal
 
 statement ok
-drop table test_non_nullable_decimal 
+drop table test_non_nullable_decimal
+
+statement ok
+CREATE TABLE signed_integers(
+  a INT,
+  b INT,
+  c INT,
+  d INT,
+  e INT,
+  f INT
+) as VALUES
+  (-1, 100, -567, 1024, -4, 10),
+  (2, -1000, 123, -256, 5, -11),
+  (-3, 10000, -978, 2048, -6, 12),
+  (4, NULL, NULL, -512, NULL, NULL)
+;
+
+
+## gcd
+
+# gcd scalar function
+query IIIIII rowsort
+select gcd(0, 0), gcd(2, 0), gcd(0, 2), gcd(2, 3), gcd(15, 10), gcd(20, 1000)
+----
+0 2 2 1 5 20
+
+# gcd with negative values
+query IIIII
+select gcd(-100, 0), gcd(0, -100), gcd(-2, 3), gcd(15, -10), gcd(-20, -1000)
+----
+100 100 1 5 20
+
+# gcd scalar nulls
+query III
+select gcd(null, 64), gcd(2, null), gcd(null, null);
+----
+NULL NULL NULL
+
+# scalar maxes and/or negative 1
+query III
+select
+  gcd(9223372036854775807, -9223372036854775808), -- i64::MAX, i64::MIN
+  gcd(9223372036854775807, -1), -- i64::MAX, -1
+  gcd(-9223372036854775808, -1); -- i64::MIN, -1
+----
+1 1 1
+
+# gcd with columns and expresions
+query II
+select gcd(a, b), gcd(c*d + 1, abs(e)) + f from signed_integers;
+----
+1 11
+2 -10
+1 13
+NULL NULL
+
+# gcd(i64::MIN, i64::MIN)
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in GCD\(\-9223372036854775808, \-9223372036854775808\)
+select gcd(-9223372036854775808, -9223372036854775808);
+
+# gcd(i64::MIN, 0)
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in GCD\(\-9223372036854775808, 0\)
+select gcd(-9223372036854775808, 0);
+
+# gcd(0, i64::MIN)
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in GCD\(0, \-9223372036854775808\)
+select gcd(0, -9223372036854775808);
+
+
+## lcm
+
+# Basic cases
+query IIIIII
+select lcm(0, 0), lcm(0, 2), lcm(3, 0), lcm(2, 3), lcm(15, 10), lcm(20, 1000)
+----
+0 0 0 6 30 1000
+
+# Test lcm with negative numbers
+query IIIII
+select lcm(0, -2), lcm(-3, 0), lcm(-2, 3), lcm(15, -10), lcm(-15, -10)
+----
+0 0 6 30 30
+
+# Test lcm with Nulls
+query III
+select lcm(null, 64), lcm(16, null), lcm(null, null)
+----
+NULL NULL NULL
+
+# Test lcm with columns
+query III rowsort
+select lcm(a, b), lcm(c, d), lcm(e, f) from signed_integers;
+----
+100 580608 20
+1000 31488 55
+30000 1001472 12
+NULL NULL NULL
+
+# Result cannot fit in i64
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in LCM\(\-9223372036854775808, \-9223372036854775808\)
+select lcm(-9223372036854775808, -9223372036854775808);
+
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in LCM\(1, \-9223372036854775808\)
+select lcm(1, -9223372036854775808);
+
+# Overflow on multiplication
+query error DataFusion error: Arrow error: Compute error: Signed integer overflow in LCM\(2, 9223372036854775803\)
+select lcm(2, 9223372036854775803);
+
+
+## pow/power
+
+# pow() with integer base and negative float exponent (verifies type coercion)
+query R
+SELECT pow(2, -0.5)
+----
+0.707106781187
+
+# pow() with negative integer base and negative float exponent (returns NaN)
+query R
+SELECT pow(-2, -0.5)
+----
+NaN
+
+# pow() with zero base and negative exponent (returns Infinity)
+query R
+SELECT pow(0, -0.5)
+----
+Infinity
+
+# pow() with integer base of 1 and negative exponent
+query R
+SELECT pow(1, -0.5)
+----
+1
+
+# pow() with large integer base and small negative exponent
+query R
+SELECT pow(1000, -0.1)
+----
+0.501187233627
+
+# pow() with integer base and negative integer exponent returns float (like PostgreSQL)
+query R
+SELECT pow(2, -2)
+----
+0.25
+
+# power() with very large exponent returns infinity (Float64 behavior)
+query R
+select power(2107754225, 1221660777);
+----
+Infinity
+
+query R rowsort
+select power(base::double, exponent::double)
+from values
+  (2.0, 2.0),
+  (5.0, 4.0),
+  (2.0, 3.0),
+  (3.0, 4.0) as t(base, exponent);
+----
+4
+625
+8
+81
+
+query R rowsort
+select power(base::bigint, exponent::bigint)
+from values
+  (2, 2),
+  (5, 4),
+  (2, 3),
+  (3, 4),
+  (2, NULL) as t(base, exponent);
+----
+4
+625
+8
+81
+NULL
+
+query RT rowsort
+select
+  power(base::decimal(38, 0), exponent::decimal(38, 0)),
+  arrow_typeof(power(base::decimal(38, 0), exponent::decimal(38, 0)))
+from values
+  (0, 4),
+  (5, 0),
+  (2, 2),
+  (5, 4),
+  (2, 3),
+  (3, 4) as t(base, exponent);
+----
+0 Decimal128(38, 0)
+1 Decimal128(38, 0)
+4 Decimal128(38, 0)
+625 Decimal128(38, 0)
+8 Decimal128(38, 0)
+81 Decimal128(38, 0)
+
+query RT
+select
+  pow(2.5::decimal(2, 1), 4::bigint),
+  arrow_typeof(pow(2.5::decimal(2, 1), 4::bigint));
+----
+39 Decimal128(2, 1)
+
+# factorial overflow
+query error DataFusion error: Execution error: Overflow happened on FACTORIAL\(350943270\)
+select FACTORIAL(350943270);
+
+statement ok
+drop table signed_integers
+
+# Null propagation for log
+query TT
+EXPLAIN SELECT log(NULL, c2) from aggregate_simple;
+----
+logical_plan
+01)Projection: Float64(NULL) AS log(NULL,aggregate_simple.c2)
+02)--TableScan: aggregate_simple projection=[]
+physical_plan DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/core/tests/data/aggregate_simple.csv]]}, projection=[NULL as log(NULL,aggregate_simple.c2)], file_type=csv, has_header=true
+
+# Float 16/32/64 for log
+query RT
+SELECT log(2.5, arrow_cast(10.9, 'Float16')), arrow_typeof(log(2.5, arrow_cast(10.9, 'Float16')));
+----
+2.6074219 Float16
+
+query RT
+SELECT log(2.5, 10.9::float), arrow_typeof(log(2.5, 10.9::float));
+----
+2.606992 Float32
+
+query RT
+SELECT log(2.5, 10.9::double), arrow_typeof(log(2.5, 10.9::double));
+----
+2.606992198152 Float64

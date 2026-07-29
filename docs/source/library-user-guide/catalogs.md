@@ -19,15 +19,18 @@
 
 # Catalogs, Schemas, and Tables
 
-This section describes how to create and manage catalogs, schemas, and tables in DataFusion. For those wanting to dive into the code quickly please see the [example](https://github.com/apache/datafusion/blob/main/datafusion-examples/examples/catalog.rs).
+This section describes how to create and manage catalogs, schemas, and tables in DataFusion. For those wanting to dive into the code quickly please see the [example](https://github.com/apache/datafusion/blob/main/datafusion-examples/examples/data_io/catalog.rs).
 
 ## General Concepts
 
-CatalogProviderList, Catalogs, schemas, and tables are organized in a hierarchy. A CatalogProviderList contains catalog providers, a catalog provider contains schemas and a schema contains tables.
+Catalog providers, catalogs, schemas, and tables are organized in a hierarchy. A `CatalogProviderList` contains `CatalogProvider`s, a `CatalogProvider` contains `SchemaProviders` and a `SchemaProvider` contains `TableProvider`s.
 
 DataFusion comes with a basic in memory catalog functionality in the [`catalog` module]. You can use these in memory implementations as is, or extend DataFusion with your own catalog implementations, for example based on local files or files on remote object storage.
 
+DataFusion supports DDL queries (e.g. `CREATE TABLE`) using the catalog API described in this section. See the [TableProvider] section for information on DML queries (e.g. `INSERT INTO`).
+
 [`catalog` module]: https://docs.rs/datafusion/latest/datafusion/catalog/index.html
+[tableprovider]: ./custom-table-providers.md
 
 Similarly to other concepts in DataFusion, you'll implement various traits to create your own catalogs, schemas, and tables. The following sections describe the traits you'll need to implement.
 
@@ -40,6 +43,11 @@ In the following example, we'll implement an in memory catalog, starting with th
 The `MemorySchemaProvider` is a simple implementation of the `SchemaProvider` trait. It stores state (i.e. tables) in a `DashMap`, which then underlies the `SchemaProvider` trait.
 
 ```rust
+use std::sync::Arc;
+use dashmap::DashMap;
+use datafusion::catalog::{TableProvider, SchemaProvider};
+
+#[derive(Debug)]
 pub struct MemorySchemaProvider {
     tables: DashMap<String, Arc<dyn TableProvider>>,
 }
@@ -50,6 +58,20 @@ pub struct MemorySchemaProvider {
 Then we implement the `SchemaProvider` trait for `MemorySchemaProvider`.
 
 ```rust
+# use std::sync::Arc;
+# use dashmap::DashMap;
+# use datafusion::catalog::TableProvider;
+#
+# #[derive(Debug)]
+# pub struct MemorySchemaProvider {
+#     tables: DashMap<String, Arc<dyn TableProvider>>,
+# }
+
+use std::any::Any;
+use datafusion::catalog::SchemaProvider;
+use async_trait::async_trait;
+use datafusion::common::{Result, exec_err};
+
 #[async_trait]
 impl SchemaProvider for MemorySchemaProvider {
     fn as_any(&self) -> &dyn Any {
@@ -63,8 +85,8 @@ impl SchemaProvider for MemorySchemaProvider {
             .collect()
     }
 
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        self.tables.get(name).map(|table| table.value().clone())
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        Ok(self.tables.get(name).map(|table| table.value().clone()))
     }
 
     fn register_table(
@@ -73,9 +95,9 @@ impl SchemaProvider for MemorySchemaProvider {
         table: Arc<dyn TableProvider>,
     ) -> Result<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name.as_str()) {
-            return Err(DataFusionError::Execution(format!(
+            return exec_err!(
                 "The table {name} already exists"
-            )));
+            );
         }
         Ok(self.tables.insert(name, table))
     }
@@ -93,12 +115,85 @@ impl SchemaProvider for MemorySchemaProvider {
 Without getting into a `CatalogProvider` implementation, we can create a `MemorySchemaProvider` and register `TableProvider`s with it.
 
 ```rust
+# use std::sync::Arc;
+# use dashmap::DashMap;
+# use datafusion::catalog::TableProvider;
+#
+# #[derive(Debug)]
+# pub struct MemorySchemaProvider {
+#     tables: DashMap<String, Arc<dyn TableProvider>>,
+# }
+#
+# use std::any::Any;
+# use datafusion::catalog::SchemaProvider;
+# use async_trait::async_trait;
+# use datafusion::common::{Result, exec_err};
+#
+# #[async_trait]
+# impl SchemaProvider for MemorySchemaProvider {
+#     fn as_any(&self) -> &dyn Any {
+#         self
+#     }
+#
+#     fn table_names(&self) -> Vec<String> {
+#         self.tables
+#             .iter()
+#             .map(|table| table.key().clone())
+#             .collect()
+#     }
+#
+#     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+#         Ok(self.tables.get(name).map(|table| table.value().clone()))
+#     }
+#
+#     fn register_table(
+#         &self,
+#         name: String,
+#         table: Arc<dyn TableProvider>,
+#     ) -> Result<Option<Arc<dyn TableProvider>>> {
+#         if self.table_exist(name.as_str()) {
+#             return exec_err!(
+#                 "The table {name} already exists"
+#             );
+#         }
+#         Ok(self.tables.insert(name, table))
+#     }
+#
+#     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+#         Ok(self.tables.remove(name).map(|(_, table)| table))
+#     }
+#
+#     fn table_exist(&self, name: &str) -> bool {
+#         self.tables.contains_key(name)
+#     }
+# }
+
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::record_batch::RecordBatch;
+use datafusion::datasource::MemTable;
+use arrow::array::{self, Array, ArrayRef, Int32Array};
+
+impl MemorySchemaProvider {
+    /// Instantiates a new MemorySchemaProvider with an empty collection of tables.
+    pub fn new() -> Self {
+        Self {
+            tables: DashMap::new(),
+        }
+    }
+}
+
 let schema_provider = Arc::new(MemorySchemaProvider::new());
-let table_provider = _; // create a table provider
 
-schema_provider.register_table("table_name".to_string(), table_provider);
+let table_provider = {
+    let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, true)]));
+    let arr = Arc::new(Int32Array::from((1..=1).collect::<Vec<_>>()));
+    let partitions = vec![vec![RecordBatch::try_new(schema.clone(), vec![arr as ArrayRef]).unwrap()]];
+    Arc::new(MemTable::try_new(schema, partitions).unwrap())
+};
 
-let table = schema_provider.table("table_name").unwrap();
+schema_provider.register_table("users".to_string(), table_provider);
+
+let table = schema_provider.table("users");
 ```
 
 ### Asynchronous `SchemaProvider`
@@ -108,27 +203,44 @@ It's often useful to fetch metadata about which tables are in a schema, from a r
 The trait is roughly the same except for the `table` method, and the addition of the `#[async_trait]` attribute.
 
 ```rust
+# use async_trait::async_trait;
+# use std::sync::Arc;
+# use datafusion::catalog::{TableProvider, SchemaProvider};
+# use datafusion::common::Result;
+#
+# type OriginSchema = arrow::datatypes::Schema;
+#
+# #[derive(Debug)]
+# struct Schema(OriginSchema);
+
 #[async_trait]
 impl SchemaProvider for Schema {
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        // fetch metadata from remote source
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+#       todo!();
     }
+
+#    fn as_any(&self) -> &(dyn std::any::Any + 'static) { todo!() }
+#    fn table_names(&self) -> Vec<std::string::String> { todo!() }
+#    fn table_exist(&self, _: &str) -> bool { todo!() }
 }
 ```
 
 ## Implementing `MemoryCatalogProvider`
 
-As mentioned, the `CatalogProvider` can manage the schemas in a catalog, and the `MemoryCatalogProvider` is a simple implementation of the `CatalogProvider` trait. It stores schemas in a `DashMap`.
+As mentioned, the `CatalogProvider` can manage the schemas in a catalog, and the `MemoryCatalogProvider` is a simple implementation of the `CatalogProvider` trait. It stores schemas in a `DashMap`. With that the `CatalogProvider` trait can be implemented.
 
 ```rust
+use std::any::Any;
+use std::sync::Arc;
+use dashmap::DashMap;
+use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::common::Result;
+
+#[derive(Debug)]
 pub struct MemoryCatalogProvider {
     schemas: DashMap<String, Arc<dyn SchemaProvider>>,
 }
-```
 
-With that the `CatalogProvider` trait can be implemented.
-
-```rust
 impl CatalogProvider for MemoryCatalogProvider {
     fn as_any(&self) -> &dyn Any {
         self
@@ -167,20 +279,24 @@ impl CatalogProvider for MemoryCatalogProvider {
 }
 ```
 
-Again, this is fairly straightforward, as there's an underlying data structure to store the state, via key-value pairs.
+Again, this is fairly straightforward, as there's an underlying data structure to store the state, via key-value pairs. With that the `CatalogProviderList` trait can be implemented.
 
 ## Implementing `MemoryCatalogProviderList`
 
 ```rust
+
+use std::any::Any;
+use std::sync::Arc;
+use dashmap::DashMap;
+use datafusion::catalog::{CatalogProviderList, CatalogProvider};
+use datafusion::common::Result;
+
+#[derive(Debug)]
 pub struct MemoryCatalogProviderList {
     /// Collection of catalogs containing schemas and ultimately TableProviders
     pub catalogs: DashMap<String, Arc<dyn CatalogProvider>>,
 }
-```
 
-With that the `CatalogProviderList` trait can be implemented.
-
-```rust
 impl CatalogProviderList for MemoryCatalogProviderList {
     fn as_any(&self) -> &dyn Any {
         self

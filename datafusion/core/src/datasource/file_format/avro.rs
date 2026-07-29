@@ -15,94 +15,34 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! [`AvroFormat`] Apache Avro [`FileFormat`] abstractions
+//! Re-exports the [`datafusion_datasource_avro::file_format`] module, and contains tests for it.
 
-use std::any::Any;
-use std::sync::Arc;
-
-use arrow::datatypes::Schema;
-use arrow::datatypes::SchemaRef;
-use async_trait::async_trait;
-use datafusion_physical_expr::PhysicalExpr;
-use object_store::{GetResultPayload, ObjectMeta, ObjectStore};
-
-use super::FileFormat;
-use crate::datasource::avro_to_arrow::read_avro_schema_from_reader;
-use crate::datasource::physical_plan::{AvroExec, FileScanConfig};
-use crate::error::Result;
-use crate::execution::context::SessionState;
-use crate::physical_plan::ExecutionPlan;
-use crate::physical_plan::Statistics;
-
-/// Avro `FileFormat` implementation.
-#[derive(Default, Debug)]
-pub struct AvroFormat;
-
-#[async_trait]
-impl FileFormat for AvroFormat {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    async fn infer_schema(
-        &self,
-        _state: &SessionState,
-        store: &Arc<dyn ObjectStore>,
-        objects: &[ObjectMeta],
-    ) -> Result<SchemaRef> {
-        let mut schemas = vec![];
-        for object in objects {
-            let r = store.as_ref().get(&object.location).await?;
-            let schema = match r.payload {
-                GetResultPayload::File(mut file, _) => {
-                    read_avro_schema_from_reader(&mut file)?
-                }
-                GetResultPayload::Stream(_) => {
-                    // TODO: Fetching entire file to get schema is potentially wasteful
-                    let data = r.bytes().await?;
-                    read_avro_schema_from_reader(&mut data.as_ref())?
-                }
-            };
-            schemas.push(schema);
-        }
-        let merged_schema = Schema::try_merge(schemas)?;
-        Ok(Arc::new(merged_schema))
-    }
-
-    async fn infer_stats(
-        &self,
-        _state: &SessionState,
-        _store: &Arc<dyn ObjectStore>,
-        table_schema: SchemaRef,
-        _object: &ObjectMeta,
-    ) -> Result<Statistics> {
-        Ok(Statistics::new_unknown(&table_schema))
-    }
-
-    async fn create_physical_plan(
-        &self,
-        _state: &SessionState,
-        conf: FileScanConfig,
-        _filters: Option<&Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let exec = AvroExec::new(conf);
-        Ok(Arc::new(exec))
-    }
-}
+pub use datafusion_datasource_avro::file_format::*;
 
 #[cfg(test)]
-#[cfg(feature = "avro")]
 mod tests {
-    use super::*;
-    use crate::datasource::file_format::test_util::scan_format;
-    use crate::physical_plan::collect;
-    use crate::prelude::{SessionConfig, SessionContext};
-    use arrow::array::{as_string_array, Array};
-    use datafusion_common::cast::{
-        as_binary_array, as_boolean_array, as_float32_array, as_float64_array,
-        as_int32_array, as_timestamp_microsecond_array,
+    use std::sync::Arc;
+
+    use crate::{
+        datasource::file_format::test_util::scan_format, prelude::SessionContext,
     };
+    use arrow::array::{Array, as_string_array};
+    use datafusion_catalog::Session;
+    use datafusion_common::test_util::batches_to_string;
+    use datafusion_common::{
+        Result,
+        cast::{
+            as_binary_array, as_boolean_array, as_float32_array, as_float64_array,
+            as_int32_array, as_timestamp_microsecond_array,
+        },
+        test_util,
+    };
+
+    use datafusion_datasource_avro::AvroFormat;
+    use datafusion_execution::config::SessionConfig;
+    use datafusion_physical_plan::{ExecutionPlan, collect};
     use futures::StreamExt;
+    use insta::assert_snapshot;
 
     #[tokio::test]
     async fn read_small_batches() -> Result<()> {
@@ -177,20 +117,20 @@ mod tests {
         let batches = collect(exec, task_ctx).await?;
         assert_eq!(batches.len(), 1);
 
-        let expected =  ["+----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+",
-            "| id | bool_col | tinyint_col | smallint_col | int_col | bigint_col | float_col | double_col | date_string_col  | string_col | timestamp_col       |",
-            "+----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+",
-            "| 4  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30332f30312f3039 | 30         | 2009-03-01T00:00:00 |",
-            "| 5  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30332f30312f3039 | 31         | 2009-03-01T00:01:00 |",
-            "| 6  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30342f30312f3039 | 30         | 2009-04-01T00:00:00 |",
-            "| 7  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30342f30312f3039 | 31         | 2009-04-01T00:01:00 |",
-            "| 2  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30322f30312f3039 | 30         | 2009-02-01T00:00:00 |",
-            "| 3  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30322f30312f3039 | 31         | 2009-02-01T00:01:00 |",
-            "| 0  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30312f30312f3039 | 30         | 2009-01-01T00:00:00 |",
-            "| 1  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30312f30312f3039 | 31         | 2009-01-01T00:01:00 |",
-            "+----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+"];
-
-        crate::assert_batches_eq!(expected, &batches);
+        assert_snapshot!(batches_to_string(&batches),@r"
+        +----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+
+        | id | bool_col | tinyint_col | smallint_col | int_col | bigint_col | float_col | double_col | date_string_col  | string_col | timestamp_col       |
+        +----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+
+        | 4  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30332f30312f3039 | 30         | 2009-03-01T00:00:00 |
+        | 5  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30332f30312f3039 | 31         | 2009-03-01T00:01:00 |
+        | 6  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30342f30312f3039 | 30         | 2009-04-01T00:00:00 |
+        | 7  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30342f30312f3039 | 31         | 2009-04-01T00:01:00 |
+        | 2  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30322f30312f3039 | 30         | 2009-02-01T00:00:00 |
+        | 3  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30322f30312f3039 | 31         | 2009-02-01T00:01:00 |
+        | 0  | true     | 0           | 0            | 0       | 0          | 0.0       | 0.0        | 30312f30312f3039 | 30         | 2009-01-01T00:00:00 |
+        | 1  | false    | 1           | 1            | 1       | 10         | 1.1       | 10.1       | 30312f30312f3039 | 31         | 2009-01-01T00:01:00 |
+        +----+----------+-------------+--------------+---------+------------+-----------+------------+------------------+------------+---------------------+
+        ");
         Ok(())
     }
 
@@ -306,7 +246,10 @@ mod tests {
             values.push(array.value(i));
         }
 
-        assert_eq!("[1235865600000000, 1235865660000000, 1238544000000000, 1238544060000000, 1233446400000000, 1233446460000000, 1230768000000000, 1230768060000000]", format!("{values:?}"));
+        assert_eq!(
+            "[1235865600000000, 1235865660000000, 1238544000000000, 1238544060000000, 1233446400000000, 1233446460000000, 1230768000000000, 1230768060000000]",
+            format!("{values:?}")
+        );
 
         Ok(())
     }
@@ -435,41 +378,23 @@ mod tests {
     }
 
     async fn get_exec(
-        state: &SessionState,
+        state: &dyn Session,
         file_name: &str,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let testdata = crate::test_util::arrow_test_data();
+        let testdata = test_util::arrow_test_data();
         let store_root = format!("{testdata}/avro");
         let format = AvroFormat {};
-        scan_format(state, &format, &store_root, file_name, projection, limit).await
-    }
-}
-
-#[cfg(test)]
-#[cfg(not(feature = "avro"))]
-mod tests {
-    use super::*;
-
-    use super::super::test_util::scan_format;
-    use crate::error::DataFusionError;
-    use crate::prelude::SessionContext;
-
-    #[tokio::test]
-    async fn test() -> Result<()> {
-        let session_ctx = SessionContext::new();
-        let state = session_ctx.state();
-        let format = AvroFormat {};
-        let testdata = crate::test_util::arrow_test_data();
-        let filename = "avro/alltypes_plain.avro";
-        let result = scan_format(&state, &format, &testdata, filename, None, None).await;
-        assert!(matches!(
-            result,
-            Err(DataFusionError::NotImplemented(msg))
-            if msg == *"cannot read avro schema without the 'avro' feature enabled"
-        ));
-
-        Ok(())
+        scan_format(
+            state,
+            &format,
+            None,
+            &store_root,
+            file_name,
+            projection,
+            limit,
+        )
+        .await
     }
 }

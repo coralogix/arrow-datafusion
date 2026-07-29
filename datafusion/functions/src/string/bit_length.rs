@@ -15,18 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-
 use arrow::compute::kernels::length::bit_length;
 use arrow::datatypes::DataType;
-
-use datafusion_common::{exec_err, Result, ScalarValue};
-use datafusion_expr::{ColumnarValue, Volatility};
-use datafusion_expr::{ScalarUDFImpl, Signature};
+use std::any::Any;
 
 use crate::utils::utf8_to_int_type;
+use datafusion_common::types::logical_string;
+use datafusion_common::utils::take_function_args;
+use datafusion_common::{Result, ScalarValue};
+use datafusion_expr::{
+    Coercion, ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    TypeSignatureClass, Volatility,
+};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Returns the bit length of a string.",
+    syntax_example = "bit_length(str)",
+    sql_example = r#"```sql
+> select bit_length('datafusion');
++--------------------------------+
+| bit_length(Utf8("datafusion")) |
++--------------------------------+
+| 80                             |
++--------------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    related_udf(name = "length"),
+    related_udf(name = "octet_length")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BitLengthFunc {
     signature: Signature,
 }
@@ -39,11 +58,11 @@ impl Default for BitLengthFunc {
 
 impl BitLengthFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(
-                1,
-                vec![Utf8, LargeUtf8],
+            signature: Signature::coercible(
+                vec![Coercion::new_exact(TypeSignatureClass::Native(
+                    logical_string(),
+                ))],
                 Volatility::Immutable,
             ),
         }
@@ -67,15 +86,10 @@ impl ScalarUDFImpl for BitLengthFunc {
         utf8_to_int_type(&arg_types[0], "bit_length")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 1 {
-            return exec_err!(
-                "bit_length function requires 1 argument, got {}",
-                args.len()
-            );
-        }
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let [array] = take_function_args(self.name(), &args.args)?;
 
-        match &args[0] {
+        match array {
             ColumnarValue::Array(v) => Ok(ColumnarValue::Array(bit_length(v.as_ref())?)),
             ColumnarValue::Scalar(v) => match v {
                 ScalarValue::Utf8(v) => Ok(ColumnarValue::Scalar(ScalarValue::Int32(
@@ -84,8 +98,15 @@ impl ScalarUDFImpl for BitLengthFunc {
                 ScalarValue::LargeUtf8(v) => Ok(ColumnarValue::Scalar(
                     ScalarValue::Int64(v.as_ref().map(|x| (x.len() * 8) as i64)),
                 )),
-                _ => unreachable!(),
+                ScalarValue::Utf8View(v) => Ok(ColumnarValue::Scalar(
+                    ScalarValue::Int32(v.as_ref().map(|x| (x.len() * 8) as i32)),
+                )),
+                _ => unreachable!("bit length"),
             },
         }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

@@ -22,16 +22,18 @@ use std::sync::Arc;
 
 use arrow::datatypes::*;
 use async_trait::async_trait;
+use datafusion_catalog::Session;
 use datafusion_common::project_schema;
 
 use crate::datasource::{TableProvider, TableType};
 use crate::error::Result;
-use crate::execution::context::SessionState;
 use crate::logical_expr::Expr;
-use crate::physical_plan::{empty::EmptyExec, ExecutionPlan};
+use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::empty::EmptyExec;
 
 /// An empty plan that is useful for testing and generating plans
 /// without mapping them to actual data.
+#[derive(Debug)]
 pub struct EmptyTable {
     schema: SchemaRef,
     partitions: usize,
@@ -60,7 +62,7 @@ impl TableProvider for EmptyTable {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 
     fn table_type(&self) -> TableType {
@@ -69,7 +71,7 @@ impl TableProvider for EmptyTable {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,

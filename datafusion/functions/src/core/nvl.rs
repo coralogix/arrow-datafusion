@@ -15,16 +15,47 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::Array;
-use arrow::compute::is_not_null;
-use arrow::compute::kernels::zip::zip;
-use arrow::datatypes::DataType;
-use datafusion_common::{internal_err, Result};
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
+use crate::core::coalesce::CoalesceFunc;
+use arrow::datatypes::{DataType, FieldRef};
+use datafusion_common::Result;
+use datafusion_expr::simplify::{ExprSimplifyResult, SimplifyInfo};
+use datafusion_expr::{
+    ColumnarValue, Documentation, Expr, ReturnFieldArgs, ScalarFunctionArgs,
+    ScalarUDFImpl, Signature, Volatility,
+};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Conditional Functions"),
+    description = "Returns _expression2_ if _expression1_ is NULL otherwise it returns _expression1_ and _expression2_ is not evaluated. This function can be used to substitute a default value for NULL values.",
+    syntax_example = "nvl(expression1, expression2)",
+    sql_example = r#"```sql
+> select nvl(null, 'a');
++---------------------+
+| nvl(NULL,Utf8("a")) |
++---------------------+
+| a                   |
++---------------------+\
+> select nvl('b', 'a');
++--------------------------+
+| nvl(Utf8("b"),Utf8("a")) |
++--------------------------+
+| b                        |
++--------------------------+
+```
+"#,
+    argument(
+        name = "expression1",
+        description = "Expression to return if not null. Can be a constant, column, or function, and any combination of operators."
+    ),
+    argument(
+        name = "expression2",
+        description = "Expression to return if expr1 is null. Can be a constant, column, or function, and any combination of operators."
+    )
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct NVLFunc {
-    signature: Signature,
+    coalesce: CoalesceFunc,
     aliases: Vec<String>,
 }
 
@@ -43,6 +74,7 @@ static SUPPORTED_NVL_TYPES: &[DataType] = &[
     DataType::Int64,
     DataType::Float32,
     DataType::Float64,
+    DataType::Utf8View,
     DataType::Utf8,
     DataType::LargeUtf8,
 ];
@@ -56,11 +88,13 @@ impl Default for NVLFunc {
 impl NVLFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::uniform(
-                2,
-                SUPPORTED_NVL_TYPES.to_vec(),
-                Volatility::Immutable,
-            ),
+            coalesce: CoalesceFunc {
+                signature: Signature::uniform(
+                    2,
+                    SUPPORTED_NVL_TYPES.to_vec(),
+                    Volatility::Immutable,
+                ),
+            },
             aliases: vec![String::from("ifnull")],
         }
     }
@@ -76,210 +110,45 @@ impl ScalarUDFImpl for NVLFunc {
     }
 
     fn signature(&self) -> &Signature {
-        &self.signature
+        &self.coalesce.signature
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        Ok(arg_types[0].clone())
+        self.coalesce.return_type(arg_types)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        nvl_func(args)
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
+        self.coalesce.return_field_from_args(args)
+    }
+
+    fn simplify(
+        &self,
+        args: Vec<Expr>,
+        info: &dyn SimplifyInfo,
+    ) -> Result<ExprSimplifyResult> {
+        self.coalesce.simplify(args, info)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        self.coalesce.invoke_with_args(args)
+    }
+
+    fn conditional_arguments<'a>(
+        &self,
+        args: &'a [Expr],
+    ) -> Option<(Vec<&'a Expr>, Vec<&'a Expr>)> {
+        self.coalesce.conditional_arguments(args)
+    }
+
+    fn short_circuits(&self) -> bool {
+        self.coalesce.short_circuits()
     }
 
     fn aliases(&self) -> &[String] {
         &self.aliases
     }
-}
 
-fn nvl_func(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() != 2 {
-        return internal_err!(
-            "{:?} args were supplied but NVL/IFNULL takes exactly two args",
-            args.len()
-        );
-    }
-    let (lhs_array, rhs_array) = match (&args[0], &args[1]) {
-        (ColumnarValue::Array(lhs), ColumnarValue::Scalar(rhs)) => {
-            (lhs.clone(), rhs.to_array_of_size(lhs.len())?)
-        }
-        (ColumnarValue::Array(lhs), ColumnarValue::Array(rhs)) => {
-            (lhs.clone(), rhs.clone())
-        }
-        (ColumnarValue::Scalar(lhs), ColumnarValue::Array(rhs)) => {
-            (lhs.to_array_of_size(rhs.len())?, rhs.clone())
-        }
-        (ColumnarValue::Scalar(lhs), ColumnarValue::Scalar(rhs)) => {
-            let mut current_value = lhs;
-            if lhs.is_null() {
-                current_value = rhs;
-            }
-            return Ok(ColumnarValue::Scalar(current_value.clone()));
-        }
-    };
-    let to_apply = is_not_null(&lhs_array)?;
-    let value = zip(&to_apply, &lhs_array, &rhs_array)?;
-    Ok(ColumnarValue::Array(value))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use arrow::array::*;
-
-    use super::*;
-    use datafusion_common::ScalarValue;
-
-    #[test]
-    fn nvl_int32() -> Result<()> {
-        let a = Int32Array::from(vec![
-            Some(1),
-            Some(2),
-            None,
-            None,
-            Some(3),
-            None,
-            None,
-            Some(4),
-            Some(5),
-        ]);
-        let a = ColumnarValue::Array(Arc::new(a));
-
-        let lit_array = ColumnarValue::Scalar(ScalarValue::Int32(Some(6i32)));
-
-        let result = nvl_func(&[a, lit_array])?;
-        let result = result.into_array(0).expect("Failed to convert to array");
-
-        let expected = Arc::new(Int32Array::from(vec![
-            Some(1),
-            Some(2),
-            Some(6),
-            Some(6),
-            Some(3),
-            Some(6),
-            Some(6),
-            Some(4),
-            Some(5),
-        ])) as ArrayRef;
-        assert_eq!(expected.as_ref(), result.as_ref());
-        Ok(())
-    }
-
-    #[test]
-    // Ensure that arrays with no nulls can also invoke nvl() correctly
-    fn nvl_int32_nonulls() -> Result<()> {
-        let a = Int32Array::from(vec![1, 3, 10, 7, 8, 1, 2, 4, 5]);
-        let a = ColumnarValue::Array(Arc::new(a));
-
-        let lit_array = ColumnarValue::Scalar(ScalarValue::Int32(Some(20i32)));
-
-        let result = nvl_func(&[a, lit_array])?;
-        let result = result.into_array(0).expect("Failed to convert to array");
-
-        let expected = Arc::new(Int32Array::from(vec![
-            Some(1),
-            Some(3),
-            Some(10),
-            Some(7),
-            Some(8),
-            Some(1),
-            Some(2),
-            Some(4),
-            Some(5),
-        ])) as ArrayRef;
-        assert_eq!(expected.as_ref(), result.as_ref());
-        Ok(())
-    }
-
-    #[test]
-    fn nvl_boolean() -> Result<()> {
-        let a = BooleanArray::from(vec![Some(true), Some(false), None]);
-        let a = ColumnarValue::Array(Arc::new(a));
-
-        let lit_array = ColumnarValue::Scalar(ScalarValue::Boolean(Some(false)));
-
-        let result = nvl_func(&[a, lit_array])?;
-        let result = result.into_array(0).expect("Failed to convert to array");
-
-        let expected = Arc::new(BooleanArray::from(vec![
-            Some(true),
-            Some(false),
-            Some(false),
-        ])) as ArrayRef;
-
-        assert_eq!(expected.as_ref(), result.as_ref());
-        Ok(())
-    }
-
-    #[test]
-    fn nvl_string() -> Result<()> {
-        let a = StringArray::from(vec![Some("foo"), Some("bar"), None, Some("baz")]);
-        let a = ColumnarValue::Array(Arc::new(a));
-
-        let lit_array = ColumnarValue::Scalar(ScalarValue::from("bax"));
-
-        let result = nvl_func(&[a, lit_array])?;
-        let result = result.into_array(0).expect("Failed to convert to array");
-
-        let expected = Arc::new(StringArray::from(vec![
-            Some("foo"),
-            Some("bar"),
-            Some("bax"),
-            Some("baz"),
-        ])) as ArrayRef;
-
-        assert_eq!(expected.as_ref(), result.as_ref());
-        Ok(())
-    }
-
-    #[test]
-    fn nvl_literal_first() -> Result<()> {
-        let a = Int32Array::from(vec![Some(1), Some(2), None, None, Some(3), Some(4)]);
-        let a = ColumnarValue::Array(Arc::new(a));
-
-        let lit_array = ColumnarValue::Scalar(ScalarValue::Int32(Some(2i32)));
-
-        let result = nvl_func(&[lit_array, a])?;
-        let result = result.into_array(0).expect("Failed to convert to array");
-
-        let expected = Arc::new(Int32Array::from(vec![
-            Some(2),
-            Some(2),
-            Some(2),
-            Some(2),
-            Some(2),
-            Some(2),
-        ])) as ArrayRef;
-        assert_eq!(expected.as_ref(), result.as_ref());
-        Ok(())
-    }
-
-    #[test]
-    fn nvl_scalar() -> Result<()> {
-        let a_null = ColumnarValue::Scalar(ScalarValue::Int32(None));
-        let b_null = ColumnarValue::Scalar(ScalarValue::Int32(Some(2i32)));
-
-        let result_null = nvl_func(&[a_null, b_null])?;
-        let result_null = result_null
-            .into_array(1)
-            .expect("Failed to convert to array");
-
-        let expected_null = Arc::new(Int32Array::from(vec![Some(2i32)])) as ArrayRef;
-
-        assert_eq!(expected_null.as_ref(), result_null.as_ref());
-
-        let a_nnull = ColumnarValue::Scalar(ScalarValue::Int32(Some(2i32)));
-        let b_nnull = ColumnarValue::Scalar(ScalarValue::Int32(Some(1i32)));
-
-        let result_nnull = nvl_func(&[a_nnull, b_nnull])?;
-        let result_nnull = result_nnull
-            .into_array(1)
-            .expect("Failed to convert to array");
-
-        let expected_nnull = Arc::new(Int32Array::from(vec![Some(2i32)])) as ArrayRef;
-        assert_eq!(expected_nnull.as_ref(), result_nnull.as_ref());
-
-        Ok(())
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

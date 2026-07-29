@@ -26,8 +26,10 @@ available for creating logical expressions. These are documented below.
 Most functions and methods may receive and return an `Expr`, which can be chained together using a fluent-style API:
 
 ```rust
+use datafusion::prelude::*;
 // create the expression `(a > 6) AND (b < 7)`
-col("a").gt(lit(6)).and(col("b").lt(lit(7)))
+col("a").gt(lit(6)).and(col("b").lt(lit(7)));
+
 ```
 
 :::
@@ -67,7 +69,7 @@ value
 :::
 
 :::{note}
-Since `&&` and `||` are existed as logical operators in Rust, but those are not overloadable and not works with expression API.
+Since `&&` and `||` are logical operators in Rust and cannot be overloaded these are not available in the expression API.
 :::
 
 ## Bitwise Expressions
@@ -149,7 +151,7 @@ but these operators always return a `bool` which makes them not work with the ex
 | trunc(x)              | truncate toward zero                              |
 
 :::{note}
-Unlike to some databases the math functions in Datafusion works the same way as Rust math functions, avoiding failing on corner cases e.g
+Unlike to some databases the math functions in Datafusion works the same way as Rust math functions, avoiding failing on corner cases e.g.
 
 ```sql
 select log(-1), log(0), sqrt(-1);
@@ -177,8 +179,8 @@ select log(-1), log(0), sqrt(-1);
 | ascii(character)                               | Returns a numeric representation of the character (`character`). Example: `ascii('a') -> 97`                                                                                                                                             |
 | bit_length(text)                               | Returns the length of the string (`text`) in bits. Example: `bit_length('spider') -> 48`                                                                                                                                                 |
 | btrim(text, characters)                        | Removes all specified characters (`characters`) from both the beginning and the end of the string (`text`). Example: `btrim('aabchelloccb', 'abc') -> hello`                                                                             |
-| char_length(text)                              | Returns number of characters in the string (`text`). The same as `character_length` and `length`. Example: `character_length('lion') -> 4`                                                                                               |
-| character_length(text)                         | Returns number of characters in the string (`text`). The same as `char_length` and `length`. Example: `char_length('lion') -> 4`                                                                                                         |
+| char_length(text)                              | Returns number of characters in the string (`text`). The same as `character_length` and `length`. Example: `char_length('lion') -> 4`                                                                                                    |
+| character_length(text)                         | Returns number of characters in the string (`text`). The same as `char_length` and `length`. Example: `character_length('lion') -> 4`                                                                                                    |
 | concat(value1, [value2 [, ...]])               | Concatenates the text representations (`value1, [value2 [, ...]]`) of all the arguments. NULL arguments are ignored. Example: `concat('aaa', 'bbc', NULL, 321) -> aaabbc321`                                                             |
 | concat_ws(separator, value1, [value2 [, ...]]) | Concatenates the text representations (`value1, [value2 [, ...]]`) of all the arguments with the separator (`separator`). NULL arguments are ignored. `concat_ws('/', 'path', 'to', NULL, 'my', 'folder', 123) -> path/to/my/folder/123` |
 | chr(integer)                                   | Returns a character by its numeric representation (`integer`). Example: `chr(90) -> 8`                                                                                                                                                   |
@@ -209,6 +211,7 @@ select log(-1), log(0), sqrt(-1);
 
 | Syntax                                         | Description                                                                                                                                                                                                             |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| array_any_value(array)                         | Returns the first non-null element in the array. `array_any_value([NULL, 1, 2, 3]) -> 1`                                                                                                                                |
 | array_append(array, element)                   | Appends an element to the end of an array. `array_append([1, 2, 3], 4) -> [1, 2, 3, 4]`                                                                                                                                 |
 | array_concat(array[, ..., array_n])            | Concatenates arrays. `array_concat([1, 2, 3], [4, 5, 6]) -> [1, 2, 3, 4, 5, 6]`                                                                                                                                         |
 | array_has(array, element)                      | Returns true if the array contains the element `array_has([1,2,3], 1) -> true`                                                                                                                                          |
@@ -225,7 +228,7 @@ select log(-1), log(0), sqrt(-1);
 | array_pop_back(array)                          | Returns the array without the last element. `array_pop_back([1, 2, 3]) -> [1, 2]`                                                                                                                                       |
 | array_position(array, element)                 | Searches for an element in the array, returns first occurrence. `array_position([1, 2, 2, 3, 4], 2) -> 2`                                                                                                               |
 | array_positions(array, element)                | Searches for an element in the array, returns all occurrences. `array_positions([1, 2, 2, 3, 4], 2) -> [2, 3]`                                                                                                          |
-| array_prepend(array, element)                  | Prepends an element to the beginning of an array. `array_prepend(1, [2, 3, 4]) -> [1, 2, 3, 4]`                                                                                                                         |
+| array_prepend(element, array)                  | Prepends an element to the beginning of an array. `array_prepend(1, [2, 3, 4]) -> [1, 2, 3, 4]`                                                                                                                         |
 | array_repeat(element, count)                   | Returns an array containing element `count` times. `array_repeat(1, 3) -> [1, 1, 1]`                                                                                                                                    |
 | array_remove(array, element)                   | Removes the first element from the array equal to the given value. `array_remove([1, 2, 2, 3, 2, 1, 4], 2) -> [1, 2, 3, 2, 1, 4]`                                                                                       |
 | array_remove_n(array, element, max)            | Removes the first `max` elements from the array equal to the given value. `array_remove_n([1, 2, 2, 3, 2, 1, 4], 2, 2) -> [1, 3, 2, 1, 4]`                                                                              |
@@ -241,7 +244,7 @@ select log(-1), log(0), sqrt(-1);
 | array_except(array1, array2)                   | Returns an array of the elements that appear in the first array but not in the second. `array_except([1, 2, 3, 4], [5, 6, 3, 4]) -> [1, 2]`                                                                             |
 | array_resize(array, size, value)               | Resizes the list to contain size elements. Initializes new elements with value or empty if value is not set. `array_resize([1, 2, 3], 5, 0) -> [1, 2, 3, 0, 0]`                                                         |
 | array_sort(array, desc, null_first)            | Returns sorted array. `array_sort([3, 1, 2, 5, 4]) -> [1, 2, 3, 4, 5]`                                                                                                                                                  |
-| cardinality(array)                             | Returns the total number of elements in the array. `cardinality([[1, 2, 3], [4, 5, 6]]) -> 6`                                                                                                                           |
+| cardinality(array/map)                         | Returns the total number of elements in the array or map. `cardinality([[1, 2, 3], [4, 5, 6]]) -> 6`                                                                                                                    |
 | make_array(value1, [value2 [, ...]])           | Returns an Arrow array using the specified input expressions. `make_array(1, 2, 3) -> [1, 2, 3]`                                                                                                                        |
 | range(start [, stop, step])                    | Returns an Arrow array between start and stop with step. `SELECT range(2, 10, 3) -> [2, 5, 8]`                                                                                                                          |
 | string_to_array(array, delimiter, null_string) | Splits a `string` based on a `delimiter` and returns an array of parts. Any parts matching the optional `null_string` will be replaced with `NULL`. `string_to_array('abc#def#ghi', '#', ' ') -> ['abc', 'def', 'ghi']` |
@@ -282,33 +285,35 @@ select log(-1), log(0), sqrt(-1);
 
 ## Aggregate Functions
 
-| Syntax                                                            | Description                                                                             |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| avg(expr)                                                         | Сalculates the average value for `expr`.                                                |
-| approx_distinct(expr)                                             | Calculates an approximate count of the number of distinct values for `expr`.            |
-| approx_median(expr)                                               | Calculates an approximation of the median for `expr`.                                   |
-| approx_percentile_cont(expr, percentile)                          | Calculates an approximation of the specified `percentile` for `expr`.                   |
-| approx_percentile_cont_with_weight(expr, weight_expr, percentile) | Calculates an approximation of the specified `percentile` for `expr` and `weight_expr`. |
-| bit_and(expr)                                                     | Computes the bitwise AND of all non-null input values for `expr`.                       |
-| bit_or(expr)                                                      | Computes the bitwise OR of all non-null input values for `expr`.                        |
-| bit_xor(expr)                                                     | Computes the bitwise exclusive OR of all non-null input values for `expr`.              |
-| bool_and(expr)                                                    | Returns true if all non-null input values (`expr`) are true, otherwise false.           |
-| bool_or(expr)                                                     | Returns true if any non-null input value (`expr`) is true, otherwise false.             |
-| count(expr)                                                       | Returns the number of rows for `expr`.                                                  |
-| count_distinct                                                    | Creates an expression to represent the count(distinct) aggregate function               |
-| cube(exprs)                                                       | Creates a grouping set for all combination of `exprs`                                   |
-| grouping_set(exprs)                                               | Create a grouping set.                                                                  |
-| max(expr)                                                         | Finds the maximum value of `expr`.                                                      |
-| median(expr)                                                      | Сalculates the median of `expr`.                                                        |
-| min(expr)                                                         | Finds the minimum value of `expr`.                                                      |
-| rollup(exprs)                                                     | Creates a grouping set for rollup sets.                                                 |
-| sum(expr)                                                         | Сalculates the sum of `expr`.                                                           |
+| Syntax                                                                          | Description                                                                                                                                              |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| avg(expr)                                                                       | Сalculates the average value for `expr`.                                                                                                                 |
+| avg_distinct(expr)                                                              | Creates an expression to represent the avg(distinct) aggregate function                                                                                  |
+| approx_distinct(expr)                                                           | Calculates an approximate count of the number of distinct values for `expr`.                                                                             |
+| approx_median(expr)                                                             | Calculates an approximation of the median for `expr`.                                                                                                    |
+| approx_percentile_cont(expr, percentile [, centroids])                          | Calculates an approximation of the specified `percentile` for `expr`. Optional `centroids` parameter controls accuracy (default: 100).                   |
+| approx_percentile_cont_with_weight(expr, weight_expr, percentile [, centroids]) | Calculates an approximation of the specified `percentile` for `expr` and `weight_expr`. Optional `centroids` parameter controls accuracy (default: 100). |
+| bit_and(expr)                                                                   | Computes the bitwise AND of all non-null input values for `expr`.                                                                                        |
+| bit_or(expr)                                                                    | Computes the bitwise OR of all non-null input values for `expr`.                                                                                         |
+| bit_xor(expr)                                                                   | Computes the bitwise exclusive OR of all non-null input values for `expr`.                                                                               |
+| bool_and(expr)                                                                  | Returns true if all non-null input values (`expr`) are true, otherwise false.                                                                            |
+| bool_or(expr)                                                                   | Returns true if any non-null input value (`expr`) is true, otherwise false.                                                                              |
+| count(expr)                                                                     | Returns the number of rows for `expr`.                                                                                                                   |
+| count_distinct(expr)                                                            | Creates an expression to represent the count(distinct) aggregate function                                                                                |
+| cube(exprs)                                                                     | Creates a grouping set for all combination of `exprs`                                                                                                    |
+| grouping_set(exprs)                                                             | Create a grouping set.                                                                                                                                   |
+| max(expr)                                                                       | Finds the maximum value of `expr`.                                                                                                                       |
+| median(expr)                                                                    | Сalculates the median of `expr`.                                                                                                                         |
+| min(expr)                                                                       | Finds the minimum value of `expr`.                                                                                                                       |
+| rollup(exprs)                                                                   | Creates a grouping set for rollup sets.                                                                                                                  |
+| sum(expr)                                                                       | Сalculates the sum of `expr`.                                                                                                                            |
+| sum_distinct(expr)                                                              | Creates an expression to represent the sum(distinct) aggregate function                                                                                  |
 
 ## Aggregate Function Builder
 
-You can also use the `AggregateExt` trait to more easily build Aggregate arguments `Expr`.
+You can also use the `ExprFunctionExt` trait to more easily build Aggregate arguments `Expr`.
 
-See `datafusion-examples/examples/expr_api.rs` for example usage.
+See `datafusion-examples/examples/query_planning/expr_api.rs` for example usage.
 
 | Syntax                                                                  | Equivalent to                       |
 | ----------------------------------------------------------------------- | ----------------------------------- |

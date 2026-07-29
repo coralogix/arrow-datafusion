@@ -18,274 +18,127 @@
 //! Module containing helper methods for the various file formats
 //! See write.rs for write related helper methods
 
-/// Default max records to scan to infer the schema
-pub const DEFAULT_SCHEMA_INFER_MAX_RECORD: usize = 1000;
-
 pub mod arrow;
-pub mod avro;
 pub mod csv;
-pub mod file_compression_type;
 pub mod json;
-pub mod options;
+
+#[cfg(feature = "avro")]
+pub mod avro;
+
 #[cfg(feature = "parquet")]
 pub mod parquet;
-pub mod write;
 
-use std::any::Any;
-use std::fmt;
-use std::sync::Arc;
+pub mod options;
 
-use crate::arrow::datatypes::SchemaRef;
-use crate::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
-use crate::error::Result;
-use crate::execution::context::SessionState;
-use crate::physical_plan::{ExecutionPlan, Statistics};
-
-use datafusion_common::not_impl_err;
-use datafusion_physical_expr::{PhysicalExpr, PhysicalSortRequirement};
-
-use async_trait::async_trait;
-use object_store::{ObjectMeta, ObjectStore};
-
-/// This trait abstracts all the file format specific implementations
-/// from the [`TableProvider`]. This helps code re-utilization across
-/// providers that support the same file formats.
-///
-/// [`TableProvider`]: crate::datasource::provider::TableProvider
-#[async_trait]
-pub trait FileFormat: Send + Sync + fmt::Debug {
-    /// Returns the table provider as [`Any`](std::any::Any) so that it can be
-    /// downcast to a specific implementation.
-    fn as_any(&self) -> &dyn Any;
-
-    /// Infer the common schema of the provided objects. The objects will usually
-    /// be analysed up to a given number of records or files (as specified in the
-    /// format config) then give the estimated common schema. This might fail if
-    /// the files have schemas that cannot be merged.
-    async fn infer_schema(
-        &self,
-        state: &SessionState,
-        store: &Arc<dyn ObjectStore>,
-        objects: &[ObjectMeta],
-    ) -> Result<SchemaRef>;
-
-    /// Infer the statistics for the provided object. The cost and accuracy of the
-    /// estimated statistics might vary greatly between file formats.
-    ///
-    /// `table_schema` is the (combined) schema of the overall table
-    /// and may be a superset of the schema contained in this file.
-    ///
-    /// TODO: should the file source return statistics for only columns referred to in the table schema?
-    async fn infer_stats(
-        &self,
-        state: &SessionState,
-        store: &Arc<dyn ObjectStore>,
-        table_schema: SchemaRef,
-        object: &ObjectMeta,
-    ) -> Result<Statistics>;
-
-    /// Take a list of files and convert it to the appropriate executor
-    /// according to this file format.
-    async fn create_physical_plan(
-        &self,
-        state: &SessionState,
-        conf: FileScanConfig,
-        filters: Option<&Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn ExecutionPlan>>;
-
-    /// Take a list of files and the configuration to convert it to the
-    /// appropriate writer executor according to this file format.
-    async fn create_writer_physical_plan(
-        &self,
-        _input: Arc<dyn ExecutionPlan>,
-        _state: &SessionState,
-        _conf: FileSinkConfig,
-        _order_requirements: Option<Vec<PhysicalSortRequirement>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        not_impl_err!("Writer not implemented for this format")
-    }
-}
+pub use datafusion_datasource::file_compression_type;
+pub use datafusion_datasource::file_format::*;
+pub use datafusion_datasource::write;
 
 #[cfg(test)]
 pub(crate) mod test_util {
-    use std::ops::Range;
-    use std::sync::Mutex;
+    use arrow_schema::SchemaRef;
+    use datafusion_catalog::Session;
+    use datafusion_common::Result;
+    use datafusion_datasource::TableSchema;
+    use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
+    use datafusion_datasource::{PartitionedFile, file_format::FileFormat};
+    use datafusion_execution::object_store::ObjectStoreUrl;
+    use std::sync::Arc;
 
-    use super::*;
-    use crate::datasource::listing::PartitionedFile;
-    use crate::datasource::object_store::ObjectStoreUrl;
     use crate::test::object_store::local_unpartitioned_file;
-    use bytes::Bytes;
-    use futures::stream::BoxStream;
-    use futures::StreamExt;
-    use object_store::local::LocalFileSystem;
-    use object_store::path::Path;
-    use object_store::{
-        Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
-        PutMultipartOpts, PutOptions, PutPayload, PutResult,
-    };
 
     pub async fn scan_format(
-        state: &SessionState,
+        state: &dyn Session,
         format: &dyn FileFormat,
+        schema: Option<SchemaRef>,
         store_root: &str,
         file_name: &str,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let store = Arc::new(LocalFileSystem::new()) as _;
+    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        let store = Arc::new(object_store::local::LocalFileSystem::new()) as _;
         let meta = local_unpartitioned_file(format!("{store_root}/{file_name}"));
 
-        let file_schema = format.infer_schema(state, &store, &[meta.clone()]).await?;
+        let file_schema = if let Some(file_schema) = schema {
+            file_schema
+        } else {
+            format
+                .infer_schema(state, &store, std::slice::from_ref(&meta))
+                .await?
+        };
+
+        let table_schema = TableSchema::new(file_schema.clone(), vec![]);
 
         let statistics = format
             .infer_stats(state, &store, file_schema.clone(), &meta)
             .await?;
 
-        let file_groups = vec![vec![PartitionedFile {
-            object_meta: meta,
-            partition_values: vec![],
-            range: None,
-            statistics: None,
-            extensions: None,
-        }]];
+        let file_groups = vec![
+            vec![PartitionedFile {
+                object_meta: meta,
+                partition_values: vec![],
+                range: None,
+                statistics: None,
+                extensions: None,
+                metadata_size_hint: None,
+            }]
+            .into(),
+        ];
 
         let exec = format
             .create_physical_plan(
                 state,
-                FileScanConfig::new(ObjectStoreUrl::local_filesystem(), file_schema)
-                    .with_file_groups(file_groups)
-                    .with_statistics(statistics)
-                    .with_projection(projection)
-                    .with_limit(limit),
-                None,
+                FileScanConfigBuilder::new(
+                    ObjectStoreUrl::local_filesystem(),
+                    format.file_source(table_schema),
+                )
+                .with_file_groups(file_groups)
+                .with_statistics(statistics)
+                .with_projection_indices(projection)?
+                .with_limit(limit)
+                .build(),
             )
             .await?;
         Ok(exec)
     }
+}
 
-    /// Mock ObjectStore to provide an variable stream of bytes on get
-    /// Able to keep track of how many iterations of the provided bytes were repeated
-    #[derive(Debug)]
-    pub struct VariableStream {
-        bytes_to_repeat: Bytes,
-        max_iterations: usize,
-        iterations_detected: Arc<Mutex<usize>>,
-    }
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "parquet")]
+    #[tokio::test]
+    async fn write_parquet_results_error_handling() -> datafusion_common::Result<()> {
+        use std::sync::Arc;
 
-    impl std::fmt::Display for VariableStream {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "VariableStream")
-        }
-    }
+        use object_store::local::LocalFileSystem;
+        use tempfile::TempDir;
+        use url::Url;
 
-    #[async_trait]
-    impl ObjectStore for VariableStream {
-        async fn put_opts(
-            &self,
-            _location: &Path,
-            _payload: PutPayload,
-            _opts: PutOptions,
-        ) -> object_store::Result<PutResult> {
-            unimplemented!()
-        }
+        use crate::{
+            dataframe::DataFrameWriteOptions,
+            prelude::{CsvReadOptions, SessionContext},
+        };
 
-        async fn put_multipart_opts(
-            &self,
-            _location: &Path,
-            _opts: PutMultipartOpts,
-        ) -> object_store::Result<Box<dyn MultipartUpload>> {
-            unimplemented!()
-        }
+        let ctx = SessionContext::new();
+        // register a local file system object store for /tmp directory
+        let tmp_dir = TempDir::new()?;
+        let local = Arc::new(LocalFileSystem::new_with_prefix(&tmp_dir)?);
+        let local_url = Url::parse("file://local").unwrap();
+        ctx.register_object_store(&local_url, local);
 
-        async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
-            let bytes = self.bytes_to_repeat.clone();
-            let range = 0..bytes.len() * self.max_iterations;
-            let arc = self.iterations_detected.clone();
-            let stream = futures::stream::repeat_with(move || {
-                let arc_inner = arc.clone();
-                *arc_inner.lock().unwrap() += 1;
-                Ok(bytes.clone())
-            })
-            .take(self.max_iterations)
-            .boxed();
-
-            Ok(GetResult {
-                payload: GetResultPayload::Stream(stream),
-                meta: ObjectMeta {
-                    location: location.clone(),
-                    last_modified: Default::default(),
-                    size: range.end,
-                    e_tag: None,
-                    version: None,
-                },
-                range: Default::default(),
-                attributes: Attributes::default(),
-            })
-        }
-
-        async fn get_opts(
-            &self,
-            _location: &Path,
-            _opts: GetOptions,
-        ) -> object_store::Result<GetResult> {
-            unimplemented!()
-        }
-
-        async fn get_ranges(
-            &self,
-            _location: &Path,
-            _ranges: &[Range<usize>],
-        ) -> object_store::Result<Vec<Bytes>> {
-            unimplemented!()
-        }
-
-        async fn head(&self, _location: &Path) -> object_store::Result<ObjectMeta> {
-            unimplemented!()
-        }
-
-        async fn delete(&self, _location: &Path) -> object_store::Result<()> {
-            unimplemented!()
-        }
-
-        fn list(
-            &self,
-            _prefix: Option<&Path>,
-        ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
-            unimplemented!()
-        }
-
-        async fn list_with_delimiter(
-            &self,
-            _prefix: Option<&Path>,
-        ) -> object_store::Result<ListResult> {
-            unimplemented!()
-        }
-
-        async fn copy(&self, _from: &Path, _to: &Path) -> object_store::Result<()> {
-            unimplemented!()
-        }
-
-        async fn copy_if_not_exists(
-            &self,
-            _from: &Path,
-            _to: &Path,
-        ) -> object_store::Result<()> {
-            unimplemented!()
-        }
-    }
-
-    impl VariableStream {
-        pub fn new(bytes_to_repeat: Bytes, max_iterations: usize) -> Self {
-            Self {
-                bytes_to_repeat,
-                max_iterations,
-                iterations_detected: Arc::new(Mutex::new(0)),
-            }
-        }
-
-        pub fn get_iterations_detected(&self) -> usize {
-            *self.iterations_detected.lock().unwrap()
-        }
+        let options = CsvReadOptions::default()
+            .schema_infer_max_records(2)
+            .has_header(true);
+        let df = ctx.read_csv("tests/data/corrupt.csv", options).await?;
+        let out_dir_url = "file://local/out";
+        let e = df
+            .write_parquet(out_dir_url, DataFrameWriteOptions::new(), None)
+            .await
+            .expect_err("should fail because input file does not match inferred schema");
+        assert_eq!(
+            e.strip_backtrace(),
+            "Arrow error: Parser error: Error while parsing value 'd' as type 'Int64' for column 0 at line 4. Row data: '[d,4]'"
+        );
+        Ok(())
     }
 }

@@ -19,7 +19,7 @@
 //!
 //! Coercion is performed automatically by DataFusion when the types
 //! of arguments passed to a function or needed by operators do not
-//! exacty match the types required by that function / operator. In
+//! exactly match the types required by that function / operator. In
 //! this case, DataFusion will attempt to *coerce* the arguments to
 //! types accepted by the function by inserting CAST operations.
 //!
@@ -31,10 +31,13 @@
 //! i64. However, i64 -> i32 is never performed as there are i64
 //! values which can not be represented by i32 values.
 
-pub mod aggregates;
-pub mod binary;
+pub mod aggregates {
+    pub use datafusion_expr_common::type_coercion::aggregates::*;
+}
 pub mod functions;
 pub mod other;
+
+pub use datafusion_expr_common::type_coercion::binary;
 
 use arrow::datatypes::DataType;
 /// Determine whether the given data type `dt` represents signed numeric values.
@@ -48,6 +51,8 @@ pub fn is_signed_numeric(dt: &DataType) -> bool {
             | DataType::Float16
             | DataType::Float32
             | DataType::Float64
+            | DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _),
     )
@@ -76,12 +81,21 @@ pub fn is_datetime(dt: &DataType) -> bool {
     )
 }
 
-/// Determine whether the given data type `dt` is a `Utf8` or `LargeUtf8`.
-pub fn is_utf8_or_large_utf8(dt: &DataType) -> bool {
-    matches!(dt, DataType::Utf8 | DataType::LargeUtf8)
+/// Determine whether the given data type `dt` is a `Utf8` or `Utf8View` or `LargeUtf8`.
+pub fn is_utf8_or_utf8view_or_large_utf8(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+    )
 }
 
 /// Determine whether the given data type `dt` is a `Decimal`.
 pub fn is_decimal(dt: &DataType) -> bool {
-    matches!(dt, DataType::Decimal128(_, _) | DataType::Decimal256(_, _))
+    matches!(
+        dt,
+        DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+    )
 }

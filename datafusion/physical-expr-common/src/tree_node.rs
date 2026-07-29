@@ -20,10 +20,10 @@
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
-use crate::physical_expr::{with_new_children_if_necessary, PhysicalExpr};
+use crate::physical_expr::{PhysicalExpr, with_new_children_if_necessary};
 
-use datafusion_common::tree_node::{ConcreteTreeNode, DynTreeNode};
 use datafusion_common::Result;
+use datafusion_common::tree_node::{ConcreteTreeNode, DynTreeNode};
 
 impl DynTreeNode for dyn PhysicalExpr {
     fn arc_children(&self) -> Vec<&Arc<Self>> {
@@ -62,7 +62,7 @@ impl<T> ExprContext<T> {
     }
 
     pub fn update_expr_from_children(mut self) -> Result<Self> {
-        let children_expr = self.children.iter().map(|c| c.expr.clone()).collect();
+        let children_expr = self.children.iter().map(|c| Arc::clone(&c.expr)).collect();
         self.expr = with_new_children_if_necessary(self.expr, children_expr)?;
         Ok(self)
     }

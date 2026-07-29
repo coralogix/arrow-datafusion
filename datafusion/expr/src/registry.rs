@@ -18,15 +18,23 @@
 //! FunctionRegistry trait
 
 use crate::expr_rewriter::FunctionRewrite;
+use crate::planner::ExprPlanner;
 use crate::{AggregateUDF, ScalarUDF, UserDefinedLogicalNode, WindowUDF};
-use datafusion_common::{not_impl_err, plan_datafusion_err, Result};
-use std::collections::HashMap;
-use std::{collections::HashSet, sync::Arc};
+use datafusion_common::{HashMap, Result, not_impl_err, plan_datafusion_err};
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 /// A registry knows how to build logical expressions out of user-defined function' names
 pub trait FunctionRegistry {
-    /// Set of all available udfs.
+    /// Returns names of all available scalar user defined functions.
     fn udfs(&self) -> HashSet<String>;
+
+    /// Returns names of all available aggregate user defined functions.
+    fn udafs(&self) -> HashSet<String>;
+
+    /// Returns names of all available window user defined functions.
+    fn udwfs(&self) -> HashSet<String>;
 
     /// Returns a reference to the user defined scalar function (udf) named
     /// `name`.
@@ -108,10 +116,21 @@ pub trait FunctionRegistry {
     ) -> Result<()> {
         not_impl_err!("Registering FunctionRewrite")
     }
+
+    /// Set of all registered [`ExprPlanner`]s
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>>;
+
+    /// Registers a new [`ExprPlanner`] with the registry.
+    fn register_expr_planner(
+        &mut self,
+        _expr_planner: Arc<dyn ExprPlanner>,
+    ) -> Result<()> {
+        not_impl_err!("Registering ExprPlanner")
+    }
 }
 
 /// Serializer and deserializer registry for extensions like [UserDefinedLogicalNode].
-pub trait SerializerRegistry: Send + Sync {
+pub trait SerializerRegistry: Debug + Send + Sync {
     /// Serialize this node to a byte array. This serialization should not include
     /// input plans.
     fn serialize_logical_plan(
@@ -182,5 +201,17 @@ impl FunctionRegistry for MemoryFunctionRegistry {
     }
     fn register_udwf(&mut self, udaf: Arc<WindowUDF>) -> Result<Option<Arc<WindowUDF>>> {
         Ok(self.udwfs.insert(udaf.name().into(), udaf))
+    }
+
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+        vec![]
+    }
+
+    fn udafs(&self) -> HashSet<String> {
+        self.udafs.keys().cloned().collect()
+    }
+
+    fn udwfs(&self) -> HashSet<String> {
+        self.udwfs.keys().cloned().collect()
     }
 }

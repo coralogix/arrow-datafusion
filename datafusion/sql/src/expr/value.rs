@@ -16,29 +16,41 @@
 // under the License.
 
 use crate::planner::{ContextProvider, PlannerContext, SqlToRel};
-use arrow::compute::kernels::cast_utils::parse_interval_month_day_nano;
-use arrow::datatypes::DECIMAL128_MAX_PRECISION;
-use arrow_schema::DataType;
-use datafusion_common::{
-    not_impl_err, plan_err, DFSchema, DataFusionError, Result, ScalarValue,
+use arrow::compute::kernels::cast_utils::{
+    IntervalParseConfig, IntervalUnit, parse_interval_month_day_nano_config,
 };
-use datafusion_expr::expr::{BinaryExpr, Placeholder, ScalarFunction};
-use datafusion_expr::{lit, Expr, Operator};
+use arrow::datatypes::{
+    DECIMAL128_MAX_PRECISION, DECIMAL256_MAX_PRECISION, FieldRef, i256,
+};
+use bigdecimal::num_bigint::BigInt;
+use bigdecimal::{BigDecimal, Signed, ToPrimitive};
+use datafusion_common::{
+    DFSchema, DataFusionError, Result, ScalarValue, internal_datafusion_err,
+    not_impl_err, plan_err,
+};
+use datafusion_expr::expr::{BinaryExpr, Placeholder};
+use datafusion_expr::planner::PlannerResult;
+use datafusion_expr::{Expr, Operator, lit};
 use log::debug;
-use sqlparser::ast::{BinaryOperator, Expr as SQLExpr, Interval, Value};
+use sqlparser::ast::{
+    BinaryOperator, Expr as SQLExpr, Interval, UnaryOperator, Value, ValueWithSpan,
+};
 use sqlparser::parser::ParserError::ParserError;
 use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::ops::Neg;
+use std::str::FromStr;
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
     pub(crate) fn parse_value(
         &self,
         value: Value,
-        param_data_types: &[DataType],
+        param_data_types: &[FieldRef],
     ) -> Result<Expr> {
         match value {
             Value::Number(n, _) => self.parse_sql_number(&n, false),
             Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => Ok(lit(s)),
-            Value::Null => Ok(Expr::Literal(ScalarValue::Null)),
+            Value::Null => Ok(Expr::Literal(ScalarValue::Null, None)),
             Value::Boolean(n) => Ok(lit(n)),
             Value::Placeholder(param) => {
                 Self::create_placeholder_expr(param, param_data_types)
@@ -74,14 +86,12 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             return Ok(lit(n));
         }
 
-        if !negative {
-            if let Ok(n) = unsigned_number.parse::<u64>() {
-                return Ok(lit(n));
-            }
+        if !negative && let Ok(n) = unsigned_number.parse::<u64>() {
+            return Ok(lit(n));
         }
 
         if self.options.parse_float_as_decimal {
-            parse_decimal_128(unsigned_number, negative)
+            parse_decimal(unsigned_number, negative)
         } else {
             signed_number.parse::<f64>().map(lit).map_err(|_| {
                 DataFusionError::from(ParserError(format!(
@@ -92,13 +102,13 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
     }
 
     /// Create a placeholder expression
-    /// This is the same as Postgres's prepare statement syntax in which a placeholder starts with `$` sign and then
-    /// number 1, 2, ... etc. For example, `$1` is the first placeholder; $2 is the second one and so on.
+    /// Both named (`$foo`) and positional (`$1`, `$2`, ...) placeholder styles are supported.
     fn create_placeholder_expr(
         param: String,
-        param_data_types: &[DataType],
+        param_data_types: &[FieldRef],
     ) -> Result<Expr> {
-        // Parse the placeholder as a number because it is the only support from sqlparser and postgres
+        // Try to parse the placeholder as a number. If the placeholder does not have a valid
+        // positional value, assume we have a named placeholder.
         let index = param[1..].parse::<usize>();
         let idx = match index {
             Ok(0) => {
@@ -109,22 +119,31 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             Ok(index) => index - 1,
             Err(_) => {
                 return if param_data_types.is_empty() {
-                    Ok(Expr::Placeholder(Placeholder::new(param, None)))
+                    Ok(Expr::Placeholder(Placeholder::new_with_field(param, None)))
                 } else {
-                    // when PREPARE Statement, param_data_types length is always 0
-                    plan_err!("Invalid placeholder, not a number: {param}")
+                    // FIXME: This branch is shared by params from PREPARE and CREATE FUNCTION, but
+                    // only CREATE FUNCTION currently supports named params. For now, we rewrite
+                    // these to positional params.
+                    let named_param_pos = param_data_types
+                        .iter()
+                        .position(|v| v.name() == &param[1..]);
+                    match named_param_pos {
+                        Some(pos) => Ok(Expr::Placeholder(Placeholder::new_with_field(
+                            format!("${}", pos + 1),
+                            param_data_types.get(pos).cloned(),
+                        ))),
+                        None => plan_err!("Unknown placeholder: {param}"),
+                    }
                 };
             }
         };
         // Check if the placeholder is in the parameter list
+        // FIXME: In the CREATE FUNCTION branch, param_type = None should raise an error
         let param_type = param_data_types.get(idx);
         // Data type of the parameter
-        debug!(
-            "type of param {} param_data_types[idx]: {:?}",
-            param, param_type
-        );
+        debug!("type of param {param} param_data_types[idx]: {param_type:?}");
 
-        Ok(Expr::Placeholder(Placeholder::new(
+        Ok(Expr::Placeholder(Placeholder::new_with_field(
             param,
             param_type.cloned(),
         )))
@@ -142,13 +161,27 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        if let Some(udf) = self.context_provider.get_function_meta("make_array") {
-            Ok(Expr::ScalarFunction(ScalarFunction::new_udf(udf, values)))
-        } else {
-            not_impl_err!(
-                "array_expression featrue is disable, So should implement make_array UDF by yourself"
-            )
+        self.try_plan_array_literal(values, schema)
+    }
+
+    fn try_plan_array_literal(
+        &self,
+        values: Vec<Expr>,
+        schema: &DFSchema,
+    ) -> Result<Expr> {
+        let mut exprs = values;
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_array_literal(exprs, schema)? {
+                PlannerResult::Planned(expr) => {
+                    return Ok(expr);
+                }
+                PlannerResult::Original(values) => exprs = values,
+            }
         }
+
+        not_impl_err!(
+            "Could not plan array literal. Hint: Please try with `nested_expressions` DataFusion feature enabled"
+        )
     }
 
     /// Convert a SQL interval expression to a DataFusion logical plan
@@ -157,198 +190,119 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         &self,
         negative: bool,
         interval: Interval,
-        schema: &DFSchema,
-        planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
-        if interval.leading_precision.is_some() {
-            return not_impl_err!(
-                "Unsupported Interval Expression with leading_precision {:?}",
-                interval.leading_precision
-            );
-        }
-
-        if interval.last_field.is_some() {
-            return not_impl_err!(
-                "Unsupported Interval Expression with last_field {:?}",
-                interval.last_field
-            );
-        }
-
-        if interval.fractional_seconds_precision.is_some() {
-            return not_impl_err!(
-                "Unsupported Interval Expression with fractional_seconds_precision {:?}",
-                interval.fractional_seconds_precision
-            );
-        }
-
-        // Only handle string exprs for now
-        let value = match *interval.value {
-            SQLExpr::Value(
-                Value::SingleQuotedString(s) | Value::DoubleQuotedString(s),
-            ) => {
-                if negative {
-                    format!("-{s}")
-                } else {
-                    s
-                }
-            }
-            // Support expressions like `interval '1 month' + date/timestamp`.
-            // Such expressions are parsed like this by sqlparser-rs
-            //
-            // Interval
-            //   BinaryOp
-            //     Value(StringLiteral)
-            //     Cast
-            //       Value(StringLiteral)
-            //
-            // This code rewrites them to the following:
-            //
-            // BinaryOp
-            //   Interval
-            //     Value(StringLiteral)
-            //   Cast
-            //      Value(StringLiteral)
-            SQLExpr::BinaryOp { left, op, right } => {
-                let df_op = match op {
-                    BinaryOperator::Plus => Operator::Plus,
-                    BinaryOperator::Minus => Operator::Minus,
-                    _ => {
-                        return not_impl_err!("Unsupported interval operator: {op:?}");
-                    }
-                };
-                match (
-                    interval.leading_field.as_ref(),
-                    left.as_ref(),
-                    right.as_ref(),
-                ) {
-                    (_, _, SQLExpr::Value(_)) => {
-                        let left_expr = self.sql_interval_to_expr(
-                            negative,
-                            Interval {
-                                value: left,
-                                leading_field: interval.leading_field.clone(),
-                                leading_precision: None,
-                                last_field: None,
-                                fractional_seconds_precision: None,
-                            },
-                            schema,
-                            planner_context,
-                        )?;
-                        let right_expr = self.sql_interval_to_expr(
-                            false,
-                            Interval {
-                                value: right,
-                                leading_field: interval.leading_field,
-                                leading_precision: None,
-                                last_field: None,
-                                fractional_seconds_precision: None,
-                            },
-                            schema,
-                            planner_context,
-                        )?;
-                        return Ok(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(left_expr),
-                            df_op,
-                            Box::new(right_expr),
-                        )));
-                    }
-                    // In this case, the left node is part of the interval
-                    // expr and the right node is an independent expr.
-                    //
-                    // Leading field is not supported when the right operand
-                    // is not a value.
-                    (None, _, _) => {
-                        let left_expr = self.sql_interval_to_expr(
-                            negative,
-                            Interval {
-                                value: left,
-                                leading_field: None,
-                                leading_precision: None,
-                                last_field: None,
-                                fractional_seconds_precision: None,
-                            },
-                            schema,
-                            planner_context,
-                        )?;
-                        let right_expr = self.sql_expr_to_logical_expr(
-                            *right,
-                            schema,
-                            planner_context,
-                        )?;
-                        return Ok(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(left_expr),
-                            df_op,
-                            Box::new(right_expr),
-                        )));
-                    }
-                    _ => {
-                        let value = SQLExpr::BinaryOp { left, op, right };
-                        return not_impl_err!(
-                            "Unsupported interval argument. Expected string literal, got: {value:?}"
-                        );
-                    }
-                }
-            }
-            _ => {
-                return not_impl_err!(
-                    "Unsupported interval argument. Expected string literal, got: {:?}",
-                    interval.value
-                );
-            }
-        };
-
-        let value = if has_units(&value) {
-            // If the interval already contains a unit
-            // `INTERVAL '5 month' rather than `INTERVAL '5' month`
-            // skip the other unit
-            value
-        } else {
-            // leading_field really means the unit if specified
-            // for example, "month" in  `INTERVAL '5' month`
-            match interval.leading_field.as_ref() {
-                Some(leading_field) => {
-                    format!("{value} {leading_field}")
-                }
-                None => {
-                    // default to seconds for the units
-                    // `INTERVAL '5' is parsed as '5 seconds'
-                    format!("{value} seconds")
-                }
-            }
-        };
-
-        let val = parse_interval_month_day_nano(&value)?;
-        Ok(lit(ScalarValue::IntervalMonthDayNano(Some(val))))
+        sql_interval_to_expr_impl(negative, interval)
     }
 }
 
-// TODO make interval parsing better in arrow-rs / expose `IntervalType`
-fn has_units(val: &str) -> bool {
-    let val = val.to_lowercase();
-    val.ends_with("century")
-        || val.ends_with("centuries")
-        || val.ends_with("decade")
-        || val.ends_with("decades")
-        || val.ends_with("year")
-        || val.ends_with("years")
-        || val.ends_with("month")
-        || val.ends_with("months")
-        || val.ends_with("week")
-        || val.ends_with("weeks")
-        || val.ends_with("day")
-        || val.ends_with("days")
-        || val.ends_with("hour")
-        || val.ends_with("hours")
-        || val.ends_with("minute")
-        || val.ends_with("minutes")
-        || val.ends_with("second")
-        || val.ends_with("seconds")
-        || val.ends_with("millisecond")
-        || val.ends_with("milliseconds")
-        || val.ends_with("microsecond")
-        || val.ends_with("microseconds")
-        || val.ends_with("nanosecond")
-        || val.ends_with("nanoseconds")
+fn sql_interval_to_expr_impl(negative: bool, interval: Interval) -> Result<Expr> {
+    if interval.leading_precision.is_some() {
+        return not_impl_err!(
+            "Unsupported Interval Expression with leading_precision {:?}",
+            interval.leading_precision
+        );
+    }
+
+    if interval.last_field.is_some() {
+        return not_impl_err!(
+            "Unsupported Interval Expression with last_field {:?}",
+            interval.last_field
+        );
+    }
+
+    if interval.fractional_seconds_precision.is_some() {
+        return not_impl_err!(
+            "Unsupported Interval Expression with fractional_seconds_precision {:?}",
+            interval.fractional_seconds_precision
+        );
+    }
+
+    if let SQLExpr::BinaryOp { left, op, right } = *interval.value {
+        let df_op = match op {
+            BinaryOperator::Plus => Operator::Plus,
+            BinaryOperator::Minus => Operator::Minus,
+            _ => {
+                return not_impl_err!("Unsupported interval operator: {op:?}");
+            }
+        };
+        let left_expr = sql_interval_to_expr_impl(
+            negative,
+            Interval {
+                value: left,
+                leading_field: interval.leading_field.clone(),
+                leading_precision: None,
+                last_field: None,
+                fractional_seconds_precision: None,
+            },
+        )?;
+        let right_expr = sql_interval_to_expr_impl(
+            false,
+            Interval {
+                value: right,
+                leading_field: interval.leading_field,
+                leading_precision: None,
+                last_field: None,
+                fractional_seconds_precision: None,
+            },
+        )?;
+        return Ok(Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(left_expr),
+            df_op,
+            Box::new(right_expr),
+        )));
+    }
+
+    let value = interval_literal(*interval.value, negative)?;
+
+    // leading_field really means the unit if specified
+    // For example, "month" in  `INTERVAL '5' month`
+    let value = match interval.leading_field.as_ref() {
+        Some(leading_field) => format!("{value} {leading_field}"),
+        None => value,
+    };
+
+    let config = IntervalParseConfig::new(IntervalUnit::Second);
+    let val = parse_interval_month_day_nano_config(&value, config)?;
+    Ok(lit(ScalarValue::IntervalMonthDayNano(Some(val))))
+}
+
+fn interval_literal(interval_value: SQLExpr, negative: bool) -> Result<String> {
+    let s = match interval_value {
+        SQLExpr::Value(ValueWithSpan {
+            value: Value::SingleQuotedString(s) | Value::DoubleQuotedString(s),
+            span: _,
+        }) => s,
+        SQLExpr::Value(ValueWithSpan {
+            value: Value::Number(ref v, long),
+            span: _,
+        }) => {
+            if long {
+                return not_impl_err!(
+                    "Unsupported interval argument. Long number not supported: {interval_value:?}"
+                );
+            } else {
+                v.to_string()
+            }
+        }
+        SQLExpr::UnaryOp { op, expr } => {
+            let negative = match op {
+                UnaryOperator::Minus => !negative,
+                UnaryOperator::Plus => negative,
+                _ => {
+                    return not_impl_err!(
+                        "Unsupported SQL unary operator in interval {op:?}"
+                    );
+                }
+            };
+            interval_literal(*expr, negative)?
+        }
+        _ => {
+            return not_impl_err!(
+                "Unsupported interval argument. Expected string literal or number, got: {interval_value:?}"
+            );
+        }
+    };
+    if negative { Ok(format!("-{s}")) } else { Ok(s) }
 }
 
 /// Try to decode bytes from hex literal string.
@@ -357,7 +311,7 @@ fn has_units(val: &str) -> bool {
 fn try_decode_hex_literal(s: &str) -> Option<Vec<u8>> {
     let hex_bytes = s.as_bytes();
 
-    let mut decoded_bytes = Vec::with_capacity((hex_bytes.len() + 1) / 2);
+    let mut decoded_bytes = Vec::with_capacity(hex_bytes.len().div_ceil(2));
 
     let start_idx = hex_bytes.len() % 2;
     if start_idx > 0 {
@@ -368,7 +322,7 @@ fn try_decode_hex_literal(s: &str) -> Option<Vec<u8>> {
     for i in (start_idx..hex_bytes.len()).step_by(2) {
         let high = try_decode_hex_char(hex_bytes[i])?;
         let low = try_decode_hex_char(hex_bytes[i + 1])?;
-        decoded_bytes.push(high << 4 | low);
+        decoded_bytes.push((high << 4) | low);
     }
 
     Some(decoded_bytes)
@@ -386,45 +340,82 @@ const fn try_decode_hex_char(c: u8) -> Option<u8> {
     }
 }
 
-/// Parse Decimal128 from a string
-///
-/// TODO: support parsing from scientific notation
-fn parse_decimal_128(unsigned_number: &str, negative: bool) -> Result<Expr> {
-    // remove leading zeroes
-    let trimmed = unsigned_number.trim_start_matches('0');
-    // parse precision and scale, remove decimal point if exists
-    let (precision, scale, replaced_str) = if trimmed == "." {
-        // special cases for numbers such as “0.”, “000.”, and so on.
-        (1, 0, Cow::Borrowed("0"))
-    } else if let Some(i) = trimmed.find('.') {
-        (
-            trimmed.len() - 1,
-            trimmed.len() - i - 1,
-            Cow::Owned(trimmed.replace('.', "")),
-        )
-    } else {
-        // no decimal point, keep as is
-        (trimmed.len(), 0, Cow::Borrowed(trimmed))
-    };
+/// Returns None if the value can't be converted to i256.
+/// Modified from <https://github.com/apache/arrow-rs/blob/c4dbf0d8af6ca5a19b8b2ea777da3c276807fc5e/arrow-buffer/src/bigint/mod.rs#L303>
+fn bigint_to_i256(v: &BigInt) -> Option<i256> {
+    let v_bytes = v.to_signed_bytes_le();
+    match v_bytes.len().cmp(&32) {
+        Ordering::Less => {
+            let mut bytes = if v.is_negative() {
+                [255_u8; 32]
+            } else {
+                [0; 32]
+            };
+            bytes[0..v_bytes.len()].copy_from_slice(&v_bytes[..v_bytes.len()]);
+            Some(i256::from_le_bytes(bytes))
+        }
+        Ordering::Equal => Some(i256::from_le_bytes(v_bytes.try_into().unwrap())),
+        Ordering::Greater => None,
+    }
+}
 
-    let number = replaced_str.parse::<i128>().map_err(|e| {
+fn parse_decimal(unsigned_number: &str, negative: bool) -> Result<Expr> {
+    let mut dec = BigDecimal::from_str(unsigned_number).map_err(|e| {
         DataFusionError::from(ParserError(format!(
-            "Cannot parse {replaced_str} as i128 when building decimal: {e}"
+            "Cannot parse {unsigned_number} as BigDecimal: {e}"
         )))
     })?;
-
-    // check precision overflow
-    if precision as u8 > DECIMAL128_MAX_PRECISION {
-        return Err(DataFusionError::from(ParserError(format!(
-            "Cannot parse {replaced_str} as i128 when building decimal: precision overflow"
-        ))));
+    if negative {
+        dec = dec.neg();
     }
 
-    Ok(Expr::Literal(ScalarValue::Decimal128(
-        Some(if negative { -number } else { number }),
-        precision as u8,
-        scale as i8,
-    )))
+    let digits = dec.digits();
+    let (int_val, scale) = dec.into_bigint_and_exponent();
+    if scale < i8::MIN as i64 {
+        return not_impl_err!(
+            "Decimal scale {} exceeds the minimum supported scale: {}",
+            scale,
+            i8::MIN
+        );
+    }
+    let precision = if scale > 0 {
+        // arrow-rs requires the precision to include the positive scale.
+        // See <https://github.com/apache/arrow-rs/blob/123045cc766d42d1eb06ee8bb3f09e39ea995ddc/arrow-array/src/types.rs#L1230>
+        std::cmp::max(digits, scale.unsigned_abs())
+    } else {
+        digits
+    };
+    if precision <= DECIMAL128_MAX_PRECISION as u64 {
+        let val = int_val.to_i128().ok_or_else(|| {
+            // Failures are unexpected here as we have already checked the precision
+            internal_datafusion_err!(
+                "Unexpected overflow when converting {} to i128",
+                int_val
+            )
+        })?;
+        Ok(Expr::Literal(
+            ScalarValue::Decimal128(Some(val), precision as u8, scale as i8),
+            None,
+        ))
+    } else if precision <= DECIMAL256_MAX_PRECISION as u64 {
+        let val = bigint_to_i256(&int_val).ok_or_else(|| {
+            // Failures are unexpected here as we have already checked the precision
+            internal_datafusion_err!(
+                "Unexpected overflow when converting {} to i256",
+                int_val
+            )
+        })?;
+        Ok(Expr::Literal(
+            ScalarValue::Decimal256(Some(val), precision as u8, scale as i8),
+            None,
+        ))
+    } else {
+        not_impl_err!(
+            "Decimal precision {} exceeds the maximum supported precision: {}",
+            precision,
+            DECIMAL256_MAX_PRECISION
+        )
+    }
 }
 
 #[cfg(test)]
@@ -449,5 +440,81 @@ mod tests {
             let output = try_decode_hex_literal(input);
             assert_eq!(output, expect);
         }
+    }
+
+    #[test]
+    fn test_bigint_to_i256() {
+        let cases = [
+            (BigInt::from(0), Some(i256::from(0))),
+            (BigInt::from(1), Some(i256::from(1))),
+            (BigInt::from(-1), Some(i256::from(-1))),
+            (
+                BigInt::from_str(i256::MAX.to_string().as_str()).unwrap(),
+                Some(i256::MAX),
+            ),
+            (
+                BigInt::from_str(i256::MIN.to_string().as_str()).unwrap(),
+                Some(i256::MIN),
+            ),
+            (
+                // Can't fit into i256
+                BigInt::from_str((i256::MAX.to_string() + "1").as_str()).unwrap(),
+                None,
+            ),
+        ];
+
+        for (input, expect) in cases {
+            let output = bigint_to_i256(&input);
+            assert_eq!(output, expect);
+        }
+    }
+
+    #[test]
+    fn test_parse_decimal() {
+        // Supported cases
+        let cases = [
+            ("0", ScalarValue::Decimal128(Some(0), 1, 0)),
+            ("1", ScalarValue::Decimal128(Some(1), 1, 0)),
+            ("123.45", ScalarValue::Decimal128(Some(12345), 5, 2)),
+            // Digit count is less than scale
+            ("0.001", ScalarValue::Decimal128(Some(1), 3, 3)),
+            // Scientific notation
+            ("123.456e-2", ScalarValue::Decimal128(Some(123456), 6, 5)),
+            // Negative scale
+            ("123456e128", ScalarValue::Decimal128(Some(123456), 6, -128)),
+            // Decimal256
+            (
+                &("9".repeat(39) + "." + "99999"),
+                ScalarValue::Decimal256(
+                    Some(i256::from_string(&"9".repeat(44)).unwrap()),
+                    44,
+                    5,
+                ),
+            ),
+        ];
+        for (input, expect) in cases {
+            let output = parse_decimal(input, true).unwrap();
+            assert_eq!(
+                output,
+                Expr::Literal(expect.arithmetic_negate().unwrap(), None)
+            );
+
+            let output = parse_decimal(input, false).unwrap();
+            assert_eq!(output, Expr::Literal(expect, None));
+        }
+
+        // scale < i8::MIN
+        assert_eq!(
+            parse_decimal("1e129", false).unwrap_err().strip_backtrace(),
+            "This feature is not implemented: Decimal scale -129 exceeds the minimum supported scale: -128"
+        );
+
+        // Unsupported precision
+        assert_eq!(
+            parse_decimal(&"1".repeat(77), false)
+                .unwrap_err()
+                .strip_backtrace(),
+            "This feature is not implemented: Decimal precision 77 exceeds the maximum supported precision: 76"
+        );
     }
 }

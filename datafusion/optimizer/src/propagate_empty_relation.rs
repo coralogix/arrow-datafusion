@@ -19,10 +19,9 @@
 
 use std::sync::Arc;
 
-use datafusion_common::tree_node::Transformed;
 use datafusion_common::JoinType;
-use datafusion_common::{internal_err, plan_err, Result};
-use datafusion_expr::logical_plan::tree_node::unwrap_arc;
+use datafusion_common::tree_node::Transformed;
+use datafusion_common::{Result, plan_err};
 use datafusion_expr::logical_plan::LogicalPlan;
 use datafusion_expr::{EmptyRelation, Projection, Union};
 
@@ -30,25 +29,17 @@ use crate::optimizer::ApplyOrder;
 use crate::{OptimizerConfig, OptimizerRule};
 
 /// Optimization rule that bottom-up to eliminate plan by propagating empty_relation.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PropagateEmptyRelation;
 
 impl PropagateEmptyRelation {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new() -> Self {
         Self {}
     }
 }
 
 impl OptimizerRule for PropagateEmptyRelation {
-    fn try_optimize(
-        &self,
-        _plan: &LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> Result<Option<LogicalPlan>> {
-        internal_err!("Should have called PropagateEmptyRelation::rewrite")
-    }
-
     fn name(&self) -> &str {
         "propagate_empty_relation"
     }
@@ -81,24 +72,8 @@ impl OptimizerRule for PropagateEmptyRelation {
                 }
                 Ok(Transformed::no(plan))
             }
-            LogicalPlan::CrossJoin(ref join) => {
-                let (left_empty, right_empty) = binary_plan_children_is_empty(&plan)?;
-                if left_empty || right_empty {
-                    return Ok(Transformed::yes(LogicalPlan::EmptyRelation(
-                        EmptyRelation {
-                            produce_one_row: false,
-                            schema: plan.schema().clone(),
-                        },
-                    )));
-                }
-                Ok(Transformed::no(LogicalPlan::CrossJoin(join.clone())))
-            }
-
             LogicalPlan::Join(ref join) => {
                 // TODO: For Join, more join type need to be careful:
-                // For LeftAnti Join, if the right side is empty, the Join result is left side(should exclude null ??).
-                // For RightAnti Join, if the left side is empty, the Join result is right side(should exclude null ??).
-                // For Full Join, only both sides are empty, the Join result is empty.
                 // For LeftOut/Full Join, if the right side is empty, the Join can be eliminated with a Projection with left side
                 // columns + right side columns replaced with null values.
                 // For RightOut/Full Join, if the left side is empty, the Join can be eliminated with a Projection with right side
@@ -106,56 +81,69 @@ impl OptimizerRule for PropagateEmptyRelation {
                 let (left_empty, right_empty) = binary_plan_children_is_empty(&plan)?;
 
                 match join.join_type {
+                    // For Full Join, only both sides are empty, the Join result is empty.
+                    JoinType::Full if left_empty && right_empty => Ok(Transformed::yes(
+                        LogicalPlan::EmptyRelation(EmptyRelation {
+                            produce_one_row: false,
+                            schema: Arc::clone(&join.schema),
+                        }),
+                    )),
                     JoinType::Inner if left_empty || right_empty => Ok(Transformed::yes(
                         LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         }),
                     )),
                     JoinType::Left if left_empty => Ok(Transformed::yes(
                         LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         }),
                     )),
                     JoinType::Right if right_empty => Ok(Transformed::yes(
                         LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         }),
                     )),
                     JoinType::LeftSemi if left_empty || right_empty => Ok(
                         Transformed::yes(LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         })),
                     ),
                     JoinType::RightSemi if left_empty || right_empty => Ok(
                         Transformed::yes(LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         })),
                     ),
                     JoinType::LeftAnti if left_empty => Ok(Transformed::yes(
                         LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         }),
                     )),
+                    JoinType::LeftAnti if right_empty => {
+                        Ok(Transformed::yes((*join.left).clone()))
+                    }
+                    JoinType::RightAnti if left_empty => {
+                        Ok(Transformed::yes((*join.right).clone()))
+                    }
                     JoinType::RightAnti if right_empty => Ok(Transformed::yes(
                         LogicalPlan::EmptyRelation(EmptyRelation {
                             produce_one_row: false,
-                            schema: join.schema.clone(),
+                            schema: Arc::clone(&join.schema),
                         }),
                     )),
-                    _ => Ok(Transformed::no(LogicalPlan::Join(join.clone()))),
+                    _ => Ok(Transformed::no(plan)),
                 }
             }
             LogicalPlan::Aggregate(ref agg) => {
-                if !agg.group_expr.is_empty() {
-                    if let Some(empty_plan) = empty_child(&plan)? {
-                        return Ok(Transformed::yes(empty_plan));
-                    }
+                if !agg.group_expr.is_empty()
+                    && let Some(empty_plan) = empty_child(&plan)?
+                {
+                    return Ok(Transformed::yes(empty_plan));
                 }
                 Ok(Transformed::no(LogicalPlan::Aggregate(agg.clone())))
             }
@@ -176,25 +164,27 @@ impl OptimizerRule for PropagateEmptyRelation {
                     Ok(Transformed::yes(LogicalPlan::EmptyRelation(
                         EmptyRelation {
                             produce_one_row: false,
-                            schema: plan.schema().clone(),
+                            schema: Arc::clone(plan.schema()),
                         },
                     )))
                 } else if new_inputs.len() == 1 {
-                    let child = unwrap_arc(new_inputs[0].clone());
+                    let mut new_inputs = new_inputs;
+                    let input_plan = new_inputs.pop().unwrap(); // length checked
+                    let child = Arc::unwrap_or_clone(input_plan);
                     if child.schema().eq(plan.schema()) {
                         Ok(Transformed::yes(child))
                     } else {
                         Ok(Transformed::yes(LogicalPlan::Projection(
                             Projection::new_from_schema(
                                 Arc::new(child),
-                                plan.schema().clone(),
+                                Arc::clone(plan.schema()),
                             ),
                         )))
                     }
                 } else {
                     Ok(Transformed::yes(LogicalPlan::Union(Union {
                         inputs: new_inputs,
-                        schema: union.schema.clone(),
+                        schema: Arc::clone(&union.schema),
                     })))
                 }
             }
@@ -228,7 +218,7 @@ fn empty_child(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
                 if !empty.produce_one_row {
                     Ok(Some(LogicalPlan::EmptyRelation(EmptyRelation {
                         produce_one_row: false,
-                        schema: plan.schema().clone(),
+                        schema: Arc::clone(plan.schema()),
                     })))
                 } else {
                     Ok(None)
@@ -246,23 +236,37 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
 
-    use datafusion_common::{Column, DFSchema, JoinType, ScalarValue};
+    use datafusion_common::{Column, DFSchema, JoinType};
     use datafusion_expr::logical_plan::table_scan;
     use datafusion_expr::{
-        binary_expr, col, lit, logical_plan::builder::LogicalPlanBuilder, Expr, Operator,
+        Operator, binary_expr, col, lit, logical_plan::builder::LogicalPlanBuilder,
     };
 
+    use crate::OptimizerContext;
+    use crate::assert_optimized_plan_eq_snapshot;
     use crate::eliminate_filter::EliminateFilter;
-    use crate::eliminate_nested_union::EliminateNestedUnion;
+    use crate::optimize_unions::OptimizeUnions;
     use crate::test::{
-        assert_optimized_plan_eq, assert_optimized_plan_with_rules, test_table_scan,
-        test_table_scan_fields, test_table_scan_with_name,
+        assert_optimized_plan_with_rules, test_table_scan, test_table_scan_fields,
+        test_table_scan_with_name,
     };
 
     use super::*;
 
-    fn assert_eq(plan: LogicalPlan, expected: &str) -> Result<()> {
-        assert_optimized_plan_eq(Arc::new(PropagateEmptyRelation::new()), plan, expected)
+    macro_rules! assert_optimized_plan_equal {
+        (
+            $plan:expr,
+            @ $expected:literal $(,)?
+        ) => {{
+            let optimizer_ctx = OptimizerContext::new().with_max_passes(1);
+            let rules: Vec<Arc<dyn crate::OptimizerRule + Send + Sync>> = vec![Arc::new(PropagateEmptyRelation::new())];
+            assert_optimized_plan_eq_snapshot!(
+                optimizer_ctx,
+                rules,
+                $plan,
+                @ $expected,
+            )
+        }};
     }
 
     fn assert_together_optimized_plan(
@@ -273,7 +277,7 @@ mod tests {
         assert_optimized_plan_with_rules(
             vec![
                 Arc::new(EliminateFilter::new()),
-                Arc::new(EliminateNestedUnion::new()),
+                Arc::new(OptimizeUnions::new()),
                 Arc::new(PropagateEmptyRelation::new()),
             ],
             plan,
@@ -285,13 +289,12 @@ mod tests {
     #[test]
     fn propagate_empty() -> Result<()> {
         let plan = LogicalPlanBuilder::empty(false)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(true))))?
+            .filter(lit(true))?
             .limit(10, None)?
             .project(vec![binary_expr(lit(1), Operator::Plus, lit(1))])?
             .build()?;
 
-        let expected = "EmptyRelation";
-        assert_eq(plan, expected)
+        assert_optimized_plan_equal!(plan, @"EmptyRelation: rows=0")
     }
 
     #[test]
@@ -301,7 +304,7 @@ mod tests {
         let right_table_scan = test_table_scan_with_name("test2")?;
         let right = LogicalPlanBuilder::from(right_table_scan)
             .project(vec![col("a")])?
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
 
         let plan = LogicalPlanBuilder::from(left)
@@ -313,7 +316,7 @@ mod tests {
             .filter(col("a").lt_eq(lit(1i64)))?
             .build()?;
 
-        let expected = "EmptyRelation";
+        let expected = "EmptyRelation: rows=0";
         assert_together_optimized_plan(plan, expected, true)
     }
 
@@ -321,12 +324,12 @@ mod tests {
     fn propagate_union_empty() -> Result<()> {
         let left = LogicalPlanBuilder::from(test_table_scan()?).build()?;
         let right = LogicalPlanBuilder::from(test_table_scan_with_name("test2")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
 
         let plan = LogicalPlanBuilder::from(left).union(right)?.build()?;
 
-        let expected = "TableScan: test";
+        let expected = "Projection: a, b, c\n  TableScan: test";
         assert_together_optimized_plan(plan, expected, true)
     }
 
@@ -335,10 +338,10 @@ mod tests {
         let one =
             LogicalPlanBuilder::from(test_table_scan_with_name("test1")?).build()?;
         let two = LogicalPlanBuilder::from(test_table_scan_with_name("test2")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
         let three = LogicalPlanBuilder::from(test_table_scan_with_name("test3")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
         let four =
             LogicalPlanBuilder::from(test_table_scan_with_name("test4")?).build()?;
@@ -358,16 +361,16 @@ mod tests {
     #[test]
     fn propagate_union_all_empty() -> Result<()> {
         let one = LogicalPlanBuilder::from(test_table_scan_with_name("test1")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
         let two = LogicalPlanBuilder::from(test_table_scan_with_name("test2")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
         let three = LogicalPlanBuilder::from(test_table_scan_with_name("test3")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
         let four = LogicalPlanBuilder::from(test_table_scan_with_name("test4")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
 
         let plan = LogicalPlanBuilder::from(one)
@@ -376,7 +379,7 @@ mod tests {
             .union(four)?
             .build()?;
 
-        let expected = "EmptyRelation";
+        let expected = "EmptyRelation: rows=0";
         assert_together_optimized_plan(plan, expected, true)
     }
 
@@ -385,7 +388,7 @@ mod tests {
         let one_schema = Schema::new(vec![Field::new("t1a", DataType::UInt32, false)]);
         let t1_scan = table_scan(Some("test1"), &one_schema, None)?.build()?;
         let one = LogicalPlanBuilder::from(t1_scan)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
 
         let two_schema = Schema::new(vec![Field::new("t2a", DataType::UInt32, false)]);
@@ -411,12 +414,12 @@ mod tests {
     fn propagate_union_alias() -> Result<()> {
         let left = LogicalPlanBuilder::from(test_table_scan()?).build()?;
         let right = LogicalPlanBuilder::from(test_table_scan_with_name("test2")?)
-            .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+            .filter(lit(false))?
             .build()?;
 
         let plan = LogicalPlanBuilder::from(left).union(right)?.build()?;
 
-        let expected = "TableScan: test";
+        let expected = "Projection: a, b, c\n  TableScan: test";
         assert_together_optimized_plan(plan, expected, true)
     }
 
@@ -431,7 +434,7 @@ mod tests {
             .filter(col("a").lt_eq(lit(1i64)))?
             .build()?;
 
-        let expected = "EmptyRelation";
+        let expected = "EmptyRelation: rows=0";
         assert_together_optimized_plan(plan, expected, true)
     }
 
@@ -445,7 +448,7 @@ mod tests {
             let left_table_scan = test_table_scan()?;
 
             LogicalPlanBuilder::from(left_table_scan)
-                .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+                .filter(lit(false))?
                 .build()
         } else {
             let scan = test_table_scan_with_name("left").unwrap();
@@ -456,7 +459,7 @@ mod tests {
             let right_table_scan = test_table_scan_with_name("right")?;
 
             LogicalPlanBuilder::from(right_table_scan)
-                .filter(Expr::Literal(ScalarValue::Boolean(Some(false))))?
+                .filter(lit(false))?
                 .build()
         } else {
             let scan = test_table_scan_with_name("right").unwrap();
@@ -471,12 +474,43 @@ mod tests {
             )?
             .build()?;
 
-        let expected = "EmptyRelation";
+        let expected = "EmptyRelation: rows=0";
         assert_together_optimized_plan(plan, expected, eq)
+    }
+
+    // TODO: fix this long name
+    fn assert_anti_join_empty_join_table_is_base_table(
+        anti_left_join: bool,
+    ) -> Result<()> {
+        // if we have an anti join with an empty join table, then the result is the base_table
+        let (left, right, join_type, expected) = if anti_left_join {
+            let left = test_table_scan()?;
+            let right = LogicalPlanBuilder::from(test_table_scan()?)
+                .filter(lit(false))?
+                .build()?;
+            let expected = left.display_indent().to_string();
+            (left, right, JoinType::LeftAnti, expected)
+        } else {
+            let right = test_table_scan()?;
+            let left = LogicalPlanBuilder::from(test_table_scan()?)
+                .filter(lit(false))?
+                .build()?;
+            let expected = right.display_indent().to_string();
+            (left, right, JoinType::RightAnti, expected)
+        };
+
+        let plan = LogicalPlanBuilder::from(left)
+            .join_using(right, join_type, vec![Column::from_name("a".to_string())])?
+            .build()?;
+
+        assert_together_optimized_plan(plan, &expected, true)
     }
 
     #[test]
     fn test_join_empty_propagation_rules() -> Result<()> {
+        // test full join with empty left and empty right
+        assert_empty_left_empty_right_lp(true, true, JoinType::Full, true)?;
+
         // test left join with empty left
         assert_empty_left_empty_right_lp(true, false, JoinType::Left, true)?;
 
@@ -499,7 +533,13 @@ mod tests {
         assert_empty_left_empty_right_lp(true, false, JoinType::LeftAnti, true)?;
 
         // test right anti join empty right
-        assert_empty_left_empty_right_lp(false, true, JoinType::RightAnti, true)
+        assert_empty_left_empty_right_lp(false, true, JoinType::RightAnti, true)?;
+
+        // test left anti join empty right
+        assert_anti_join_empty_join_table_is_base_table(true)?;
+
+        // test right anti join empty left
+        assert_anti_join_empty_join_table_is_base_table(false)
     }
 
     #[test]
@@ -539,7 +579,7 @@ mod tests {
 
         let empty = LogicalPlan::EmptyRelation(EmptyRelation {
             produce_one_row: false,
-            schema: Arc::new(DFSchema::from_unqualifed_fields(
+            schema: Arc::new(DFSchema::from_unqualified_fields(
                 fields.into(),
                 Default::default(),
             )?),

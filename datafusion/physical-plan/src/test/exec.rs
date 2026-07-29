@@ -17,6 +17,16 @@
 
 //! Simple iterator over batches for use in testing
 
+use crate::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    RecordBatchStream, SendableRecordBatchStream, Statistics, common,
+    execution_plan::Boundedness,
+};
+use crate::{
+    execution_plan::EmissionType,
+    stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter},
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     any::Any,
     pin::Pin,
@@ -24,15 +34,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter};
-use crate::{
-    common, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
-    PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
-};
-
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use datafusion_common::{internal_err, DataFusionError, Result};
+use datafusion_common::{DataFusionError, Result, internal_err};
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::EquivalenceProperties;
 
@@ -133,7 +137,7 @@ impl MockExec {
     /// ensure any poll loops are correct. This behavior can be
     /// changed with `with_use_task`
     pub fn new(data: Vec<Result<RecordBatch>>, schema: SchemaRef) -> Self {
-        let cache = Self::compute_properties(schema.clone());
+        let cache = Self::compute_properties(Arc::clone(&schema));
         Self {
             data,
             schema,
@@ -152,12 +156,11 @@ impl MockExec {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -172,11 +175,19 @@ impl DisplayAs for MockExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "MockExec")
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for MockExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -244,6 +255,13 @@ impl ExecutionPlan for MockExec {
 
     // Panics if one of the batches is an error
     fn statistics(&self) -> Result<Statistics> {
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if partition.is_some() {
+            return Ok(Statistics::new_unknown(&self.schema));
+        }
         let data: Result<Vec<_>> = self
             .data
             .iter()
@@ -273,7 +291,6 @@ fn clone_error(e: &DataFusionError) -> DataFusionError {
 
 /// A Mock ExecutionPlan that does not start producing input until a
 /// barrier is called
-///
 #[derive(Debug)]
 pub struct BarrierExec {
     /// partitions to send back
@@ -281,29 +298,91 @@ pub struct BarrierExec {
     schema: SchemaRef,
 
     /// all streams wait on this barrier to produce
-    barrier: Arc<Barrier>,
+    start_data_barrier: Option<Arc<Barrier>>,
+
+    /// the stream wait for this to return Poll::Ready(None)
+    finish_barrier: Option<Arc<(Barrier, AtomicUsize)>>,
+
     cache: PlanProperties,
+
+    log: bool,
 }
 
 impl BarrierExec {
     /// Create a new exec with some number of partitions.
     pub fn new(data: Vec<Vec<RecordBatch>>, schema: SchemaRef) -> Self {
         // wait for all streams and the input
-        let barrier = Arc::new(Barrier::new(data.len() + 1));
-        let cache = Self::compute_properties(schema.clone(), &data);
+        let barrier = Some(Arc::new(Barrier::new(data.len() + 1)));
+        let cache = Self::compute_properties(Arc::clone(&schema), &data);
         Self {
             data,
             schema,
-            barrier,
+            start_data_barrier: barrier,
             cache,
+            finish_barrier: None,
+            log: true,
         }
+    }
+
+    pub fn with_log(mut self, log: bool) -> Self {
+        self.log = log;
+        self
+    }
+
+    pub fn without_start_barrier(mut self) -> Self {
+        self.start_data_barrier = None;
+        self
+    }
+
+    pub fn with_finish_barrier(mut self) -> Self {
+        let barrier = Arc::new((
+            // wait for all streams and the input
+            Barrier::new(self.data.len() + 1),
+            AtomicUsize::new(0),
+        ));
+
+        self.finish_barrier = Some(barrier);
+        self
     }
 
     /// wait until all the input streams and this function is ready
     pub async fn wait(&self) {
-        println!("BarrierExec::wait waiting on barrier");
-        self.barrier.wait().await;
-        println!("BarrierExec::wait done waiting");
+        let barrier = &self
+            .start_data_barrier
+            .as_ref()
+            .expect("Must only be called when having a start barrier");
+        if self.log {
+            println!("BarrierExec::wait waiting on barrier");
+        }
+        barrier.wait().await;
+        if self.log {
+            println!("BarrierExec::wait done waiting");
+        }
+    }
+
+    pub async fn wait_finish(&self) {
+        let (barrier, _) = &self
+            .finish_barrier
+            .as_deref()
+            .expect("Must only be called when having a finish barrier");
+
+        if self.log {
+            println!("BarrierExec::wait_finish waiting on barrier");
+        }
+        barrier.wait().await;
+        if self.log {
+            println!("BarrierExec::wait_finish done waiting");
+        }
+    }
+
+    /// Return true if the finish barrier has been reached in all partitions
+    pub fn is_finish_barrier_reached(&self) -> bool {
+        let (_, reached_finish) = self
+            .finish_barrier
+            .as_deref()
+            .expect("Must only be called when having finish barrier");
+
+        reached_finish.load(Ordering::Relaxed) == self.data.len()
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
@@ -311,11 +390,11 @@ impl BarrierExec {
         schema: SchemaRef,
         data: &[Vec<RecordBatch>],
     ) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(data.len()),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -330,11 +409,19 @@ impl DisplayAs for BarrierExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "BarrierExec")
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for BarrierExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -366,16 +453,31 @@ impl ExecutionPlan for BarrierExec {
 
         // task simply sends data in order after barrier is reached
         let data = self.data[partition].clone();
-        let b = self.barrier.clone();
+        let start_barrier = self.start_data_barrier.as_ref().map(Arc::clone);
+        let finish_barrier = self.finish_barrier.as_ref().map(Arc::clone);
+        let log = self.log;
         let tx = builder.tx();
         builder.spawn(async move {
-            println!("Partition {partition} waiting on barrier");
-            b.wait().await;
+            if let Some(barrier) = start_barrier {
+                if log {
+                    println!("Partition {partition} waiting on barrier");
+                }
+                barrier.wait().await;
+            }
             for batch in data {
-                println!("Partition {partition} sending batch");
+                if log {
+                    println!("Partition {partition} sending batch");
+                }
                 if let Err(e) = tx.send(Ok(batch)).await {
                     println!("ERROR batch via barrier stream stream: {e}");
                 }
+            }
+            if let Some((barrier, reached_finish)) = finish_barrier.as_deref() {
+                if log {
+                    println!("Partition {partition} waiting on finish barrier");
+                }
+                reached_finish.fetch_add(1, Ordering::Relaxed);
+                barrier.wait().await;
             }
 
             Ok(())
@@ -386,6 +488,13 @@ impl ExecutionPlan for BarrierExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if partition.is_some() {
+            return Ok(Statistics::new_unknown(&self.schema));
+        }
         Ok(common::compute_record_batch_statistics(
             &self.data,
             &self.schema,
@@ -413,18 +522,17 @@ impl ErrorExec {
             DataType::Int64,
             true,
         )]));
-        let cache = Self::compute_properties(schema.clone());
+        let cache = Self::compute_properties(schema);
         Self { cache }
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -439,11 +547,19 @@ impl DisplayAs for ErrorExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ErrorExec")
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for ErrorExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -483,8 +599,8 @@ pub struct StatisticsExec {
 impl StatisticsExec {
     pub fn new(stats: Statistics, schema: Schema) -> Self {
         assert_eq!(
-            stats
-                .column_statistics.len(), schema.fields().len(),
+            stats.column_statistics.len(),
+            schema.fields().len(),
             "if defined, the column statistics vector length should be the number of fields"
         );
         let cache = Self::compute_properties(Arc::new(schema.clone()));
@@ -497,12 +613,11 @@ impl StatisticsExec {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(2),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -522,11 +637,19 @@ impl DisplayAs for StatisticsExec {
                     self.stats.num_rows,
                 )
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for StatisticsExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -557,11 +680,19 @@ impl ExecutionPlan for StatisticsExec {
     fn statistics(&self) -> Result<Statistics> {
         Ok(self.stats.clone())
     }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        Ok(if partition.is_some() {
+            Statistics::new_unknown(&self.schema)
+        } else {
+            self.stats.clone()
+        })
+    }
 }
 
 /// Execution plan that emits streams that block forever.
 ///
-/// This is useful to test shutdown / cancelation behavior of certain execution plans.
+/// This is useful to test shutdown / cancellation behavior of certain execution plans.
 #[derive(Debug)]
 pub struct BlockingExec {
     /// Schema that is mocked by this plan.
@@ -575,7 +706,7 @@ pub struct BlockingExec {
 impl BlockingExec {
     /// Create new [`BlockingExec`] with a give schema and number of partitions.
     pub fn new(schema: SchemaRef, n_partitions: usize) -> Self {
-        let cache = Self::compute_properties(schema.clone(), n_partitions);
+        let cache = Self::compute_properties(Arc::clone(&schema), n_partitions);
         Self {
             schema,
             refs: Default::default(),
@@ -594,12 +725,11 @@ impl BlockingExec {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef, n_partitions: usize) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(n_partitions),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -614,11 +744,19 @@ impl DisplayAs for BlockingExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "BlockingExec",)
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for BlockingExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -694,8 +832,6 @@ pub async fn assert_strong_count_converges_to_zero<T>(refs: Weak<T>) {
     .unwrap();
 }
 
-///
-
 /// Execution plan that emits streams that panics.
 ///
 /// This is useful to test panic handling of certain execution plans.
@@ -705,7 +841,7 @@ pub struct PanicExec {
     schema: SchemaRef,
 
     /// Number of output partitions. Each partition will produce this
-    /// many empty output record batches prior to panicing
+    /// many empty output record batches prior to panicking
     batches_until_panics: Vec<usize>,
     cache: PlanProperties,
 }
@@ -715,7 +851,7 @@ impl PanicExec {
     /// partitions, which will each panic immediately.
     pub fn new(schema: SchemaRef, n_partitions: usize) -> Self {
         let batches_until_panics = vec![0; n_partitions];
-        let cache = Self::compute_properties(schema.clone(), &batches_until_panics);
+        let cache = Self::compute_properties(Arc::clone(&schema), &batches_until_panics);
         Self {
             schema,
             batches_until_panics,
@@ -734,13 +870,12 @@ impl PanicExec {
         schema: SchemaRef,
         batches_until_panics: &[usize],
     ) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
         let num_partitions = batches_until_panics.len();
-
         PlanProperties::new(
-            eq_properties,
+            EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(num_partitions),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -755,11 +890,19 @@ impl DisplayAs for PanicExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "PanicExec",)
             }
+            DisplayFormatType::TreeRender => {
+                // TODO: collect info
+                write!(f, "")
+            }
         }
     }
 }
 
 impl ExecutionPlan for PanicExec {
+    fn name(&self) -> &'static str {
+        Self::static_name()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -821,7 +964,7 @@ impl Stream for PanicStream {
             if self.ready {
                 self.batches_until_panic -= 1;
                 self.ready = false;
-                let batch = RecordBatch::new_empty(self.schema.clone());
+                let batch = RecordBatch::new_empty(Arc::clone(&self.schema));
                 return Poll::Ready(Some(Ok(batch)));
             } else {
                 self.ready = true;

@@ -27,21 +27,29 @@ use std::task::{Context, Poll};
 use std::{any::Any, sync::Arc};
 
 use super::{
-    execution_mode_from_children,
-    metrics::{ExecutionPlanMetricsSet, MetricsSet},
     ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan,
     ExecutionPlanProperties, Partitioning, PlanProperties, RecordBatchStream,
     SendableRecordBatchStream, Statistics,
+    metrics::{ExecutionPlanMetricsSet, MetricsSet},
 };
+use crate::execution_plan::{
+    InvariantLevel, boundedness_from_children, check_default_invariants,
+    emission_type_from_children,
+};
+use crate::filter_pushdown::{FilterDescription, FilterPushdownPhase};
 use crate::metrics::BaselineMetrics;
+use crate::projection::{ProjectionExec, make_with_child};
 use crate::stream::ObservedStream;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
+use datafusion_common::config::ConfigOptions;
 use datafusion_common::stats::Precision;
-use datafusion_common::{exec_err, internal_err, Result};
+use datafusion_common::{
+    Result, assert_or_internal_err, exec_err, internal_datafusion_err,
+};
 use datafusion_execution::TaskContext;
-use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_expr::{EquivalenceProperties, PhysicalExpr, calculate_union};
 
 use futures::Stream;
 use itertools::Itertools;
@@ -61,14 +69,14 @@ use tokio::macros::support::thread_rng_n;
 /// partitions, and then next `M` output partitions are from Input 2.
 ///
 /// ```text
-///                       ▲       ▲           ▲         ▲
-///                       │       │           │         │
-///     Output            │  ...  │           │         │
-///   Partitions          │0      │N-1        │ N       │N+M-1
-///(passes through   ┌────┴───────┴───────────┴─────────┴───┐
-/// the N+M input    │              UnionExec               │
-///  partitions)     │                                      │
-///                  └──────────────────────────────────────┘
+///                        ▲       ▲           ▲         ▲
+///                        │       │           │         │
+///      Output            │  ...  │           │         │
+///    Partitions          │0      │N-1        │ N       │N+M-1
+/// (passes through   ┌────┴───────┴───────────┴─────────┴───┐
+///  the N+M input    │              UnionExec               │
+///   partitions)     │                                      │
+///                   └──────────────────────────────────────┘
 ///                                      ▲
 ///                                      │
 ///                                      │
@@ -85,7 +93,7 @@ use tokio::macros::support::thread_rng_n;
 ///                  │Input 1          │  │Input 2           │
 ///                  └─────────────────┘  └──────────────────┘
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UnionExec {
     /// Input execution plan
     inputs: Vec<Arc<dyn ExecutionPlan>>,
@@ -97,13 +105,51 @@ pub struct UnionExec {
 
 impl UnionExec {
     /// Create a new UnionExec
+    #[deprecated(since = "44.0.0", note = "Use UnionExec::try_new instead")]
     pub fn new(inputs: Vec<Arc<dyn ExecutionPlan>>) -> Self {
-        let schema = union_schema(&inputs);
-        let cache = Self::compute_properties(&inputs, schema);
+        let schema =
+            union_schema(&inputs).expect("UnionExec::new called with empty inputs");
+        // The schema of the inputs and the union schema is consistent when:
+        // - They have the same number of fields, and
+        // - Their fields have same types at the same indices.
+        // Here, we know that schemas are consistent and the call below can
+        // not return an error.
+        let cache = Self::compute_properties(&inputs, schema).unwrap();
         UnionExec {
             inputs,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
+        }
+    }
+
+    /// Try to create a new UnionExec.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - `inputs` is empty
+    ///
+    /// # Optimization
+    /// If there is only one input, returns that input directly rather than wrapping it in a UnionExec
+    pub fn try_new(
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match inputs.len() {
+            0 => exec_err!("UnionExec requires at least one input"),
+            1 => Ok(inputs.into_iter().next().unwrap()),
+            _ => {
+                let schema = union_schema(&inputs)?;
+                // The schema of the inputs and the union schema is consistent when:
+                // - They have the same number of fields, and
+                // - Their fields have same types at the same indices.
+                // Here, we know that schemas are consistent and the call below can
+                // not return an error.
+                let cache = Self::compute_properties(&inputs, schema).unwrap();
+                Ok(Arc::new(UnionExec {
+                    inputs,
+                    metrics: ExecutionPlanMetricsSet::new(),
+                    cache,
+                }))
+            }
         }
     }
 
@@ -116,43 +162,13 @@ impl UnionExec {
     fn compute_properties(
         inputs: &[Arc<dyn ExecutionPlan>],
         schema: SchemaRef,
-    ) -> PlanProperties {
+    ) -> Result<PlanProperties> {
         // Calculate equivalence properties:
-        // TODO: In some cases, we should be able to preserve some equivalence
-        //       classes and constants. Add support for such cases.
-        let children_eqs = inputs
+        let children_eqps = inputs
             .iter()
-            .map(|child| child.equivalence_properties())
+            .map(|child| child.equivalence_properties().clone())
             .collect::<Vec<_>>();
-        let mut eq_properties = EquivalenceProperties::new(schema);
-        // Use the ordering equivalence class of the first child as the seed:
-        let mut meets = children_eqs[0]
-            .oeq_class()
-            .iter()
-            .map(|item| item.to_vec())
-            .collect::<Vec<_>>();
-        // Iterate over all the children:
-        for child_eqs in &children_eqs[1..] {
-            // Compute meet orderings of the current meets and the new ordering
-            // equivalence class.
-            let mut idx = 0;
-            while idx < meets.len() {
-                // Find all the meets of `current_meet` with this child's orderings:
-                let valid_meets = child_eqs.oeq_class().iter().filter_map(|ordering| {
-                    child_eqs.get_meet_ordering(ordering, &meets[idx])
-                });
-                // Use the longest of these meets as others are redundant:
-                if let Some(next_meet) = valid_meets.max_by_key(|m| m.len()) {
-                    meets[idx] = next_meet;
-                    idx += 1;
-                } else {
-                    meets.swap_remove(idx);
-                }
-            }
-        }
-        // We know have all the valid orderings after union, remove redundant
-        // entries (implicitly) and return:
-        eq_properties.add_new_orderings(meets);
+        let eq_properties = calculate_union(children_eqps, schema)?;
 
         // Calculate output partitioning; i.e. sum output partitions of the inputs.
         let num_partitions = inputs
@@ -160,11 +176,12 @@ impl UnionExec {
             .map(|plan| plan.output_partitioning().partition_count())
             .sum();
         let output_partitioning = Partitioning::UnknownPartitioning(num_partitions);
-
-        // Determine execution mode:
-        let mode = execution_mode_from_children(inputs.iter());
-
-        PlanProperties::new(eq_properties, output_partitioning, mode)
+        Ok(PlanProperties::new(
+            eq_properties,
+            output_partitioning,
+            emission_type_from_children(inputs),
+            boundedness_from_children(inputs),
+        ))
     }
 }
 
@@ -178,6 +195,7 @@ impl DisplayAs for UnionExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "UnionExec")
             }
+            DisplayFormatType::TreeRender => Ok(()),
         }
     }
 }
@@ -196,8 +214,12 @@ impl ExecutionPlan for UnionExec {
         &self.cache
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.inputs.iter().collect()
+    fn check_invariants(&self, check: InvariantLevel) -> Result<()> {
+        check_default_invariants(self, check)?;
+
+        (self.inputs().len() >= 2).then_some(()).ok_or_else(|| {
+            internal_datafusion_err!("UnionExec should have at least 2 children")
+        })
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -225,11 +247,19 @@ impl ExecutionPlan for UnionExec {
         }
     }
 
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false; self.children().len()]
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.inputs.iter().collect()
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(UnionExec::new(children)))
+        UnionExec::try_new(children)
     }
 
     fn execute(
@@ -237,7 +267,12 @@ impl ExecutionPlan for UnionExec {
         mut partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        trace!("Start UnionExec::execute for partition {} of context session_id {} and task_id {:?}", partition, context.session_id(), context.task_id());
+        trace!(
+            "Start UnionExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         // record the tiny amount of work done in this function so
         // elapsed_compute is reported as non zero
@@ -250,13 +285,17 @@ impl ExecutionPlan for UnionExec {
             if partition < input.output_partitioning().partition_count() {
                 let stream = input.execute(partition, context)?;
                 debug!("Found a Union partition to execute");
-                return Ok(Box::pin(ObservedStream::new(stream, baseline_metrics)));
+                return Ok(Box::pin(ObservedStream::new(
+                    stream,
+                    baseline_metrics,
+                    None,
+                )));
             } else {
                 partition -= input.output_partitioning().partition_count();
             }
         }
 
-        warn!("Error in Union: Partition {} not found", partition);
+        warn!("Error in Union: Partition {partition} not found");
 
         exec_err!("Partition {partition} not found in Union")
     }
@@ -266,20 +305,70 @@ impl ExecutionPlan for UnionExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        let stats = self
-            .inputs
-            .iter()
-            .map(|stat| stat.statistics())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(stats
-            .into_iter()
-            .reduce(stats_union)
-            .unwrap_or_else(|| Statistics::new_unknown(&self.schema())))
+        self.partition_statistics(None)
     }
 
-    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        vec![false; self.children().len()]
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if let Some(partition_idx) = partition {
+            // For a specific partition, find which input it belongs to
+            let mut remaining_idx = partition_idx;
+            for input in &self.inputs {
+                let input_partition_count = input.output_partitioning().partition_count();
+                if remaining_idx < input_partition_count {
+                    // This partition belongs to this input
+                    return input.partition_statistics(Some(remaining_idx));
+                }
+                remaining_idx -= input_partition_count;
+            }
+            // If we get here, the partition index is out of bounds
+            Ok(Statistics::new_unknown(&self.schema()))
+        } else {
+            // Collect statistics from all inputs
+            let stats = self
+                .inputs
+                .iter()
+                .map(|input_exec| input_exec.partition_statistics(None))
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(stats
+                .into_iter()
+                .reduce(stats_union)
+                .unwrap_or_else(|| Statistics::new_unknown(&self.schema())))
+        }
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
+    }
+
+    /// Tries to push `projection` down through `union`. If possible, performs the
+    /// pushdown and returns a new [`UnionExec`] as the top plan which has projections
+    /// as its children. Otherwise, returns `None`.
+    fn try_swapping_with_projection(
+        &self,
+        projection: &ProjectionExec,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        // If the projection doesn't narrow the schema, we shouldn't try to push it down.
+        if projection.expr().len() >= projection.input().schema().fields().len() {
+            return Ok(None);
+        }
+
+        let new_children = self
+            .children()
+            .into_iter()
+            .map(|child| make_with_child(projection, child))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Some(UnionExec::try_new(new_children.clone())?))
+    }
+
+    fn gather_filters_for_pushdown(
+        &self,
+        _phase: FilterPushdownPhase,
+        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterDescription> {
+        FilterDescription::from_children(parent_filters, &self.children())
     }
 }
 
@@ -315,7 +404,7 @@ impl ExecutionPlan for UnionExec {
 /// |         |-----------------+
 /// +---------+
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InterleaveExec {
     /// Input execution plan
     inputs: Vec<Arc<dyn ExecutionPlan>>,
@@ -328,12 +417,11 @@ pub struct InterleaveExec {
 impl InterleaveExec {
     /// Create a new InterleaveExec
     pub fn try_new(inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Self> {
-        if !can_interleave(inputs.iter()) {
-            return internal_err!(
-                "Not all InterleaveExec children have a consistent hash partitioning"
-            );
-        }
-        let cache = Self::compute_properties(&inputs);
+        assert_or_internal_err!(
+            can_interleave(inputs.iter()),
+            "Not all InterleaveExec children have a consistent hash partitioning"
+        );
+        let cache = Self::compute_properties(&inputs)?;
         Ok(InterleaveExec {
             inputs,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -347,15 +435,17 @@ impl InterleaveExec {
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
-    fn compute_properties(inputs: &[Arc<dyn ExecutionPlan>]) -> PlanProperties {
-        let schema = union_schema(inputs);
+    fn compute_properties(inputs: &[Arc<dyn ExecutionPlan>]) -> Result<PlanProperties> {
+        let schema = union_schema(inputs)?;
         let eq_properties = EquivalenceProperties::new(schema);
         // Get output partitioning:
         let output_partitioning = inputs[0].output_partitioning().clone();
-        // Determine execution mode:
-        let mode = execution_mode_from_children(inputs.iter());
-
-        PlanProperties::new(eq_properties, output_partitioning, mode)
+        Ok(PlanProperties::new(
+            eq_properties,
+            output_partitioning,
+            emission_type_from_children(inputs),
+            boundedness_from_children(inputs),
+        ))
     }
 }
 
@@ -369,6 +459,7 @@ impl DisplayAs for InterleaveExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "InterleaveExec")
             }
+            DisplayFormatType::TreeRender => Ok(()),
         }
     }
 }
@@ -399,6 +490,11 @@ impl ExecutionPlan for InterleaveExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // New children are no longer interleavable, which might be a bug of optimization rewrite.
+        assert_or_internal_err!(
+            can_interleave(children.iter()),
+            "Can not create InterleaveExec: new children can not be interleaved"
+        );
         Ok(Arc::new(InterleaveExec::try_new(children)?))
     }
 
@@ -407,7 +503,12 @@ impl ExecutionPlan for InterleaveExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        trace!("Start InterleaveExec::execute for partition {} of context session_id {} and task_id {:?}", partition, context.session_id(), context.task_id());
+        trace!(
+            "Start InterleaveExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         // record the tiny amount of work done in this function so
         // elapsed_compute is reported as non zero
@@ -417,7 +518,7 @@ impl ExecutionPlan for InterleaveExec {
         let mut input_stream_vec = vec![];
         for input in self.inputs.iter() {
             if partition < input.output_partitioning().partition_count() {
-                input_stream_vec.push(input.execute(partition, context.clone())?);
+                input_stream_vec.push(input.execute(partition, Arc::clone(&context))?);
             } else {
                 // Do not find a partition to execute
                 break;
@@ -428,10 +529,14 @@ impl ExecutionPlan for InterleaveExec {
                 self.schema(),
                 input_stream_vec,
             ));
-            return Ok(Box::pin(ObservedStream::new(stream, baseline_metrics)));
+            return Ok(Box::pin(ObservedStream::new(
+                stream,
+                baseline_metrics,
+                None,
+            )));
         }
 
-        warn!("Error in InterleaveExec: Partition {} not found", partition);
+        warn!("Error in InterleaveExec: Partition {partition} not found");
 
         exec_err!("Partition {partition} not found in InterleaveExec")
     }
@@ -441,10 +546,14 @@ impl ExecutionPlan for InterleaveExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
         let stats = self
             .inputs
             .iter()
-            .map(|stat| stat.statistics())
+            .map(|stat| stat.partition_statistics(partition))
             .collect::<Result<Vec<_>>>()?;
 
         Ok(stats
@@ -478,27 +587,56 @@ pub fn can_interleave<T: Borrow<Arc<dyn ExecutionPlan>>>(
             .all(|partition| partition == *reference)
 }
 
-fn union_schema(inputs: &[Arc<dyn ExecutionPlan>]) -> SchemaRef {
-    let fields: Vec<Field> = (0..inputs[0].schema().fields().len())
+fn union_schema(inputs: &[Arc<dyn ExecutionPlan>]) -> Result<SchemaRef> {
+    if inputs.is_empty() {
+        return exec_err!("Cannot create union schema from empty inputs");
+    }
+
+    let first_schema = inputs[0].schema();
+
+    let fields = (0..first_schema.fields().len())
         .map(|i| {
+            // We take the name from the left side of the union to match how names are coerced during logical planning,
+            // which also uses the left side names.
+            let base_field = first_schema.field(i).clone();
+
+            // Coerce metadata and nullability across all inputs
+
             inputs
                 .iter()
-                .filter_map(|input| {
-                    if input.schema().fields().len() > i {
-                        Some(input.schema().field(i).clone())
-                    } else {
-                        None
-                    }
+                .enumerate()
+                .map(|(input_idx, input)| {
+                    let field = input.schema().field(i).clone();
+                    let mut metadata = field.metadata().clone();
+
+                    let other_metadatas = inputs
+                        .iter()
+                        .enumerate()
+                        .filter(|(other_idx, _)| *other_idx != input_idx)
+                        .flat_map(|(_, other_input)| {
+                            other_input.schema().field(i).metadata().clone().into_iter()
+                        });
+
+                    metadata.extend(other_metadatas);
+                    field.with_metadata(metadata)
                 })
-                .find_or_first(|f| f.is_nullable())
+                .find_or_first(Field::is_nullable)
+                // We can unwrap this because if inputs was empty, this would've already panic'ed when we
+                // indexed into inputs[0].
                 .unwrap()
+                .with_name(base_field.name())
         })
+        .collect::<Vec<_>>();
+
+    let all_metadata_merged = inputs
+        .iter()
+        .flat_map(|i| i.schema().metadata().clone().into_iter())
         .collect();
 
-    Arc::new(Schema::new_with_metadata(
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
-        inputs[0].schema().metadata().clone(),
-    ))
+        all_metadata_merged,
+    )))
 }
 
 /// CombinedRecordBatchStream can be used to combine a Vec of SendableRecordBatchStreams into one
@@ -518,7 +656,7 @@ impl CombinedRecordBatchStream {
 
 impl RecordBatchStream for CombinedRecordBatchStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
 
@@ -570,23 +708,30 @@ impl Stream for CombinedRecordBatchStream {
 
 fn col_stats_union(
     mut left: ColumnStatistics,
-    right: ColumnStatistics,
+    right: &ColumnStatistics,
 ) -> ColumnStatistics {
     left.distinct_count = Precision::Absent;
     left.min_value = left.min_value.min(&right.min_value);
     left.max_value = left.max_value.max(&right.max_value);
+    left.sum_value = left.sum_value.add(&right.sum_value);
     left.null_count = left.null_count.add(&right.null_count);
 
     left
 }
 
 fn stats_union(mut left: Statistics, right: Statistics) -> Statistics {
-    left.num_rows = left.num_rows.add(&right.num_rows);
-    left.total_byte_size = left.total_byte_size.add(&right.total_byte_size);
+    let Statistics {
+        num_rows: right_num_rows,
+        total_byte_size: right_total_bytes,
+        column_statistics: right_column_statistics,
+        ..
+    } = right;
+    left.num_rows = left.num_rows.add(&right_num_rows);
+    left.total_byte_size = left.total_byte_size.add(&right_total_bytes);
     left.column_statistics = left
         .column_statistics
         .into_iter()
-        .zip(right.column_statistics)
+        .zip(right_column_statistics.iter())
         .map(|(a, b)| col_stats_union(a, b))
         .collect::<Vec<_>>();
     left
@@ -596,13 +741,13 @@ fn stats_union(mut left: Statistics, right: Statistics) -> Statistics {
 mod tests {
     use super::*;
     use crate::collect;
-    use crate::memory::MemoryExec;
-    use crate::test;
+    use crate::test::{self, TestMemoryExec};
 
-    use arrow_schema::{DataType, SortOptions};
+    use arrow::compute::SortOptions;
+    use arrow::datatypes::DataType;
     use datafusion_common::ScalarValue;
+    use datafusion_physical_expr::equivalence::convert_to_orderings;
     use datafusion_physical_expr::expressions::col;
-    use datafusion_physical_expr::{PhysicalExpr, PhysicalSortExpr};
 
     // Generate a schema which consists of 7 columns (a, b, c, d, e, f, g)
     fn create_test_schema() -> Result<SchemaRef> {
@@ -618,19 +763,6 @@ mod tests {
         Ok(schema)
     }
 
-    // Convert each tuple to PhysicalSortExpr
-    fn convert_to_sort_exprs(
-        in_data: &[(&Arc<dyn PhysicalExpr>, SortOptions)],
-    ) -> Vec<PhysicalSortExpr> {
-        in_data
-            .iter()
-            .map(|(expr, options)| PhysicalSortExpr {
-                expr: (*expr).clone(),
-                options: *options,
-            })
-            .collect::<Vec<_>>()
-    }
-
     #[tokio::test]
     async fn test_union_partitions() -> Result<()> {
         let task_ctx = Arc::new(TaskContext::default());
@@ -639,7 +771,7 @@ mod tests {
         let csv = test::scan_partitioned(4);
         let csv2 = test::scan_partitioned(5);
 
-        let union_exec = Arc::new(UnionExec::new(vec![csv, csv2]));
+        let union_exec: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![csv, csv2])?;
 
         // Should have 9 partitions and 9 output batches
         assert_eq!(
@@ -666,19 +798,25 @@ mod tests {
                     distinct_count: Precision::Exact(5),
                     max_value: Precision::Exact(ScalarValue::Int64(Some(21))),
                     min_value: Precision::Exact(ScalarValue::Int64(Some(-4))),
+                    sum_value: Precision::Exact(ScalarValue::Int64(Some(42))),
                     null_count: Precision::Exact(0),
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Exact(1),
                     max_value: Precision::Exact(ScalarValue::from("x")),
                     min_value: Precision::Exact(ScalarValue::from("a")),
+                    sum_value: Precision::Absent,
                     null_count: Precision::Exact(3),
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Exact(ScalarValue::Float32(Some(1.1))),
                     min_value: Precision::Exact(ScalarValue::Float32(Some(0.1))),
+                    sum_value: Precision::Exact(ScalarValue::Float32(Some(42.0))),
                     null_count: Precision::Absent,
+                    byte_size: Precision::Absent,
                 },
             ],
         };
@@ -691,19 +829,25 @@ mod tests {
                     distinct_count: Precision::Exact(3),
                     max_value: Precision::Exact(ScalarValue::Int64(Some(34))),
                     min_value: Precision::Exact(ScalarValue::Int64(Some(1))),
+                    sum_value: Precision::Exact(ScalarValue::Int64(Some(42))),
                     null_count: Precision::Exact(1),
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Exact(ScalarValue::from("c")),
                     min_value: Precision::Exact(ScalarValue::from("b")),
+                    sum_value: Precision::Absent,
                     null_count: Precision::Absent,
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Absent,
                     min_value: Precision::Absent,
+                    sum_value: Precision::Absent,
                     null_count: Precision::Absent,
+                    byte_size: Precision::Absent,
                 },
             ],
         };
@@ -717,19 +861,25 @@ mod tests {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Exact(ScalarValue::Int64(Some(34))),
                     min_value: Precision::Exact(ScalarValue::Int64(Some(-4))),
+                    sum_value: Precision::Exact(ScalarValue::Int64(Some(84))),
                     null_count: Precision::Exact(1),
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Exact(ScalarValue::from("x")),
                     min_value: Precision::Exact(ScalarValue::from("a")),
+                    sum_value: Precision::Absent,
                     null_count: Precision::Absent,
+                    byte_size: Precision::Absent,
                 },
                 ColumnStatistics {
                     distinct_count: Precision::Absent,
                     max_value: Precision::Absent,
                     min_value: Precision::Absent,
+                    sum_value: Precision::Absent,
                     null_count: Precision::Absent,
+                    byte_size: Precision::Absent,
                 },
             ],
         };
@@ -797,44 +947,109 @@ mod tests {
             (first_child_orderings, second_child_orderings, union_orderings),
         ) in test_cases.iter().enumerate()
         {
-            let first_orderings = first_child_orderings
-                .iter()
-                .map(|ordering| convert_to_sort_exprs(ordering))
-                .collect::<Vec<_>>();
-            let second_orderings = second_child_orderings
-                .iter()
-                .map(|ordering| convert_to_sort_exprs(ordering))
-                .collect::<Vec<_>>();
-            let union_expected_orderings = union_orderings
-                .iter()
-                .map(|ordering| convert_to_sort_exprs(ordering))
-                .collect::<Vec<_>>();
-            let child1 = Arc::new(
-                MemoryExec::try_new(&[], schema.clone(), None)?
-                    .with_sort_information(first_orderings),
-            );
-            let child2 = Arc::new(
-                MemoryExec::try_new(&[], schema.clone(), None)?
-                    .with_sort_information(second_orderings),
-            );
+            let first_orderings = convert_to_orderings(first_child_orderings);
+            let second_orderings = convert_to_orderings(second_child_orderings);
+            let union_expected_orderings = convert_to_orderings(union_orderings);
+            let child1_exec = TestMemoryExec::try_new(&[], Arc::clone(&schema), None)?
+                .try_with_sort_information(first_orderings)?;
+            let child1 = Arc::new(child1_exec);
+            let child1 = Arc::new(TestMemoryExec::update_cache(&child1));
+            let child2_exec = TestMemoryExec::try_new(&[], Arc::clone(&schema), None)?
+                .try_with_sort_information(second_orderings)?;
+            let child2 = Arc::new(child2_exec);
+            let child2 = Arc::new(TestMemoryExec::update_cache(&child2));
 
-            let union = UnionExec::new(vec![child1, child2]);
+            let mut union_expected_eq = EquivalenceProperties::new(Arc::clone(&schema));
+            union_expected_eq.add_orderings(union_expected_orderings);
+
+            let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![child1, child2])?;
             let union_eq_properties = union.properties().equivalence_properties();
-            let union_actual_orderings = union_eq_properties.oeq_class();
             let err_msg = format!(
                 "Error in test id: {:?}, test case: {:?}",
                 test_idx, test_cases[test_idx]
             );
-            assert_eq!(
-                union_actual_orderings.len(),
-                union_expected_orderings.len(),
-                "{}",
-                err_msg
-            );
-            for expected in &union_expected_orderings {
-                assert!(union_actual_orderings.contains(expected), "{}", err_msg);
-            }
+            assert_eq_properties_same(union_eq_properties, &union_expected_eq, err_msg);
         }
+        Ok(())
+    }
+
+    fn assert_eq_properties_same(
+        lhs: &EquivalenceProperties,
+        rhs: &EquivalenceProperties,
+        err_msg: String,
+    ) {
+        // Check whether orderings are same.
+        let lhs_orderings = lhs.oeq_class();
+        let rhs_orderings = rhs.oeq_class();
+        assert_eq!(lhs_orderings.len(), rhs_orderings.len(), "{err_msg}");
+        for rhs_ordering in rhs_orderings.iter() {
+            assert!(lhs_orderings.contains(rhs_ordering), "{}", err_msg);
+        }
+    }
+
+    #[test]
+    fn test_union_empty_inputs() {
+        // Test that UnionExec::try_new fails with empty inputs
+        let result = UnionExec::try_new(vec![]);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("UnionExec requires at least one input")
+        );
+    }
+
+    #[test]
+    fn test_union_schema_empty_inputs() {
+        // Test that union_schema fails with empty inputs
+        let result = union_schema(&[]);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot create union schema from empty inputs")
+        );
+    }
+
+    #[test]
+    fn test_union_single_input() -> Result<()> {
+        // Test that UnionExec::try_new returns the single input directly
+        let schema = create_test_schema()?;
+        let memory_exec: Arc<dyn ExecutionPlan> =
+            Arc::new(TestMemoryExec::try_new(&[], Arc::clone(&schema), None)?);
+        let memory_exec_clone = Arc::clone(&memory_exec);
+        let result = UnionExec::try_new(vec![memory_exec])?;
+
+        // Check that the result is the same as the input (no UnionExec wrapper)
+        assert_eq!(result.schema(), schema);
+        // Verify it's the same execution plan
+        assert!(Arc::ptr_eq(&result, &memory_exec_clone));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_schema_multiple_inputs() -> Result<()> {
+        // Test that existing functionality with multiple inputs still works
+        let schema = create_test_schema()?;
+        let memory_exec1 =
+            Arc::new(TestMemoryExec::try_new(&[], Arc::clone(&schema), None)?);
+        let memory_exec2 =
+            Arc::new(TestMemoryExec::try_new(&[], Arc::clone(&schema), None)?);
+
+        let union_plan = UnionExec::try_new(vec![memory_exec1, memory_exec2])?;
+
+        // Downcast to verify it's a UnionExec
+        let union = union_plan
+            .as_any()
+            .downcast_ref::<UnionExec>()
+            .expect("Expected UnionExec");
+
+        // Check that schema is correct
+        assert_eq!(union.schema(), schema);
+        // Check that we have 2 inputs
+        assert_eq!(union.inputs().len(), 2);
+
         Ok(())
     }
 }

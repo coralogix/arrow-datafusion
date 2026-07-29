@@ -15,20 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, Int64Array};
+use arrow::array::{ArrayRef, AsArray, Int64Array, PrimitiveArray, new_null_array};
+use arrow::compute::try_binary;
+use arrow::datatypes::{DataType, Int64Type};
+use arrow::error::ArrowError;
 use std::any::Any;
 use std::mem::swap;
 use std::sync::Arc;
 
-use arrow::datatypes::DataType;
-use arrow::datatypes::DataType::Int64;
+use datafusion_common::{Result, ScalarValue, exec_err, internal_datafusion_err};
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    Volatility,
+};
+use datafusion_macros::user_doc;
 
-use crate::utils::make_scalar_function;
-use datafusion_common::{exec_err, DataFusionError, Result};
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
-
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Math Functions"),
+    description = "Returns the greatest common divisor of `expression_x` and `expression_y`. Returns 0 if both inputs are zero.",
+    syntax_example = "gcd(expression_x, expression_y)",
+    sql_example = r#"```sql
+> SELECT gcd(48, 18);
++------------+
+| gcd(48,18) |
++------------+
+| 6          |
++------------+
+```"#,
+    standard_argument(name = "expression_x", prefix = "First numeric"),
+    standard_argument(name = "expression_y", prefix = "Second numeric")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct GcdFunc {
     signature: Signature,
 }
@@ -41,9 +58,12 @@ impl Default for GcdFunc {
 
 impl GcdFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(2, vec![Int64], Volatility::Immutable),
+            signature: Signature::uniform(
+                2,
+                vec![DataType::Int64],
+                Volatility::Immutable,
+            ),
         }
     }
 }
@@ -62,35 +82,77 @@ impl ScalarUDFImpl for GcdFunc {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(Int64)
+        Ok(DataType::Int64)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        make_scalar_function(gcd, vec![])(args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let args: [ColumnarValue; 2] = args.args.try_into().map_err(|_| {
+            internal_datafusion_err!("Expected 2 arguments for function gcd")
+        })?;
+
+        match args {
+            [ColumnarValue::Array(a), ColumnarValue::Array(b)] => {
+                compute_gcd_for_arrays(&a, &b)
+            }
+            [
+                ColumnarValue::Scalar(ScalarValue::Int64(a)),
+                ColumnarValue::Scalar(ScalarValue::Int64(b)),
+            ] => match (a, b) {
+                (Some(a), Some(b)) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
+                    Some(compute_gcd(a, b)?),
+                ))),
+                _ => Ok(ColumnarValue::Scalar(ScalarValue::Int64(None))),
+            },
+            [
+                ColumnarValue::Array(a),
+                ColumnarValue::Scalar(ScalarValue::Int64(b)),
+            ] => compute_gcd_with_scalar(&a, b),
+            [
+                ColumnarValue::Scalar(ScalarValue::Int64(a)),
+                ColumnarValue::Array(b),
+            ] => compute_gcd_with_scalar(&b, a),
+            _ => exec_err!("Unsupported argument types for function gcd"),
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
-/// Gcd SQL function
-fn gcd(args: &[ArrayRef]) -> Result<ArrayRef> {
-    match args[0].data_type() {
-        Int64 => Ok(Arc::new(make_function_inputs2!(
-            &args[0],
-            &args[1],
-            "x",
-            "y",
-            Int64Array,
-            Int64Array,
-            { compute_gcd }
-        )) as ArrayRef),
-        other => exec_err!("Unsupported data type {other:?} for function gcd"),
+fn compute_gcd_for_arrays(a: &ArrayRef, b: &ArrayRef) -> Result<ColumnarValue> {
+    let a = a.as_primitive::<Int64Type>();
+    let b = b.as_primitive::<Int64Type>();
+    try_binary(a, b, compute_gcd)
+        .map(|arr: PrimitiveArray<Int64Type>| {
+            ColumnarValue::Array(Arc::new(arr) as ArrayRef)
+        })
+        .map_err(Into::into) // convert ArrowError to DataFusionError
+}
+
+fn compute_gcd_with_scalar(arr: &ArrayRef, scalar: Option<i64>) -> Result<ColumnarValue> {
+    match scalar {
+        Some(scalar_value) => {
+            let result: Result<Int64Array> = arr
+                .as_primitive::<Int64Type>()
+                .iter()
+                .map(|val| match val {
+                    Some(val) => Ok(Some(compute_gcd(val, scalar_value)?)),
+                    _ => Ok(None),
+                })
+                .collect();
+
+            result.map(|arr| ColumnarValue::Array(Arc::new(arr) as ArrayRef))
+        }
+        None => Ok(ColumnarValue::Array(new_null_array(
+            &DataType::Int64,
+            arr.len(),
+        ))),
     }
 }
 
-/// Computes greatest common divisor using Binary GCD algorithm.
-pub fn compute_gcd(x: i64, y: i64) -> i64 {
-    let mut a = x.wrapping_abs();
-    let mut b = y.wrapping_abs();
-
+/// Computes gcd of two unsigned integers using Binary GCD algorithm.
+pub(super) fn unsigned_gcd(mut a: u64, mut b: u64) -> u64 {
     if a == 0 {
         return b;
     }
@@ -99,47 +161,26 @@ pub fn compute_gcd(x: i64, y: i64) -> i64 {
     }
 
     let shift = (a | b).trailing_zeros();
-    a >>= shift;
-    b >>= shift;
     a >>= a.trailing_zeros();
-
     loop {
         b >>= b.trailing_zeros();
         if a > b {
             swap(&mut a, &mut b);
         }
-
         b -= a;
-
         if b == 0 {
             return a << shift;
         }
     }
 }
 
-#[cfg(test)]
-mod test {
-    use std::sync::Arc;
-
-    use arrow::array::{ArrayRef, Int64Array};
-
-    use crate::math::gcd::gcd;
-    use datafusion_common::cast::as_int64_array;
-
-    #[test]
-    fn test_gcd_i64() {
-        let args: Vec<ArrayRef> = vec![
-            Arc::new(Int64Array::from(vec![0, 3, 25, -16])), // x
-            Arc::new(Int64Array::from(vec![0, -2, 15, 8])),  // y
-        ];
-
-        let result = gcd(&args).expect("failed to initialize function gcd");
-        let ints = as_int64_array(&result).expect("failed to initialize function gcd");
-
-        assert_eq!(ints.len(), 4);
-        assert_eq!(ints.value(0), 0);
-        assert_eq!(ints.value(1), 1);
-        assert_eq!(ints.value(2), 5);
-        assert_eq!(ints.value(3), 8);
-    }
+/// Computes greatest common divisor using Binary GCD algorithm.
+pub fn compute_gcd(x: i64, y: i64) -> Result<i64, ArrowError> {
+    let a = x.unsigned_abs();
+    let b = y.unsigned_abs();
+    let r = unsigned_gcd(a, b);
+    // gcd(i64::MIN, i64::MIN) = i64::MIN.unsigned_abs() cannot fit into i64
+    r.try_into().map_err(|_| {
+        ArrowError::ComputeError(format!("Signed integer overflow in GCD({x}, {y})"))
+    })
 }

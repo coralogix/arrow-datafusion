@@ -15,19 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_schema::DataType;
-use arrow_schema::TimeUnit;
-use sqlparser::ast::{CastKind, Expr as SQLExpr, Subscript, TrimWhereField, Value};
+use arrow::datatypes::{DataType, TimeUnit};
+use datafusion_expr::planner::{
+    PlannerResult, RawBinaryExpr, RawDictionaryExpr, RawFieldAccessExpr,
+};
+use sqlparser::ast::{
+    AccessExpr, BinaryOperator, CastFormat, CastKind, CeilFloorKind,
+    DataType as SQLDataType, DateTimeField, DictionaryField, Expr as SQLExpr,
+    ExprWithAlias as SQLExprWithAlias, MapEntry, StructField, Subscript, TrimWhereField,
+    TypedString, Value, ValueWithSpan,
+};
 
 use datafusion_common::{
-    internal_datafusion_err, internal_err, not_impl_err, plan_err, DFSchema, Result,
-    ScalarValue,
+    DFSchema, Result, ScalarValue, internal_datafusion_err, internal_err, not_impl_err,
+    plan_err,
 };
-use datafusion_expr::expr::InList;
+
 use datafusion_expr::expr::ScalarFunction;
+use datafusion_expr::expr::{InList, WildcardOptions};
 use datafusion_expr::{
-    lit, AggregateFunction, Between, BinaryExpr, Cast, Expr, ExprSchemable,
-    GetFieldAccess, Like, Literal, Operator, TryCast,
+    Between, BinaryExpr, Cast, Expr, ExprSchemable, GetFieldAccess, Like, Literal,
+    Operator, TryCast, lit,
 };
 
 use crate::planner::{ContextProvider, PlannerContext, SqlToRel};
@@ -42,7 +50,20 @@ mod substring;
 mod unary_op;
 mod value;
 
-impl<'a, S: ContextProvider> SqlToRel<'a, S> {
+impl<S: ContextProvider> SqlToRel<'_, S> {
+    pub(crate) fn sql_expr_to_logical_expr_with_alias(
+        &self,
+        sql: SQLExprWithAlias,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let mut expr =
+            self.sql_expr_to_logical_expr(sql.expr, schema, planner_context)?;
+        if let Some(alias) = sql.alias {
+            expr = expr.alias(alias.value);
+        }
+        Ok(expr)
+    }
     pub(crate) fn sql_expr_to_logical_expr(
         &self,
         sql: SQLExpr,
@@ -51,7 +72,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
     ) -> Result<Expr> {
         enum StackEntry {
             SQLExpr(Box<SQLExpr>),
-            Operator(Operator),
+            Operator(BinaryOperator),
         }
 
         // Virtual stack machine to convert SQLExpr to Expr
@@ -68,7 +89,6 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                         SQLExpr::BinaryOp { left, op, right } => {
                             // Note the order that we push the entries to the stack
                             // is important. We want to visit the left node first.
-                            let op = self.parse_sql_binary_op(op)?;
                             stack.push(StackEntry::Operator(op));
                             stack.push(StackEntry::SQLExpr(right));
                             stack.push(StackEntry::SQLExpr(left));
@@ -86,13 +106,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 StackEntry::Operator(op) => {
                     let right = eval_stack.pop().unwrap();
                     let left = eval_stack.pop().unwrap();
-
-                    let expr = Expr::BinaryExpr(BinaryExpr::new(
-                        Box::new(left),
-                        op,
-                        Box::new(right),
-                    ));
-
+                    let expr = self.build_logical_expr(op, left, right, schema)?;
                     eval_stack.push(expr);
                 }
             }
@@ -103,6 +117,48 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         Ok(expr)
     }
 
+    fn build_logical_expr(
+        &self,
+        op: BinaryOperator,
+        left: Expr,
+        right: Expr,
+        schema: &DFSchema,
+    ) -> Result<Expr> {
+        // try extension planers
+        let mut binary_expr = RawBinaryExpr { op, left, right };
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_binary_op(binary_expr, schema)? {
+                PlannerResult::Planned(expr) => {
+                    return Ok(expr);
+                }
+                PlannerResult::Original(expr) => {
+                    binary_expr = expr;
+                }
+            }
+        }
+
+        let RawBinaryExpr { op, left, right } = binary_expr;
+        Ok(Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(left),
+            self.parse_sql_binary_op(&op)?,
+            Box::new(right),
+        )))
+    }
+
+    pub fn sql_to_expr_with_alias(
+        &self,
+        sql: SQLExprWithAlias,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let mut expr =
+            self.sql_expr_to_logical_expr_with_alias(sql, schema, planner_context)?;
+        expr = self.rewrite_partial_qualifier(expr, schema);
+        self.validate_schema_satisfies_exprs(schema, &[expr.clone()])?;
+        let (expr, _) = expr.infer_placeholder_types(schema)?;
+        Ok(expr)
+    }
+
     /// Generate a relational expression from a SQL expression
     pub fn sql_to_expr(
         &self,
@@ -110,10 +166,11 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
+        // The location of the original SQL expression in the source code
         let mut expr = self.sql_expr_to_logical_expr(sql, schema, planner_context)?;
         expr = self.rewrite_partial_qualifier(expr, schema);
-        self.validate_schema_satisfies_exprs(schema, &[expr.clone()])?;
-        let expr = expr.infer_placeholder_types(schema)?;
+        self.validate_schema_satisfies_exprs(schema, std::slice::from_ref(&expr))?;
+        let (expr, _) = expr.infer_placeholder_types(schema)?;
         Ok(expr)
     }
 
@@ -141,122 +198,54 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
 
     /// Internal implementation. Use
     /// [`Self::sql_expr_to_logical_expr`] to plan exprs.
+    #[cfg_attr(feature = "recursive_protection", recursive::recursive)]
     fn sql_expr_to_logical_expr_internal(
         &self,
         sql: SQLExpr,
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
+        // NOTE: This function is called recursively, so each match arm body should be as
+        //       small as possible to decrease stack requirement.
+        //       Follow the common pattern of extracting into a separate function for
+        //       non-trivial arms. See https://github.com/apache/datafusion/pull/12384 for
+        //       more context.
         match sql {
             SQLExpr::Value(value) => {
-                self.parse_value(value, planner_context.prepare_param_data_types())
+                self.parse_value(value.into(), planner_context.prepare_param_data_types())
             }
-            SQLExpr::Extract { field, expr } => {
-                let date_part = self
-                    .context_provider
-                    .get_function_meta("date_part")
-                    .ok_or_else(|| {
-                        internal_datafusion_err!(
-                            "Unable to find expected 'date_part' function"
-                        )
-                    })?;
-                let args = vec![
-                    Expr::Literal(ScalarValue::from(format!("{field}"))),
+            SQLExpr::Extract { field, expr, .. } => {
+                let mut extract_args = vec![
+                    Expr::Literal(ScalarValue::from(format!("{field}")), None),
                     self.sql_expr_to_logical_expr(*expr, schema, planner_context)?,
                 ];
-                Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-                    date_part, args,
-                )))
+
+                for planner in self.context_provider.get_expr_planners() {
+                    match planner.plan_extract(extract_args)? {
+                        PlannerResult::Planned(expr) => return Ok(expr),
+                        PlannerResult::Original(args) => {
+                            extract_args = args;
+                        }
+                    }
+                }
+
+                not_impl_err!("Extract not supported by ExprPlanner: {extract_args:?}")
             }
 
             SQLExpr::Array(arr) => self.sql_array_literal(arr.elem, schema),
-            SQLExpr::Interval(interval) => {
-                self.sql_interval_to_expr(false, interval, schema, planner_context)
-            }
+            SQLExpr::Interval(interval) => self.sql_interval_to_expr(false, interval),
             SQLExpr::Identifier(id) => {
                 self.sql_identifier_to_expr(id, schema, planner_context)
             }
 
-            SQLExpr::MapAccess { .. } => {
-                not_impl_err!("Map Access")
-            }
-
             // <expr>["foo"], <expr>[4] or <expr>[4:5]
-            SQLExpr::Subscript { expr, subscript } => {
-                let expr =
-                    self.sql_expr_to_logical_expr(*expr, schema, planner_context)?;
-
-                let get_field_access = match *subscript {
-                    Subscript::Index { index } => {
-                        // index can be a name, in which case it is a named field access
-                        match index {
-                            SQLExpr::Value(
-                                Value::SingleQuotedString(s)
-                                | Value::DoubleQuotedString(s),
-                            ) => GetFieldAccess::NamedStructField {
-                                name: ScalarValue::from(s),
-                            },
-                            SQLExpr::JsonAccess { .. } => {
-                                return not_impl_err!("JsonAccess");
-                            }
-                            // otherwise treat like a list index
-                            _ => GetFieldAccess::ListIndex {
-                                key: Box::new(self.sql_expr_to_logical_expr(
-                                    index,
-                                    schema,
-                                    planner_context,
-                                )?),
-                            },
-                        }
-                    }
-                    Subscript::Slice {
-                        lower_bound,
-                        upper_bound,
-                        stride,
-                    } => {
-                        // Means access like [:2]
-                        let lower_bound = if let Some(lower_bound) = lower_bound {
-                            self.sql_expr_to_logical_expr(
-                                lower_bound,
-                                schema,
-                                planner_context,
-                            )
-                        } else {
-                            not_impl_err!("Slice subscript requires a lower bound")
-                        }?;
-
-                        // means access like [2:]
-                        let upper_bound = if let Some(upper_bound) = upper_bound {
-                            self.sql_expr_to_logical_expr(
-                                upper_bound,
-                                schema,
-                                planner_context,
-                            )
-                        } else {
-                            not_impl_err!("Slice subscript requires an upper bound")
-                        }?;
-
-                        // stride, default to 1
-                        let stride = if let Some(stride) = stride {
-                            self.sql_expr_to_logical_expr(
-                                stride,
-                                schema,
-                                planner_context,
-                            )?
-                        } else {
-                            lit(1i64)
-                        };
-
-                        GetFieldAccess::ListRange {
-                            start: Box::new(lower_bound),
-                            stop: Box::new(upper_bound),
-                            stride: Box::new(stride),
-                        }
-                    }
-                };
-
-                self.plan_field_access(expr, get_field_access)
-            }
+            SQLExpr::CompoundFieldAccess { root, access_chain } => self
+                .sql_compound_field_access_to_expr(
+                    *root,
+                    access_chain,
+                    schema,
+                    planner_context,
+                ),
 
             SQLExpr::CompoundIdentifier(ids) => {
                 self.sql_compound_identifier_to_expr(ids, schema, planner_context)
@@ -265,12 +254,12 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             SQLExpr::Case {
                 operand,
                 conditions,
-                results,
                 else_result,
+                case_token: _,
+                end_token: _,
             } => self.sql_case_identifier_to_expr(
                 operand,
                 conditions,
-                results,
                 else_result,
                 schema,
                 planner_context,
@@ -282,29 +271,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 data_type,
                 format,
             } => {
-                if let Some(format) = format {
-                    return not_impl_err!("CAST with format is not supported: {format}");
-                }
-
-                let dt = self.convert_data_type(&data_type)?;
-                let expr =
-                    self.sql_expr_to_logical_expr(*expr, schema, planner_context)?;
-
-                // numeric constants are treated as seconds (rather as nanoseconds)
-                // to align with postgres / duckdb semantics
-                let expr = match &dt {
-                    DataType::Timestamp(TimeUnit::Nanosecond, tz)
-                        if expr.get_type(schema)? == DataType::Int64 =>
-                    {
-                        Expr::Cast(Cast::new(
-                            Box::new(expr),
-                            DataType::Timestamp(TimeUnit::Second, tz.clone()),
-                        ))
-                    }
-                    _ => expr,
-                };
-
-                Ok(Expr::Cast(Cast::new(Box::new(expr), dt)))
+                self.sql_cast_to_expr(*expr, &data_type, format, schema, planner_context)
             }
 
             SQLExpr::Cast {
@@ -323,13 +290,21 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                         schema,
                         planner_context,
                     )?),
-                    self.convert_data_type(&data_type)?,
+                    self.convert_data_type_to_field(&data_type)?
+                        .data_type()
+                        .clone(),
                 )))
             }
 
-            SQLExpr::TypedString { data_type, value } => Ok(Expr::Cast(Cast::new(
-                Box::new(lit(value)),
-                self.convert_data_type(&data_type)?,
+            SQLExpr::TypedString(TypedString {
+                data_type,
+                value,
+                uses_odbc_syntax: _,
+            }) => Ok(Expr::Cast(Cast::new(
+                Box::new(lit(value.into_string().unwrap())),
+                self.convert_data_type_to_field(&data_type)?
+                    .data_type()
+                    .clone(),
             ))),
 
             SQLExpr::IsNull(expr) => Ok(Expr::IsNull(Box::new(
@@ -431,6 +406,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 expr,
                 pattern,
                 escape_char,
+                any,
             } => self.sql_like_to_expr(
                 negated,
                 *expr,
@@ -439,6 +415,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 schema,
                 planner_context,
                 false,
+                any,
             ),
 
             SQLExpr::ILike {
@@ -446,6 +423,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 expr,
                 pattern,
                 escape_char,
+                any,
             } => self.sql_like_to_expr(
                 negated,
                 *expr,
@@ -454,6 +432,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 schema,
                 planner_context,
                 true,
+                any,
             ),
 
             SQLExpr::SimilarTo {
@@ -480,6 +459,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 substring_from,
                 substring_for,
                 special: _,
+                shorthand: _,
             } => self.sql_substring_to_expr(
                 expr,
                 substring_from,
@@ -521,14 +501,28 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                 self.sql_grouping_sets_to_expr(exprs, schema, planner_context)
             }
 
-            SQLExpr::Floor {
-                expr,
-                field: _field,
-            } => self.sql_fn_name_to_expr(*expr, "floor", schema, planner_context),
-            SQLExpr::Ceil {
-                expr,
-                field: _field,
-            } => self.sql_fn_name_to_expr(*expr, "ceil", schema, planner_context),
+            SQLExpr::Floor { expr, field } => match field {
+                CeilFloorKind::DateTimeField(DateTimeField::NoDateTime) => {
+                    self.sql_fn_name_to_expr(*expr, "floor", schema, planner_context)
+                }
+                CeilFloorKind::DateTimeField(_) => {
+                    not_impl_err!("FLOOR with datetime is not supported")
+                }
+                CeilFloorKind::Scale(_) => {
+                    not_impl_err!("FLOOR with scale is not supported")
+                }
+            },
+            SQLExpr::Ceil { expr, field } => match field {
+                CeilFloorKind::DateTimeField(DateTimeField::NoDateTime) => {
+                    self.sql_fn_name_to_expr(*expr, "ceil", schema, planner_context)
+                }
+                CeilFloorKind::DateTimeField(_) => {
+                    not_impl_err!("CEIL with datetime is not supported")
+                }
+                CeilFloorKind::Scale(_) => {
+                    not_impl_err!("CEIL with scale is not supported")
+                }
+            },
             SQLExpr::Overlay {
                 expr,
                 overlay_what,
@@ -561,7 +555,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             }
 
             SQLExpr::Struct { values, fields } => {
-                self.parse_struct(values, fields, schema, planner_context)
+                self.parse_struct(schema, planner_context, values, &fields)
             }
             SQLExpr::Position { expr, r#in } => {
                 self.sql_position_to_expr(*expr, *r#in, schema, planner_context)
@@ -576,81 +570,203 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
                     planner_context,
                 )?),
                 match *time_zone {
-                    SQLExpr::Value(Value::SingleQuotedString(s)) => {
-                        DataType::Timestamp(TimeUnit::Nanosecond, Some(s.into()))
-                    }
+                    SQLExpr::Value(ValueWithSpan {
+                        value: Value::SingleQuotedString(s),
+                        span: _,
+                    }) => DataType::Timestamp(TimeUnit::Nanosecond, Some(s.into())),
                     _ => {
                         return not_impl_err!(
                             "Unsupported ast node in sqltorel: {time_zone:?}"
-                        )
+                        );
                     }
                 },
             ))),
+            SQLExpr::Dictionary(fields) => {
+                self.try_plan_dictionary_literal(fields, schema, planner_context)
+            }
+            SQLExpr::Map(map) => {
+                self.try_plan_map_literal(map.entries, schema, planner_context)
+            }
+            SQLExpr::AnyOp {
+                left,
+                compare_op,
+                right,
+                // ANY/SOME are equivalent, this field specifies which the user
+                // specified but it doesn't affect the plan so ignore the field
+                is_some: _,
+            } => {
+                let mut binary_expr = RawBinaryExpr {
+                    op: compare_op,
+                    left: self.sql_expr_to_logical_expr(
+                        *left,
+                        schema,
+                        planner_context,
+                    )?,
+                    right: self.sql_expr_to_logical_expr(
+                        *right,
+                        schema,
+                        planner_context,
+                    )?,
+                };
+                for planner in self.context_provider.get_expr_planners() {
+                    match planner.plan_any(binary_expr)? {
+                        PlannerResult::Planned(expr) => {
+                            return Ok(expr);
+                        }
+                        PlannerResult::Original(expr) => {
+                            binary_expr = expr;
+                        }
+                    }
+                }
+                not_impl_err!("AnyOp not supported by ExprPlanner: {binary_expr:?}")
+            }
+            #[expect(deprecated)]
+            SQLExpr::Wildcard(_token) => Ok(Expr::Wildcard {
+                qualifier: None,
+                options: Box::new(WildcardOptions::default()),
+            }),
+            #[expect(deprecated)]
+            SQLExpr::QualifiedWildcard(object_name, _token) => Ok(Expr::Wildcard {
+                qualifier: Some(self.object_name_to_table_reference(object_name)?),
+                options: Box::new(WildcardOptions::default()),
+            }),
+            SQLExpr::Tuple(values) => self.parse_tuple(schema, planner_context, values),
             _ => not_impl_err!("Unsupported ast node in sqltorel: {sql:?}"),
         }
     }
 
-    /// Simplifies an expression like `ARRAY_AGG(expr)[index]` to `NTH_VALUE(expr, index)`
-    ///
-    /// returns Some(Expr) if the expression was simplified, otherwise None
-    /// TODO: this should likely be done in ArrayAgg::simplify when it is moved to a UDAF
-    fn simplify_array_index_expr(expr: &Expr, index: &Expr) -> Option<Expr> {
-        fn is_array_agg(agg_func: &datafusion_expr::expr::AggregateFunction) -> bool {
-            agg_func.func_def
-                == datafusion_expr::expr::AggregateFunctionDefinition::BuiltIn(
-                    AggregateFunction::ArrayAgg,
-                )
-        }
-        match expr {
-            Expr::AggregateFunction(agg_func) if is_array_agg(agg_func) => {
-                let mut new_args = agg_func.args.clone();
-                new_args.push(index.clone());
-                Some(Expr::AggregateFunction(
-                    datafusion_expr::expr::AggregateFunction::new(
-                        AggregateFunction::NthValue,
-                        new_args,
-                        agg_func.distinct,
-                        agg_func.filter.clone(),
-                        agg_func.order_by.clone(),
-                        agg_func.null_treatment,
-                    ),
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    /// Parses a struct(..) expression
+    /// Parses a struct(..) expression and plans it creation
     fn parse_struct(
         &self,
-        values: Vec<SQLExpr>,
-        fields: Vec<sqlparser::ast::StructField>,
-        input_schema: &DFSchema,
+        schema: &DFSchema,
         planner_context: &mut PlannerContext,
+        values: Vec<SQLExpr>,
+        fields: &[StructField],
     ) -> Result<Expr> {
         if !fields.is_empty() {
             return not_impl_err!("Struct fields are not supported yet");
         }
-
-        if values
+        let is_named_struct = values
             .iter()
-            .any(|value| matches!(value, SQLExpr::Named { .. }))
-        {
-            self.create_named_struct(values, input_schema, planner_context)
+            .any(|value| matches!(value, SQLExpr::Named { .. }));
+
+        let mut create_struct_args = if is_named_struct {
+            self.create_named_struct_expr(values, schema, planner_context)?
         } else {
-            self.create_struct(values, input_schema, planner_context)
+            self.create_struct_expr(values, schema, planner_context)?
+        };
+
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_struct_literal(create_struct_args, is_named_struct)? {
+                PlannerResult::Planned(expr) => return Ok(expr),
+                PlannerResult::Original(args) => create_struct_args = args,
+            }
         }
+        not_impl_err!("Struct not supported by ExprPlanner: {create_struct_args:?}")
+    }
+
+    fn parse_tuple(
+        &self,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+        values: Vec<SQLExpr>,
+    ) -> Result<Expr> {
+        match values.first() {
+            Some(SQLExpr::Identifier(_))
+            | Some(SQLExpr::Value(_))
+            | Some(SQLExpr::CompoundIdentifier(_)) => {
+                self.parse_struct(schema, planner_context, values, &[])
+            }
+            None => not_impl_err!("Empty tuple not supported yet"),
+            _ => {
+                not_impl_err!("Only identifiers and literals are supported in tuples")
+            }
+        }
+    }
+
+    fn sql_position_to_expr(
+        &self,
+        substr_expr: SQLExpr,
+        str_expr: SQLExpr,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let substr =
+            self.sql_expr_to_logical_expr(substr_expr, schema, planner_context)?;
+        let fullstr = self.sql_expr_to_logical_expr(str_expr, schema, planner_context)?;
+        let mut position_args = vec![fullstr, substr];
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_position(position_args)? {
+                PlannerResult::Planned(expr) => return Ok(expr),
+                PlannerResult::Original(args) => {
+                    position_args = args;
+                }
+            }
+        }
+
+        not_impl_err!("Position not supported by ExprPlanner: {position_args:?}")
+    }
+
+    fn try_plan_dictionary_literal(
+        &self,
+        fields: Vec<DictionaryField>,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let mut keys = vec![];
+        let mut values = vec![];
+        for field in fields {
+            let key = lit(field.key.value);
+            let value =
+                self.sql_expr_to_logical_expr(*field.value, schema, planner_context)?;
+            keys.push(key);
+            values.push(value);
+        }
+
+        let mut raw_expr = RawDictionaryExpr { keys, values };
+
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_dictionary_literal(raw_expr, schema)? {
+                PlannerResult::Planned(expr) => {
+                    return Ok(expr);
+                }
+                PlannerResult::Original(expr) => raw_expr = expr,
+            }
+        }
+        not_impl_err!("Dictionary not supported by ExprPlanner: {raw_expr:?}")
+    }
+
+    fn try_plan_map_literal(
+        &self,
+        entries: Vec<MapEntry>,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let mut exprs: Vec<_> = entries
+            .into_iter()
+            .flat_map(|entry| vec![entry.key, entry.value].into_iter())
+            .map(|expr| self.sql_expr_to_logical_expr(*expr, schema, planner_context))
+            .collect::<Result<Vec<_>>>()?;
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_make_map(exprs)? {
+                PlannerResult::Planned(expr) => {
+                    return Ok(expr);
+                }
+                PlannerResult::Original(expr) => exprs = expr,
+            }
+        }
+        not_impl_err!("MAP not supported by ExprPlanner: {exprs:?}")
     }
 
     // Handles a call to struct(...) where the arguments are named. For example
     // `struct (v as foo, v2 as bar)` by creating a call to the `named_struct` function
-    fn create_named_struct(
+    fn create_named_struct_expr(
         &self,
         values: Vec<SQLExpr>,
         input_schema: &DFSchema,
         planner_context: &mut PlannerContext,
-    ) -> Result<Expr> {
-        let args = values
+    ) -> Result<Vec<Expr>> {
+        Ok(values
             .into_iter()
             .enumerate()
             .map(|(i, value)| {
@@ -679,47 +795,24 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
-            .collect();
-
-        let named_struct_func = self
-            .context_provider
-            .get_function_meta("named_struct")
-            .ok_or_else(|| {
-            internal_datafusion_err!("Unable to find expected 'named_struct' function")
-        })?;
-
-        Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-            named_struct_func,
-            args,
-        )))
+            .collect())
     }
 
     // Handles a call to struct(...) where the arguments are not named. For example
     // `struct (v, v2)` by creating a call to the `struct` function
     // which will create a struct with fields named `c0`, `c1`, etc.
-    fn create_struct(
+    fn create_struct_expr(
         &self,
         values: Vec<SQLExpr>,
         input_schema: &DFSchema,
         planner_context: &mut PlannerContext,
-    ) -> Result<Expr> {
-        let args = values
+    ) -> Result<Vec<Expr>> {
+        values
             .into_iter()
             .map(|value| {
                 self.sql_expr_to_logical_expr(value, input_schema, planner_context)
             })
-            .collect::<Result<Vec<_>>>()?;
-        let struct_func = self
-            .context_provider
-            .get_function_meta("struct")
-            .ok_or_else(|| {
-                internal_datafusion_err!("Unable to find expected 'struct' function")
-            })?;
-
-        Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-            struct_func,
-            args,
-        )))
+            .collect::<Result<Vec<_>>>()
     }
 
     fn sql_in_list_to_expr(
@@ -742,29 +835,32 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         )))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn sql_like_to_expr(
         &self,
         negated: bool,
         expr: SQLExpr,
         pattern: SQLExpr,
-        escape_char: Option<String>,
+        escape_char: Option<Value>,
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
         case_insensitive: bool,
+        any: bool,
     ) -> Result<Expr> {
-        let pattern = self.sql_expr_to_logical_expr(pattern, schema, planner_context)?;
-        let pattern_type = pattern.get_type(schema)?;
-        if pattern_type != DataType::Utf8 && pattern_type != DataType::Null {
-            return plan_err!("Invalid pattern in LIKE expression");
+        if any {
+            return not_impl_err!("ANY in LIKE expression");
         }
-        let escape_char = if let Some(char) = escape_char {
-            if char.len() != 1 {
-                return plan_err!("Invalid escape character in LIKE expression");
+        let pattern = self.sql_expr_to_logical_expr(pattern, schema, planner_context)?;
+        let escape_char = match escape_char {
+            Some(Value::SingleQuotedString(char)) if char.len() == 1 => {
+                Some(char.chars().next().unwrap())
             }
-            Some(char.chars().next().unwrap())
-        } else {
-            None
+            Some(value) => {
+                return plan_err!(
+                    "Invalid escape character in LIKE expression. Expected a single character wrapped with single quotes, got {value}"
+                );
+            }
+            None => None,
         };
         Ok(Expr::Like(Like::new(
             negated,
@@ -780,7 +876,7 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         negated: bool,
         expr: SQLExpr,
         pattern: SQLExpr,
-        escape_char: Option<String>,
+        escape_char: Option<Value>,
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
@@ -789,13 +885,16 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         if pattern_type != DataType::Utf8 && pattern_type != DataType::Null {
             return plan_err!("Invalid pattern in SIMILAR TO expression");
         }
-        let escape_char = if let Some(char) = escape_char {
-            if char.len() != 1 {
-                return plan_err!("Invalid escape character in SIMILAR TO expression");
+        let escape_char = match escape_char {
+            Some(Value::SingleQuotedString(char)) if char.len() == 1 => {
+                Some(char.chars().next().unwrap())
             }
-            Some(char.chars().next().unwrap())
-        } else {
-            None
+            Some(value) => {
+                return plan_err!(
+                    "Invalid escape character in SIMILAR TO expression. Expected a single character wrapped with single quotes, got {value}"
+                );
+            }
+            None => None,
         };
         Ok(Expr::SimilarTo(Like::new(
             negated,
@@ -865,18 +964,12 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
-        let fun = self
-            .context_provider
-            .get_function_meta("overlay")
-            .ok_or_else(|| {
-                internal_datafusion_err!("Unable to find expected 'overlay' function")
-            })?;
         let arg = self.sql_expr_to_logical_expr(expr, schema, planner_context)?;
         let what_arg =
             self.sql_expr_to_logical_expr(overlay_what, schema, planner_context)?;
         let from_arg =
             self.sql_expr_to_logical_expr(overlay_from, schema, planner_context)?;
-        let args = match overlay_for {
+        let mut overlay_args = match overlay_for {
             Some(for_expr) => {
                 let for_expr =
                     self.sql_expr_to_logical_expr(*for_expr, schema, planner_context)?;
@@ -884,78 +977,231 @@ impl<'a, S: ContextProvider> SqlToRel<'a, S> {
             }
             None => vec![arg, what_arg, from_arg],
         };
-        Ok(Expr::ScalarFunction(ScalarFunction::new_udf(fun, args)))
+        for planner in self.context_provider.get_expr_planners() {
+            match planner.plan_overlay(overlay_args)? {
+                PlannerResult::Planned(expr) => return Ok(expr),
+                PlannerResult::Original(args) => overlay_args = args,
+            }
+        }
+        not_impl_err!("Overlay not supported by ExprPlanner: {overlay_args:?}")
     }
-    fn sql_position_to_expr(
+
+    fn sql_cast_to_expr(
         &self,
-        substr_expr: SQLExpr,
-        str_expr: SQLExpr,
+        expr: SQLExpr,
+        data_type: &SQLDataType,
+        format: Option<CastFormat>,
         schema: &DFSchema,
         planner_context: &mut PlannerContext,
     ) -> Result<Expr> {
-        let fun = self
-            .context_provider
-            .get_function_meta("strpos")
-            .ok_or_else(|| {
-                internal_datafusion_err!("Unable to find expected 'strpos' function")
-            })?;
-        let substr =
-            self.sql_expr_to_logical_expr(substr_expr, schema, planner_context)?;
-        let fullstr = self.sql_expr_to_logical_expr(str_expr, schema, planner_context)?;
-        let args = vec![fullstr, substr];
-        Ok(Expr::ScalarFunction(ScalarFunction::new_udf(fun, args)))
+        if let Some(format) = format {
+            return not_impl_err!("CAST with format is not supported: {format}");
+        }
+
+        let dt = self.convert_data_type_to_field(data_type)?;
+        let expr = self.sql_expr_to_logical_expr(expr, schema, planner_context)?;
+
+        // numeric constants are treated as seconds (rather as nanoseconds)
+        // to align with postgres / duckdb semantics
+        let expr = match dt.data_type() {
+            DataType::Timestamp(TimeUnit::Nanosecond, tz)
+                if expr.get_type(schema)? == DataType::Int64 =>
+            {
+                Expr::Cast(Cast::new(
+                    Box::new(expr),
+                    DataType::Timestamp(TimeUnit::Second, tz.clone()),
+                ))
+            }
+            _ => expr,
+        };
+
+        // Currently drops metadata attached to the type
+        // https://github.com/apache/datafusion/issues/18060
+        Ok(Expr::Cast(Cast::new(
+            Box::new(expr),
+            dt.data_type().clone(),
+        )))
     }
 
-    /// Given an expression and the field to access, creates a new expression for accessing that field
-    fn plan_field_access(
+    /// Extracts the root expression and access chain from a compound expression.
+    ///
+    /// This function attempts to identify if a compound expression (like `a.b.c`) should be treated
+    /// as a column reference with a qualifier (like `table.column`) or as a field access expression.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - The root SQL expression (e.g., the first part of `a.b.c`)
+    /// * `access_chain` - Vector of access expressions (e.g., `.b` and `.c` parts)
+    /// * `schema` - The schema to resolve column references against
+    /// * `planner_context` - Context for planning expressions
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// * The resolved root expression
+    /// * The remaining access chain that should be processed as field accesses
+    fn extract_root_and_access_chain(
         &self,
-        expr: Expr,
-        get_field_access: GetFieldAccess,
-    ) -> Result<Expr> {
-        match get_field_access {
-            GetFieldAccess::NamedStructField { name } => {
-                if let Some(udf) = self.context_provider.get_function_meta("get_field") {
-                    Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-                        udf,
-                        vec![expr, lit(name)],
-                    )))
-                } else {
-                    internal_err!("get_field not found")
-                }
-            }
-            // expr[idx] ==> array_element(expr, idx)
-            GetFieldAccess::ListIndex { key } => {
-                // Special case for array_agg(expr)[index] to NTH_VALUE(expr, index)
-                if let Some(simplified) = Self::simplify_array_index_expr(&expr, &key) {
-                    Ok(simplified)
-                } else if let Some(udf) =
-                    self.context_provider.get_function_meta("array_element")
-                {
-                    Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-                        udf,
-                        vec![expr, *key],
-                    )))
-                } else {
-                    internal_err!("get_field not found")
-                }
-            }
-            // expr[start, stop, stride] ==> array_slice(expr, start, stop, stride)
-            GetFieldAccess::ListRange {
-                start,
-                stop,
-                stride,
-            } => {
-                if let Some(udf) = self.context_provider.get_function_meta("array_slice")
-                {
-                    Ok(Expr::ScalarFunction(ScalarFunction::new_udf(
-                        udf,
-                        vec![expr, *start, *stop, *stride],
-                    )))
-                } else {
-                    internal_err!("array_slice not found")
-                }
+        root: SQLExpr,
+        mut access_chain: Vec<AccessExpr>,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<(Expr, Vec<AccessExpr>)> {
+        let SQLExpr::Identifier(root_ident) = root else {
+            let root = self.sql_expr_to_logical_expr(root, schema, planner_context)?;
+            return Ok((root, access_chain));
+        };
+
+        let mut compound_idents = vec![root_ident];
+        let first_non_ident = access_chain
+            .iter()
+            .position(|access| !matches!(access, AccessExpr::Dot(SQLExpr::Identifier(_))))
+            .unwrap_or(access_chain.len());
+        for access in access_chain.drain(0..first_non_ident) {
+            if let AccessExpr::Dot(SQLExpr::Identifier(ident)) = access {
+                compound_idents.push(ident);
+            } else {
+                return internal_err!("Expected identifier in access chain");
             }
         }
+
+        let root = if compound_idents.len() == 1 {
+            self.sql_identifier_to_expr(
+                compound_idents.pop().unwrap(),
+                schema,
+                planner_context,
+            )?
+        } else {
+            self.sql_compound_identifier_to_expr(
+                compound_idents,
+                schema,
+                planner_context,
+            )?
+        };
+        Ok((root, access_chain))
+    }
+
+    fn sql_compound_field_access_to_expr(
+        &self,
+        root: SQLExpr,
+        access_chain: Vec<AccessExpr>,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Expr> {
+        let (root, access_chain) = self.extract_root_and_access_chain(
+            root,
+            access_chain,
+            schema,
+            planner_context,
+        )?;
+        let fields = access_chain
+            .into_iter()
+            .map(|field| match field {
+                AccessExpr::Subscript(subscript) => {
+                    match subscript {
+                        Subscript::Index { index } => {
+                            // index can be a name, in which case it is a named field access
+                            match index {
+                                SQLExpr::Value(ValueWithSpan {
+                                    value:
+                                        Value::SingleQuotedString(s)
+                                        | Value::DoubleQuotedString(s),
+                                    span: _,
+                                }) => Ok(Some(GetFieldAccess::NamedStructField {
+                                    name: ScalarValue::from(s),
+                                })),
+                                SQLExpr::JsonAccess { .. } => {
+                                    not_impl_err!("JsonAccess")
+                                }
+                                // otherwise treat like a list index
+                                _ => Ok(Some(GetFieldAccess::ListIndex {
+                                    key: Box::new(self.sql_expr_to_logical_expr(
+                                        index,
+                                        schema,
+                                        planner_context,
+                                    )?),
+                                })),
+                            }
+                        }
+                        Subscript::Slice {
+                            lower_bound,
+                            upper_bound,
+                            stride,
+                        } => {
+                            // Means access like [:2]
+                            let lower_bound = if let Some(lower_bound) = lower_bound {
+                                self.sql_expr_to_logical_expr(
+                                    lower_bound,
+                                    schema,
+                                    planner_context,
+                                )
+                            } else {
+                                not_impl_err!("Slice subscript requires a lower bound")
+                            }?;
+
+                            // means access like [2:]
+                            let upper_bound = if let Some(upper_bound) = upper_bound {
+                                self.sql_expr_to_logical_expr(
+                                    upper_bound,
+                                    schema,
+                                    planner_context,
+                                )
+                            } else {
+                                not_impl_err!("Slice subscript requires an upper bound")
+                            }?;
+
+                            // stride, default to 1
+                            let stride = if let Some(stride) = stride {
+                                self.sql_expr_to_logical_expr(
+                                    stride,
+                                    schema,
+                                    planner_context,
+                                )?
+                            } else {
+                                lit(1i64)
+                            };
+
+                            Ok(Some(GetFieldAccess::ListRange {
+                                start: Box::new(lower_bound),
+                                stop: Box::new(upper_bound),
+                                stride: Box::new(stride),
+                            }))
+                        }
+                    }
+                }
+                AccessExpr::Dot(expr) => match expr {
+                    SQLExpr::Value(ValueWithSpan {
+                        value: Value::SingleQuotedString(s) | Value::DoubleQuotedString(s),
+                        span    : _
+                    }) => Ok(Some(GetFieldAccess::NamedStructField {
+                        name: ScalarValue::from(s),
+                    })),
+                    _ => {
+                        not_impl_err!(
+                            "Dot access not supported for non-string expr: {expr:?}"
+                        )
+                    }
+                },
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        fields
+            .into_iter()
+            .flatten()
+            .try_fold(root, |expr, field_access| {
+                let mut field_access_expr = RawFieldAccessExpr { expr, field_access };
+                for planner in self.context_provider.get_expr_planners() {
+                    match planner.plan_field_access(field_access_expr, schema)? {
+                        PlannerResult::Planned(expr) => return Ok(expr),
+                        PlannerResult::Original(expr) => {
+                            field_access_expr = expr;
+                        }
+                    }
+                }
+                not_impl_err!(
+                    "GetFieldAccess not supported by ExprPlanner: {field_access_expr:?}"
+                )
+            })
     }
 }
 
@@ -968,11 +1214,10 @@ mod tests {
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
 
+    use datafusion_common::TableReference;
     use datafusion_common::config::ConfigOptions;
     use datafusion_expr::logical_plan::builder::LogicalTableSource;
     use datafusion_expr::{AggregateUDF, ScalarUDF, TableSource, WindowUDF};
-
-    use crate::TableReference;
 
     use super::*;
 
@@ -1003,7 +1248,7 @@ mod tests {
     impl ContextProvider for TestContextProvider {
         fn get_table_source(&self, name: TableReference) -> Result<Arc<dyn TableSource>> {
             match self.tables.get(name.table()) {
-                Some(table) => Ok(table.clone()),
+                Some(table) => Ok(Arc::clone(table)),
                 _ => plan_err!("Table not found: {}", name.table()),
             }
         }
@@ -1012,8 +1257,11 @@ mod tests {
             None
         }
 
-        fn get_aggregate_meta(&self, _name: &str) -> Option<Arc<AggregateUDF>> {
-            None
+        fn get_aggregate_meta(&self, name: &str) -> Option<Arc<AggregateUDF>> {
+            match name {
+                "sum" => Some(datafusion_functions_aggregate::sum::sum_udaf()),
+                _ => None,
+            }
         }
 
         fn get_variable_type(&self, _variable_names: &[String]) -> Option<DataType> {
@@ -1033,7 +1281,7 @@ mod tests {
         }
 
         fn udaf_names(&self) -> Vec<String> {
-            Vec::new()
+            vec!["sum".to_string()]
         }
 
         fn udwf_names(&self) -> Vec<String> {
@@ -1088,4 +1336,25 @@ mod tests {
     test_stack_overflow!(2048);
     test_stack_overflow!(4096);
     test_stack_overflow!(8192);
+    #[test]
+    fn test_sql_to_expr_with_alias() {
+        let schema = DFSchema::empty();
+        let mut planner_context = PlannerContext::default();
+
+        let expr_str = "SUM(int_col) as sum_int_col";
+
+        let dialect = GenericDialect {};
+        let mut parser = Parser::new(&dialect).try_with_sql(expr_str).unwrap();
+        // from sqlparser
+        let sql_expr = parser.parse_expr_with_alias().unwrap();
+
+        let context_provider = TestContextProvider::new();
+        let sql_to_rel = SqlToRel::new(&context_provider);
+
+        let expr = sql_to_rel
+            .sql_expr_to_logical_expr_with_alias(sql_expr, &schema, &mut planner_context)
+            .unwrap();
+
+        assert!(matches!(expr, Expr::Alias(_)));
+    }
 }

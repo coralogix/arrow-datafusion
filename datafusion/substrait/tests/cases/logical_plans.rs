@@ -19,35 +19,163 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::test::{add_plan_schemas_to_ctx, read_json};
     use datafusion::common::Result;
     use datafusion::dataframe::DataFrame;
-    use datafusion::prelude::{CsvReadOptions, SessionContext};
+    use datafusion::prelude::SessionContext;
     use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
-    use std::fs::File;
-    use std::io::BufReader;
-    use substrait::proto::Plan;
+    use insta::assert_snapshot;
 
     #[tokio::test]
-    async fn function_compound_signature() -> Result<()> {
+    async fn scalar_function_compound_signature() -> Result<()> {
         // DataFusion currently produces Substrait that refers to functions only by their name.
         // However, the Substrait spec requires that functions be identified by their compound signature.
         // This test confirms that DataFusion is able to consume plans following the spec, even though
         // we don't yet produce such plans.
         // Once we start producing plans with compound signatures, this test can be replaced by the roundtrip tests.
 
-        let ctx = create_context().await?;
+        // File generated with substrait-java's Isthmus:
+        // ./isthmus-cli/build/graal/isthmus --create "create table data (d boolean)" "select not d from data"
+        let proto_plan =
+            read_json("tests/testdata/test_plans/select_not_bool.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
+
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: NOT DATA.D AS EXPR$0
+          TableScan: DATA
+        "
+                );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
+    }
+
+    // Aggregate function compound signature is tested through TPCH plans
+
+    #[tokio::test]
+    async fn window_function_compound_signature() -> Result<()> {
+        // DataFusion currently produces Substrait that refers to functions only by their name.
+        // However, the Substrait spec requires that functions be identified by their compound signature.
+        // This test confirms that DataFusion is able to consume plans following the spec, even though
+        // we don't yet produce such plans.
+        // Once we start producing plans with compound signatures, this test can be replaced by the roundtrip tests.
 
         // File generated with substrait-java's Isthmus:
-        // ./isthmus-cli/build/graal/isthmus "select not d from data" -c "create table data (d boolean)"
-        let proto = read_json("tests/testdata/select_not_bool.substrait.json");
+        // ./isthmus-cli/build/graal/isthmus --create "create table data (d int, part int, ord int)" "select sum(d) OVER (PARTITION BY part ORDER BY ord ROWS BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING) AS lead_expr from data"
+        let proto_plan =
+            read_json("tests/testdata/test_plans/select_window.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
 
-        let plan = from_substrait_plan(&ctx, &proto).await?;
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: sum(DATA.D) PARTITION BY [DATA.PART] ORDER BY [DATA.ORD ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING AS LEAD_EXPR
+          WindowAggr: windowExpr=[[sum(DATA.D) PARTITION BY [DATA.PART] ORDER BY [DATA.ORD ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING]]
+            TableScan: DATA
+        "
+                );
 
-        assert_eq!(
-            format!("{:?}", plan),
-            "Projection: NOT DATA.a AS EXPR$0\
-            \n  TableScan: DATA projection=[a, b, c, d, e, f]"
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn double_window_function() -> Result<()> {
+        // Confirms a WindowExpr can be repeated in the same project.
+        // This wouldn't normally happen with DF-created plans since CSE would eliminate the duplicate.
+
+        // File generated with substrait-java's Isthmus:
+        // ./isthmus-cli/build/graal/isthmus --create "create table data (a int)" "select ROW_NUMBER() OVER (), ROW_NUMBER() OVER () AS aliased from data";
+        let proto_plan =
+            read_json("tests/testdata/test_plans/double_window.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
+
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS EXPR$0, row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW__temp__0 AS ALIASED
+          WindowAggr: windowExpr=[[row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
+            TableScan: DATA
+        "
+                );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn double_window_function_distinct_windows() -> Result<()> {
+        // Confirms a single project can have multiple window functions with separate windows in it.
+        // This wouldn't normally happen with DF-created plans since logical optimizer would
+        // separate them out.
+
+        // File generated with substrait-java's Isthmus:
+        // ./isthmus-cli/build/graal/isthmus --create "create table data (a int)" "select ROW_NUMBER() OVER (), ROW_NUMBER() OVER (PARTITION BY a) from data";
+        let proto_plan = read_json(
+            "tests/testdata/test_plans/double_window_distinct_windows.substrait.json",
         );
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
+
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS EXPR$0, row_number() PARTITION BY [DATA.A] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS EXPR$1
+          WindowAggr: windowExpr=[[row_number() ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
+            WindowAggr: windowExpr=[[row_number() PARTITION BY [DATA.A] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
+              TableScan: DATA
+        "
+                );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn null_literal_before_and_after_joins() -> Result<()> {
+        // Confirms that literals used before and after a join but for different columns
+        // are correctly handled.
+
+        // File generated with substrait-java's Isthmus:
+        // ./isthmus-cli/build/graal/isthmus --create "create table A (a int); create table B (a int, c int); create table C (a int, d int)" "select t.*, C.d, CAST(NULL AS VARCHAR) as e from (select a, CAST(NULL AS VARCHAR) as c from A UNION ALL select a, c from B) t LEFT JOIN C ON t.a = C.a"
+        let proto_plan = read_json(
+            "tests/testdata/test_plans/disambiguate_literals_with_same_name.substrait.json",
+        );
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
+
+        assert_snapshot!(
+            plan,
+            @r"
+        Projection: left.A, left.Utf8(NULL) AS C, right.D, Utf8(NULL) AS Utf8(NULL)__temp__0 AS E
+          Left Join: left.A = right.A
+            SubqueryAlias: left
+              Union
+                Projection: A.A, Utf8(NULL)
+                  TableScan: A
+                Projection: B.A, CAST(B.C AS Utf8)
+                  TableScan: B
+            SubqueryAlias: right
+              TableScan: C
+        "
+        );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
         Ok(())
     }
 
@@ -56,30 +184,66 @@ mod tests {
         // DataFusion's Substrait consumer treats all lists as nullable, even if the Substrait plan specifies them as non-nullable.
         // That's because implementing the non-nullability consistently is non-trivial.
         // This test confirms that reading a plan with non-nullable lists works as expected.
-        let ctx = create_context().await?;
-        let proto = read_json("tests/testdata/non_nullable_lists.substrait.json");
+        let proto_plan =
+            read_json("tests/testdata/test_plans/non_nullable_lists.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
 
-        let plan = from_substrait_plan(&ctx, &proto).await?;
+        assert_snapshot!(
+                &plan,
+            @"Values: (List([1, 2]))"
+        );
 
-        assert_eq!(format!("{:?}", &plan), "Values: (List([1, 2]))");
-
-        // Need to trigger execution to ensure that Arrow has validated the plan
+        // Trigger execution to ensure plan validity
         DataFrame::new(ctx.state(), plan).show().await?;
 
         Ok(())
     }
 
-    fn read_json(path: &str) -> Plan {
-        serde_json::from_reader::<_, Plan>(BufReader::new(
-            File::open(path).expect("file not found"),
-        ))
-        .expect("failed to parse json")
-    }
+    #[tokio::test]
+    async fn multilayer_aggregate() -> Result<()> {
+        let proto_plan =
+            read_json("tests/testdata/test_plans/multilayer_aggregate.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
 
-    async fn create_context() -> datafusion::common::Result<SessionContext> {
-        let ctx = SessionContext::new();
-        ctx.register_csv("DATA", "tests/testdata/data.csv", CsvReadOptions::new())
-            .await?;
-        Ok(ctx)
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: lower(sales.product) AS lower(product), sum(count(sales.product)) AS product_count
+          Aggregate: groupBy=[[sales.product]], aggr=[[sum(count(sales.product))]]
+            Aggregate: groupBy=[[sales.product]], aggr=[[count(sales.product)]]
+              TableScan: sales
+        "
+                );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
+    }
+    #[tokio::test]
+    async fn duplicate_name_in_union() -> Result<()> {
+        let proto_plan =
+            read_json("tests/testdata/test_plans/duplicate_name_in_union.substrait.json");
+        let ctx = add_plan_schemas_to_ctx(SessionContext::new(), &proto_plan)?;
+        let plan = from_substrait_plan(&ctx.state(), &proto_plan).await?;
+
+        assert_snapshot!(
+        plan,
+        @r"
+        Projection: foo AS col1, bar AS col2
+          Union
+            Projection: foo, bar
+              Values: (Int64(100), Int64(200))
+            Projection: x, foo
+              Values: (Int32(300), Int64(400))
+        "
+                );
+
+        // Trigger execution to ensure plan validity
+        DataFrame::new(ctx.state(), plan).show().await?;
+
+        Ok(())
     }
 }

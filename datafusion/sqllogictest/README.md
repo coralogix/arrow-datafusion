@@ -17,24 +17,31 @@
   under the License.
 -->
 
-# DataFusion sqllogictest
+# Apache DataFusion sqllogictest
 
-[DataFusion][df] is an extensible query execution framework, written in Rust, that uses Apache Arrow as its in-memory format.
+[Apache DataFusion] is an extensible query execution framework, written in Rust, that uses [Apache Arrow] as its in-memory format.
 
-This crate is a submodule of DataFusion that contains an implementation of [sqllogictest](https://www.sqlite.org/sqllogictest/doc/trunk/about.wiki).
+This crate is a submodule of DataFusion that contains an implementation of [sqllogictest].
 
-[df]: https://crates.io/crates/datafusion
+[apache arrow]: https://arrow.apache.org/
+[apache datafusion]: https://datafusion.apache.org/
+[sqllogictest]: https://www.sqlite.org/sqllogictest/doc/trunk/about.wiki
 
 ## Overview
 
-This crate uses [sqllogictest-rs](https://github.com/risinglightdb/sqllogictest-rs) to parse and run `.slt` files in the
-[`test_files`](test_files) directory of this crate.
+This crate uses [sqllogictest-rs] to parse and run `.slt` files in the [`test_files`] directory of
+this crate or the [`data/sqlite`] directory of the [datafusion-testing] repository.
+
+[sqllogictest-rs]: https://github.com/risinglightdb/sqllogictest-rs
+[`test_files`]: test_files
+[`data/sqlite`]: https://github.com/apache/datafusion-testing/tree/main/data/sqlite
+[datafusion-testing]: https://github.com/apache/datafusion-testing
 
 ## Testing setup
 
-1. `rustup update stable` DataFusion uses the latest stable release of rust
+1. `rustup update stable` DataFusion uses the latest stable release of Rust
 2. `git submodule init`
-3. `git submodule update`
+3. `git submodule update --init --remote --recursive`
 
 ## Running tests: TLDR Examples
 
@@ -102,6 +109,50 @@ SELECT * from foo;
 
 Assuming it looks good, check it in!
 
+## Cookbook: Testing for whitespace
+
+The `sqllogictest` runner will automatically strip trailing whitespace, meaning
+it requires an additional effort to verify that trailing whitespace is correctly produced
+
+For example, the following test can't distinguish between `Andrew` and `Andrew `
+(with trailing space):
+
+```text
+query T
+select substr('Andrew Lamb', 1, 7)
+----
+Andrew
+```
+
+To test trailing whitespace, project additional non-whitespace column on the
+right. For example, by selecting `'|'` after the column of interest, the test
+can distinguish between `Andrew` and `Andrew `:
+
+```text
+# Note two spaces between `Andrew` and `|`
+query TT
+select substr('Andrew Lamb', 1, 7), '|'
+----
+Andrew  |
+
+# Note only one space between `Andrew` and `|`
+query TT
+select substr('Andrew Lamb', 1, 6), '|'
+----
+Andrew |
+```
+
+## Cookbook: Ignoring volatile output
+
+Sometimes parts of a result change every run (timestamps, counters, etc.). To keep the rest of the snapshot checked in, replace those fragments with the `<slt:ignore>` marker inside the expected block. During validation the marker acts like a wildcard, so only the surrounding text must match.
+
+```text
+query TT
+EXPLAIN ANALYZE SELECT * FROM generate_series(100);
+----
+Plan with Metrics LazyMemoryExec: partitions=1, batch_generators=[generate_series: start=0, end=100, batch_size=8192], metrics=[output_rows=101, elapsed_compute=<slt:ignore>, output_bytes=<slt:ignore>]
+```
+
 # Reference
 
 ## Running tests: Validation Mode
@@ -122,24 +173,32 @@ sqllogictests also supports `cargo test` style substring matches on file names t
 cargo test --test sqllogictests -- information
 ```
 
+Additionally, executing specific tests within a file is also supported. Tests are identified by line number within
+the .slt file; for example, the following command will run the test in line `709` for file `information.slt` along
+with any other preparatory statements:
+
+```shell
+cargo test --test sqllogictests -- information:709
+```
+
 ## Running tests: Postgres compatibility
 
 Test files that start with prefix `pg_compat_` verify compatibility
 with Postgres by running the same script files both with DataFusion and with Postgres
 
-In order to run the sqllogictests running against a previously running Postgres instance, do:
+In order to have the sqllogictest run against an existing running Postgres instance, do:
 
 ```shell
 PG_COMPAT=true PG_URI="postgresql://postgres@127.0.0.1/postgres" cargo test --features=postgres --test sqllogictests
 ```
 
-The environemnt variables:
+The environment variables:
 
 1. `PG_COMPAT` instructs sqllogictest to run against Postgres (not DataFusion)
 2. `PG_URI` contains a `libpq` style connection string, whose format is described in
    [the docs](https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html#url)
 
-One way to create a suitable a posgres container in docker is to use
+One way to create a suitable a postgres container in docker is to use
 the [Official Image](https://hub.docker.com/_/postgres) with a command
 such as the following. Note the collation **must** be set to `C` otherwise
 `ORDER BY` will not match DataFusion and the tests will diff.
@@ -150,6 +209,15 @@ docker run \
   -e POSTGRES_INITDB_ARGS="--encoding=UTF-8 --lc-collate=C --lc-ctype=C" \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   postgres
+```
+
+If you do not want to create a new postgres database and you have docker
+installed you can skip providing a PG_URI env variable and the sqllogictest
+runner will automatically create a temporary postgres docker container.
+For example:
+
+```shell
+PG_COMPAT=true cargo test --features=postgres --test sqllogictests
 ```
 
 ## Running Tests: `tpch`
@@ -172,12 +240,55 @@ Then you need to add `INCLUDE_TPCH=true` to run tpch tests:
 INCLUDE_TPCH=true cargo test --test sqllogictests
 ```
 
+## Running Tests: `sqlite`
+
+Test files in `data/sqlite` directory of the datafusion-testing crate were
+sourced from the [sqlite test suite](https://www.sqlite.org/sqllogictest/dir?ci=tip) and have been cleansed and updated to
+run within DataFusion's sqllogictest runner.
+
+To run the sqlite tests you need to increase the rust stack size and add
+`INCLUDE_SQLITE=true` to run the sqlite tests:
+
+```shell
+export RUST_MIN_STACK=30485760;
+INCLUDE_SQLITE=true cargo test --test sqllogictests
+```
+
+Note that there are well over 5 million queries in these tests and running the
+sqlite tests will take a long time. You may wish to run them in release-nonlto mode:
+
+```shell
+INCLUDE_SQLITE=true cargo test --profile release-nonlto --test sqllogictests
+```
+
+The sqlite tests can also be run with the postgres runner to verify compatibility:
+
+```shell
+export RUST_MIN_STACK=30485760;
+PG_COMPAT=true INCLUDE_SQLITE=true cargo test --features=postgres --test sqllogictests
+```
+
+To update the sqllite expected answers use the `datafusion/sqllogictest/regenerate_sqlite_files.sh` script.
+
+Note this must be run with an empty postgres instance. For example
+
+```shell
+PG_URI=postgresql://postgres@localhost:5432/postgres bash datafusion/sqllogictest/regenerate_sqlite_files.sh
+```
+
 ## Updating tests: Completion Mode
 
 In test script completion mode, `sqllogictests` reads a prototype script and runs the statements and queries against the
 database engine. The output is a full script that is a copy of the prototype script with result inserted.
 
 You can update the tests / generate expected output by passing the `--complete` argument.
+
+To regenerate and complete the sqlite test suite's files in datafusion-testing/data/sqlite/ please refer to the
+'./regenerate_sqlite_files.sh' file.
+
+_WARNING_: The regenerate_sqlite_files.sh is experimental and should be understood and run with an abundance of caution.
+When run the script will clone a remote repository locally, replace the location of a dependency with a custom git
+version, will replace an existing .rs file with one from a github gist and will run various commands locally.
 
 ```shell
 # Update ddl.slt with output from running
@@ -196,6 +307,27 @@ directory `test_files/scratch/copy`.
 Tests that need to write temporary files should write (only) to this
 directory to ensure they do not interfere with others concurrently
 running tests.
+
+## Running tests: Substrait round-trip mode
+
+This mode will run all the .slt test files in validation mode, adding a Substrait conversion round-trip for each
+generated DataFusion logical plan (SQL statement → DF logical → Substrait → DF logical → DF physical → execute).
+
+Not all statements will be round-tripped, some statements like CREATE, INSERT, SET or EXPLAIN statements will be
+issued as is, but any other statement will be round-tripped to/from Substrait.
+
+_WARNING_: as there are still a lot of failures in this mode (https://github.com/apache/datafusion/issues/16248),
+it is not enforced in the CI, instead, it needs to be run manually with the following command:
+
+```shell
+cargo test --test sqllogictests -- --substrait-round-trip
+```
+
+For focusing on one specific failing test, a file:line filter can be used:
+
+```shell
+cargo test --test sqllogictests -- --substrait-round-trip binary.slt:23
+```
 
 ## `.slt` file format
 
@@ -225,7 +357,7 @@ query <type_string> <sort_mode>
 <expected_result>
 ```
 
-- `test_name`: Uniquely identify the test name (Datafusion only)
+- `test_name`: Uniquely identify the test name (DataFusion only)
 - `type_string`: A short string that specifies the number of result columns and the expected datatype of each result
   column. There is one character in the <type_string> for each result column. The characters codes are:
   - 'B' - **B**oolean,

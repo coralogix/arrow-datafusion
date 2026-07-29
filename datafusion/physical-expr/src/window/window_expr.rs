@@ -20,20 +20,27 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::{LexOrderingRef, PhysicalExpr, PhysicalSortExpr};
+use crate::PhysicalExpr;
 
-use arrow::array::{new_empty_array, Array, ArrayRef};
-use arrow::compute::kernels::sort::SortColumn;
+use arrow::array::BooleanArray;
+use arrow::array::{Array, ArrayRef, new_empty_array};
 use arrow::compute::SortOptions;
-use arrow::datatypes::Field;
+use arrow::compute::filter as arrow_filter;
+use arrow::compute::kernels::sort::SortColumn;
+use arrow::datatypes::FieldRef;
 use arrow::record_batch::RecordBatch;
+use datafusion_common::cast::as_boolean_array;
 use datafusion_common::utils::compare_rows;
-use datafusion_common::{internal_err, DataFusionError, Result, ScalarValue};
+use datafusion_common::{
+    Result, ScalarValue, arrow_datafusion_err, exec_datafusion_err, internal_err,
+};
 use datafusion_expr::window_state::{
     PartitionBatchState, WindowAggState, WindowFrameContext, WindowFrameStateGroups,
 };
 use datafusion_expr::{Accumulator, PartitionEvaluator, WindowFrame, WindowFrameBound};
+use datafusion_physical_expr_common::sort_expr::PhysicalSortExpr;
 
+use datafusion_physical_expr_common::utils::evaluate_expressions_to_arrays;
 use indexmap::IndexMap;
 
 /// Common trait for [window function] implementations
@@ -67,7 +74,7 @@ pub trait WindowExpr: Send + Sync + Debug {
     fn as_any(&self) -> &dyn Any;
 
     /// The field of the final result of this window function.
-    fn field(&self) -> Result<Field>;
+    fn field(&self) -> Result<FieldRef>;
 
     /// Human readable name such as `"MIN(c2)"` or `"RANK()"`. The default
     /// implementation returns placeholder text.
@@ -83,13 +90,7 @@ pub trait WindowExpr: Send + Sync + Debug {
     /// Evaluate the window function arguments against the batch and return
     /// array ref, normally the resulting `Vec` is a single element one.
     fn evaluate_args(&self, batch: &RecordBatch) -> Result<Vec<ArrayRef>> {
-        self.expressions()
-            .iter()
-            .map(|e| {
-                e.evaluate(batch)
-                    .and_then(|v| v.into_array(batch.num_rows()))
-            })
-            .collect()
+        evaluate_expressions_to_arrays(&self.expressions(), batch)
     }
 
     /// Evaluate the window function values against the batch
@@ -116,7 +117,7 @@ pub trait WindowExpr: Send + Sync + Debug {
         self.order_by()
             .iter()
             .map(|e| e.evaluate_to_sort_column(batch))
-            .collect::<Result<Vec<SortColumn>>>()
+            .collect()
     }
 
     /// Get the window frame of this [WindowExpr].
@@ -129,6 +130,12 @@ pub trait WindowExpr: Send + Sync + Debug {
     /// Get the reverse expression of this [WindowExpr].
     fn get_reverse_expr(&self) -> Option<Arc<dyn WindowExpr>>;
 
+    /// Creates a new instance of the window function evaluator.
+    ///
+    /// Returns `WindowFn::Builtin` for built-in window functions (e.g., ROW_NUMBER, RANK)
+    /// or `WindowFn::Aggregate` for aggregate window functions (e.g., SUM, AVG).
+    fn create_window_fn(&self) -> Result<WindowFn>;
+
     /// Returns all expressions used in the [`WindowExpr`].
     /// These expressions are (1) function arguments, (2) partition by expressions, (3) order by expressions.
     fn all_expressions(&self) -> WindowPhysicalExpressions {
@@ -137,8 +144,8 @@ pub trait WindowExpr: Send + Sync + Debug {
         let order_by_exprs = self
             .order_by()
             .iter()
-            .map(|sort_expr| sort_expr.expr.clone())
-            .collect::<Vec<_>>();
+            .map(|sort_expr| Arc::clone(&sort_expr.expr))
+            .collect();
         WindowPhysicalExpressions {
             args,
             partition_by_exprs,
@@ -176,6 +183,9 @@ pub trait AggregateWindowExpr: WindowExpr {
     /// (non-sliding) expressions will return sliding (normal) accumulators.
     fn get_accumulator(&self) -> Result<Box<dyn Accumulator>>;
 
+    /// Optional FILTER (WHERE ...) predicate for this window aggregate.
+    fn filter_expr(&self) -> Option<&Arc<dyn PhysicalExpr>>;
+
     /// Given current range and the last range, calculates the accumulator
     /// result for the range of interest.
     fn get_aggregate_result_inside_range(
@@ -184,16 +194,20 @@ pub trait AggregateWindowExpr: WindowExpr {
         cur_range: &Range<usize>,
         value_slice: &[ArrayRef],
         accumulator: &mut Box<dyn Accumulator>,
+        filter_mask: Option<&BooleanArray>,
     ) -> Result<ScalarValue>;
+
+    /// Indicates whether this window function always produces the same result
+    /// for all rows in the partition.
+    fn is_constant_in_partition(&self) -> bool;
 
     /// Evaluates the window function against the batch.
     fn aggregate_evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
         let mut accumulator = self.get_accumulator()?;
         let mut last_range = Range { start: 0, end: 0 };
-        let sort_options: Vec<SortOptions> =
-            self.order_by().iter().map(|o| o.options).collect();
+        let sort_options = self.order_by().iter().map(|o| o.options).collect();
         let mut window_frame_ctx =
-            WindowFrameContext::new(self.get_window_frame().clone(), sort_options);
+            WindowFrameContext::new(Arc::clone(self.get_window_frame()), sort_options);
         self.get_result_column(
             &mut accumulator,
             batch,
@@ -225,10 +239,9 @@ pub trait AggregateWindowExpr: WindowExpr {
                     },
                 );
             };
-            let window_state =
-                window_agg_state.get_mut(partition_row).ok_or_else(|| {
-                    DataFusionError::Execution("Cannot find state".to_string())
-                })?;
+            let window_state = window_agg_state
+                .get_mut(partition_row)
+                .ok_or_else(|| exec_datafusion_err!("Cannot find state"))?;
             let accumulator = match &mut window_state.window_fn {
                 WindowFn::Aggregate(accumulator) => accumulator,
                 _ => unreachable!(),
@@ -239,9 +252,8 @@ pub trait AggregateWindowExpr: WindowExpr {
 
             // If there is no window state context, initialize it.
             let window_frame_ctx = state.window_frame_ctx.get_or_insert_with(|| {
-                let sort_options: Vec<SortOptions> =
-                    self.order_by().iter().map(|o| o.options).collect();
-                WindowFrameContext::new(self.get_window_frame().clone(), sort_options)
+                let sort_options = self.order_by().iter().map(|o| o.options).collect();
+                WindowFrameContext::new(Arc::clone(self.get_window_frame()), sort_options)
             });
             let out_col = self.get_result_column(
                 accumulator,
@@ -260,7 +272,16 @@ pub trait AggregateWindowExpr: WindowExpr {
 
     /// Calculates the window expression result for the given record batch.
     /// Assumes that `record_batch` belongs to a single partition.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Arguments
+    /// * `accumulator`: The accumulator to use for the calculation.
+    /// * `record_batch`: batch belonging to the current partition (see [`PartitionBatchState`]).
+    /// * `most_recent_row`: the batch that contains the most recent row, if available (see [`PartitionBatchState`]).
+    /// * `last_range`: The last range of rows that were processed (see [`WindowAggState`]).
+    /// * `window_frame_ctx`: Details about the window frame (see [`WindowFrameContext`]).
+    /// * `idx`: The index of the current row in the record batch.
+    /// * `not_end`: is the current row not the end of the partition (see [`PartitionBatchState`]).
+    #[expect(clippy::too_many_arguments)]
     fn get_result_column(
         &self,
         accumulator: &mut Box<dyn Accumulator>,
@@ -272,8 +293,39 @@ pub trait AggregateWindowExpr: WindowExpr {
         not_end: bool,
     ) -> Result<ArrayRef> {
         let values = self.evaluate_args(record_batch)?;
-        let order_bys = get_orderby_values(self.order_by_columns(record_batch)?);
 
+        // Evaluate filter mask once per record batch if present
+        let filter_mask_arr: Option<ArrayRef> = match self.filter_expr() {
+            Some(expr) => {
+                let value = expr.evaluate(record_batch)?;
+                Some(value.into_array(record_batch.num_rows())?)
+            }
+            None => None,
+        };
+
+        // Borrow boolean view from the owned array
+        let filter_mask: Option<&BooleanArray> = match filter_mask_arr.as_deref() {
+            Some(arr) => Some(as_boolean_array(arr)?),
+            None => None,
+        };
+
+        if self.is_constant_in_partition() {
+            if not_end {
+                let field = self.field()?;
+                let out_type = field.data_type();
+                return Ok(new_empty_array(out_type));
+            }
+            let values = if let Some(mask) = filter_mask {
+                // Apply mask to all argument arrays before a single update
+                filter_arrays(&values, mask)?
+            } else {
+                values
+            };
+            accumulator.update_batch(&values)?;
+            let value = accumulator.evaluate()?;
+            return value.to_array_of_size(record_batch.num_rows());
+        }
+        let order_bys = get_orderby_values(self.order_by_columns(record_batch)?);
         let most_recent_row_order_bys = most_recent_row
             .map(|batch| self.order_by_columns(batch))
             .transpose()?
@@ -306,6 +358,7 @@ pub trait AggregateWindowExpr: WindowExpr {
                 &cur_range,
                 &values,
                 accumulator,
+                filter_mask,
             )?;
             // Update last range
             *last_range = cur_range;
@@ -321,6 +374,21 @@ pub trait AggregateWindowExpr: WindowExpr {
             ScalarValue::iter_to_array(row_wise_results)
         }
     }
+}
+
+/// Filters a single array with the provided boolean mask.
+pub(crate) fn filter_array(array: &ArrayRef, mask: &BooleanArray) -> Result<ArrayRef> {
+    arrow_filter(array.as_ref(), mask)
+        .map(|a| a as ArrayRef)
+        .map_err(|e| arrow_datafusion_err!(e))
+}
+
+/// Filters a list of arrays with the provided boolean mask.
+pub(crate) fn filter_arrays(
+    arrays: &[ArrayRef],
+    mask: &BooleanArray,
+) -> Result<Vec<ArrayRef>> {
+    arrays.iter().map(|arr| filter_array(arr, mask)).collect()
 }
 
 /// Determines whether the end bound calculation for a window frame context is
@@ -344,13 +412,13 @@ pub(crate) fn is_end_bound_safe(
     window_frame_ctx: &WindowFrameContext,
     order_bys: &[ArrayRef],
     most_recent_order_bys: Option<&[ArrayRef]>,
-    sort_exprs: LexOrderingRef,
+    sort_exprs: &[PhysicalSortExpr],
     idx: usize,
 ) -> Result<bool> {
     if sort_exprs.is_empty() {
         // Early return if no sort expressions are present:
         return Ok(false);
-    }
+    };
 
     match window_frame_ctx {
         WindowFrameContext::Rows(window_frame) => {
@@ -530,47 +598,6 @@ pub enum WindowFn {
     Aggregate(Box<dyn Accumulator>),
 }
 
-/// State for the RANK(percent_rank, rank, dense_rank) built-in window function.
-#[derive(Debug, Clone, Default)]
-pub struct RankState {
-    /// The last values for rank as these values change, we increase n_rank
-    pub last_rank_data: Option<Vec<ScalarValue>>,
-    /// The index where last_rank_boundary is started
-    pub last_rank_boundary: usize,
-    /// Keep the number of entries in current rank
-    pub current_group_count: usize,
-    /// Rank number kept from the start
-    pub n_rank: usize,
-}
-
-/// State for the 'ROW_NUMBER' built-in window function.
-#[derive(Debug, Clone, Default)]
-pub struct NumRowsState {
-    pub n_rows: usize,
-}
-
-/// Tag to differentiate special use cases of the NTH_VALUE built-in window function.
-#[derive(Debug, Copy, Clone)]
-pub enum NthValueKind {
-    First,
-    Last,
-    Nth(i64),
-}
-
-#[derive(Debug, Clone)]
-pub struct NthValueState {
-    // In certain cases, we can finalize the result early. Consider this usage:
-    // ```
-    //  FIRST_VALUE(increasing_col) OVER window AS my_first_value
-    //  WINDOW (ORDER BY ts ASC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING) AS window
-    // ```
-    // The result will always be the first entry in the table. We can store such
-    // early-finalizing results and then just reuse them as necessary. This opens
-    // opportunities to prune our datasets.
-    pub finalized_result: Option<ScalarValue>,
-    pub kind: NthValueKind,
-}
-
 /// Key for IndexMap for each unique partition
 ///
 /// For instance, if window frame is `OVER(PARTITION BY a,b)`,
@@ -593,8 +620,8 @@ mod tests {
 
     use crate::window::window_expr::is_row_ahead;
 
-    use arrow_array::{ArrayRef, Float64Array};
-    use arrow_schema::SortOptions;
+    use arrow::array::{ArrayRef, Float64Array};
+    use arrow::compute::SortOptions;
     use datafusion_common::Result;
 
     #[test]

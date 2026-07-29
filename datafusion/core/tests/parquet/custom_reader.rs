@@ -20,29 +20,33 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arrow::array::{ArrayRef, Int64Array, Int8Array, StringArray};
+use arrow::array::{ArrayRef, Int8Array, Int64Array, StringArray};
 use arrow::datatypes::{Field, Schema, SchemaBuilder};
 use arrow::record_batch::RecordBatch;
-use datafusion::assert_batches_sorted_eq;
-use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::{
-    FileMeta, FileScanConfig, ParquetExec, ParquetFileMetrics, ParquetFileReaderFactory,
+    ParquetFileMetrics, ParquetFileReaderFactory, ParquetSource,
 };
 use datafusion::physical_plan::collect;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::prelude::SessionContext;
 use datafusion_common::Result;
+use datafusion_common::test_util::batches_to_sort_string;
 
 use bytes::Bytes;
+use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
+use datafusion_datasource::source::DataSourceExec;
+use datafusion_datasource_parquet::metadata::DFParquetMetadata;
 use futures::future::BoxFuture;
 use futures::{FutureExt, TryFutureExt};
+use insta::assert_snapshot;
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectMeta, ObjectStore};
-use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::errors::ParquetError;
 use parquet::file::metadata::ParquetMetaData;
 
@@ -71,38 +75,40 @@ async fn route_data_access_ops_to_parquet_file_reader_factory() {
             range: None,
             statistics: None,
             extensions: Some(Arc::new(String::from(EXPECTED_USER_DEFINED_METADATA))),
+            metadata_size_hint: None,
         })
         .collect();
 
-    // prepare the scan
-    let parquet_exec = ParquetExec::builder(
-        FileScanConfig::new(
-            // just any url that doesn't point to in memory object store
-            ObjectStoreUrl::local_filesystem(),
-            file_schema,
-        )
-        .with_file_group(file_group),
+    let source = Arc::new(
+        ParquetSource::new(file_schema.clone())
+            // prepare the scan
+            .with_parquet_file_reader_factory(Arc::new(
+                InMemoryParquetFileReaderFactory(Arc::clone(&in_memory_object_store)),
+            )),
+    );
+    let base_config = FileScanConfigBuilder::new(
+        // just any url that doesn't point to in memory object store
+        ObjectStoreUrl::local_filesystem(),
+        source,
     )
-    .build()
-    .with_parquet_file_reader_factory(Arc::new(InMemoryParquetFileReaderFactory(
-        Arc::clone(&in_memory_object_store),
-    )));
+    .with_file_group(file_group)
+    .build();
+
+    let parquet_exec = DataSourceExec::from_data_source(base_config);
 
     let session_ctx = SessionContext::new();
     let task_ctx = session_ctx.task_ctx();
-    let read = collect(Arc::new(parquet_exec), task_ctx).await.unwrap();
+    let read = collect(parquet_exec, task_ctx).await.unwrap();
 
-    let expected = [
-        "+-----+----+----+",
-        "| c1  | c2 | c3 |",
-        "+-----+----+----+",
-        "| Foo | 1  | 10 |",
-        "|     | 2  | 20 |",
-        "| bar |    |    |",
-        "+-----+----+----+",
-    ];
-
-    assert_batches_sorted_eq!(expected, &read);
+    assert_snapshot!(batches_to_sort_string(&read), @r"
+    +-----+----+----+
+    | c1  | c2 | c3 |
+    +-----+----+----+
+    |     | 2  | 20 |
+    | Foo | 1  | 10 |
+    | bar |    |    |
+    +-----+----+----+
+    ");
 }
 
 #[derive(Debug)]
@@ -112,11 +118,11 @@ impl ParquetFileReaderFactory for InMemoryParquetFileReaderFactory {
     fn create_reader(
         &self,
         partition_index: usize,
-        file_meta: FileMeta,
+        partitioned_file: PartitionedFile,
         metadata_size_hint: Option<usize>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Box<dyn AsyncFileReader + Send>> {
-        let metadata = file_meta
+        let metadata = partitioned_file
             .extensions
             .as_ref()
             .expect("has user defined metadata");
@@ -128,13 +134,13 @@ impl ParquetFileReaderFactory for InMemoryParquetFileReaderFactory {
 
         let parquet_file_metrics = ParquetFileMetrics::new(
             partition_index,
-            file_meta.location().as_ref(),
+            partitioned_file.object_meta.location.as_ref(),
             metrics,
         );
 
         Ok(Box::new(ParquetFileReader {
             store: Arc::clone(&self.0),
-            meta: file_meta.object_meta,
+            meta: partitioned_file.object_meta,
             metrics: parquet_file_metrics,
             metadata_size_hint,
         }))
@@ -180,7 +186,7 @@ async fn store_parquet_in_memory(
                 location: Path::parse(format!("file-{offset}.parquet"))
                     .expect("creating path"),
                 last_modified: chrono::DateTime::from(SystemTime::now()),
-                size: buf.len(),
+                size: buf.len() as u64,
                 e_tag: None,
                 version: None,
             };
@@ -212,9 +218,10 @@ struct ParquetFileReader {
 impl AsyncFileReader for ParquetFileReader {
     fn get_bytes(
         &mut self,
-        range: Range<usize>,
+        range: Range<u64>,
     ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        self.metrics.bytes_scanned.add(range.end - range.start);
+        let bytes_scanned = range.end - range.start;
+        self.metrics.bytes_scanned.add(bytes_scanned as usize);
 
         self.store
             .get_range(&self.meta.location, range)
@@ -226,20 +233,19 @@ impl AsyncFileReader for ParquetFileReader {
 
     fn get_metadata(
         &mut self,
+        _options: Option<&ArrowReaderOptions>,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
         Box::pin(async move {
-            let metadata = fetch_parquet_metadata(
-                self.store.as_ref(),
-                &self.meta,
-                self.metadata_size_hint,
-            )
-            .await
-            .map_err(|e| {
-                ParquetError::General(format!(
-                    "AsyncChunkReader::get_metadata error: {e}"
-                ))
-            })?;
-            Ok(Arc::new(metadata))
+            let metadata = DFParquetMetadata::new(self.store.as_ref(), &self.meta)
+                .with_metadata_size_hint(self.metadata_size_hint)
+                .fetch_metadata()
+                .await
+                .map_err(|e| {
+                    ParquetError::General(format!(
+                        "AsyncChunkReader::get_metadata error: {e}"
+                    ))
+                })?;
+            Ok(metadata)
         })
     }
 }

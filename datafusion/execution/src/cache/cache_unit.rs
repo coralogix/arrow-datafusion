@@ -15,21 +15,53 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::cache::CacheAccessor;
+use crate::cache::cache_manager::{FileStatisticsCache, FileStatisticsCacheEntry};
 
 use datafusion_common::Statistics;
 
 use dashmap::DashMap;
-use object_store::path::Path;
 use object_store::ObjectMeta;
+use object_store::path::Path;
 
-/// Collected statistics for files
+pub use crate::cache::DefaultFilesMetadataCache;
+
+/// Default implementation of [`FileStatisticsCache`]
+///
+/// Stores collected statistics for files
+///
 /// Cache is invalided when file size or last modification has changed
+///
+/// [`FileStatisticsCache`]: crate::cache::cache_manager::FileStatisticsCache
 #[derive(Default)]
 pub struct DefaultFileStatisticsCache {
     statistics: DashMap<Path, (ObjectMeta, Arc<Statistics>)>,
+}
+
+impl FileStatisticsCache for DefaultFileStatisticsCache {
+    fn list_entries(&self) -> HashMap<Path, FileStatisticsCacheEntry> {
+        let mut entries = HashMap::<Path, FileStatisticsCacheEntry>::new();
+
+        for entry in &self.statistics {
+            let path = entry.key();
+            let (object_meta, stats) = entry.value();
+            entries.insert(
+                path.clone(),
+                FileStatisticsCacheEntry {
+                    object_meta: object_meta.clone(),
+                    num_rows: stats.num_rows,
+                    num_columns: stats.column_statistics.len(),
+                    table_size_bytes: stats.total_byte_size,
+                    statistics_size_bytes: 0, // TODO: set to the real size in the future
+                },
+            );
+        }
+
+        entries
+    }
 }
 
 impl CacheAccessor<Path, Arc<Statistics>> for DefaultFileStatisticsCache {
@@ -39,7 +71,7 @@ impl CacheAccessor<Path, Arc<Statistics>> for DefaultFileStatisticsCache {
     fn get(&self, k: &Path) -> Option<Arc<Statistics>> {
         self.statistics
             .get(k)
-            .map(|s| Some(s.value().1.clone()))
+            .map(|s| Some(Arc::clone(&s.value().1)))
             .unwrap_or(None)
     }
 
@@ -55,7 +87,7 @@ impl CacheAccessor<Path, Arc<Statistics>> for DefaultFileStatisticsCache {
                     // file has changed
                     None
                 } else {
-                    Some(statistics.clone())
+                    Some(Arc::clone(statistics))
                 }
             })
             .unwrap_or(None)
@@ -77,8 +109,8 @@ impl CacheAccessor<Path, Arc<Statistics>> for DefaultFileStatisticsCache {
             .map(|x| x.1)
     }
 
-    fn remove(&mut self, k: &Path) -> Option<Arc<Statistics>> {
-        self.statistics.remove(k).map(|x| x.1 .1)
+    fn remove(&self, k: &Path) -> Option<Arc<Statistics>> {
+        self.statistics.remove(k).map(|x| x.1.1)
     }
 
     fn contains_key(&self, k: &Path) -> bool {
@@ -97,75 +129,18 @@ impl CacheAccessor<Path, Arc<Statistics>> for DefaultFileStatisticsCache {
     }
 }
 
-/// Collected files metadata for listing files.
-/// Cache will not invalided until user call remove or clear.
-#[derive(Default)]
-pub struct DefaultListFilesCache {
-    statistics: DashMap<Path, Arc<Vec<ObjectMeta>>>,
-}
-
-impl CacheAccessor<Path, Arc<Vec<ObjectMeta>>> for DefaultListFilesCache {
-    type Extra = ObjectMeta;
-
-    fn get(&self, k: &Path) -> Option<Arc<Vec<ObjectMeta>>> {
-        self.statistics.get(k).map(|x| x.value().clone())
-    }
-
-    fn get_with_extra(
-        &self,
-        _k: &Path,
-        _e: &Self::Extra,
-    ) -> Option<Arc<Vec<ObjectMeta>>> {
-        panic!("Not supported DefaultListFilesCache get_with_extra")
-    }
-
-    fn put(
-        &self,
-        key: &Path,
-        value: Arc<Vec<ObjectMeta>>,
-    ) -> Option<Arc<Vec<ObjectMeta>>> {
-        self.statistics.insert(key.clone(), value)
-    }
-
-    fn put_with_extra(
-        &self,
-        _key: &Path,
-        _value: Arc<Vec<ObjectMeta>>,
-        _e: &Self::Extra,
-    ) -> Option<Arc<Vec<ObjectMeta>>> {
-        panic!("Not supported DefaultListFilesCache put_with_extra")
-    }
-
-    fn remove(&mut self, k: &Path) -> Option<Arc<Vec<ObjectMeta>>> {
-        self.statistics.remove(k).map(|x| x.1)
-    }
-
-    fn contains_key(&self, k: &Path) -> bool {
-        self.statistics.contains_key(k)
-    }
-
-    fn len(&self) -> usize {
-        self.statistics.len()
-    }
-
-    fn clear(&self) {
-        self.statistics.clear()
-    }
-
-    fn name(&self) -> String {
-        "DefaultListFilesCache".to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::cache::cache_unit::{DefaultFileStatisticsCache, DefaultListFilesCache};
+    use super::*;
     use crate::cache::CacheAccessor;
+    use crate::cache::cache_manager::{FileStatisticsCache, FileStatisticsCacheEntry};
+    use crate::cache::cache_unit::DefaultFileStatisticsCache;
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use chrono::DateTime;
     use datafusion_common::Statistics;
-    use object_store::path::Path;
+    use datafusion_common::stats::Precision;
     use object_store::ObjectMeta;
+    use object_store::path::Path;
 
     #[test]
     fn test_statistics_cache() {
@@ -206,30 +181,24 @@ mod tests {
         assert!(cache.get_with_extra(&meta2.location, &meta2).is_none());
 
         // different file
-        let mut meta2 = meta;
+        let mut meta2 = meta.clone();
         meta2.location = Path::from("test2");
         assert!(cache.get_with_extra(&meta2.location, &meta2).is_none());
-    }
 
-    #[test]
-    fn test_list_file_cache() {
-        let meta = ObjectMeta {
-            location: Path::from("test"),
-            last_modified: DateTime::parse_from_rfc3339("2022-09-27T22:36:00+02:00")
-                .unwrap()
-                .into(),
-            size: 1024,
-            e_tag: None,
-            version: None,
-        };
-
-        let cache = DefaultListFilesCache::default();
-        assert!(cache.get(&meta.location).is_none());
-
-        cache.put(&meta.location, vec![meta.clone()].into());
+        // test the list_entries method
+        let entries = cache.list_entries();
         assert_eq!(
-            cache.get(&meta.location).unwrap().first().unwrap().clone(),
-            meta.clone()
+            entries,
+            HashMap::from([(
+                Path::from("test"),
+                FileStatisticsCacheEntry {
+                    object_meta: meta.clone(),
+                    num_rows: Precision::Absent,
+                    num_columns: 1,
+                    table_size_bytes: Precision::Absent,
+                    statistics_size_bytes: 0,
+                }
+            )])
         );
     }
 }

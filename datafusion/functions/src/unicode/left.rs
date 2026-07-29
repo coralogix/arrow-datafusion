@@ -19,18 +19,41 @@ use std::any::Any;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, GenericStringArray, OffsetSizeTrait};
+use arrow::array::{
+    Array, ArrayAccessor, ArrayIter, ArrayRef, GenericStringArray, Int64Array,
+    OffsetSizeTrait,
+};
 use arrow::datatypes::DataType;
 
-use datafusion_common::cast::{as_generic_string_array, as_int64_array};
-use datafusion_common::exec_err;
-use datafusion_common::Result;
-use datafusion_expr::TypeSignature::Exact;
-use datafusion_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
-
 use crate::utils::{make_scalar_function, utf8_to_str_type};
+use datafusion_common::Result;
+use datafusion_common::cast::{
+    as_generic_string_array, as_int64_array, as_string_view_array,
+};
+use datafusion_common::exec_err;
+use datafusion_expr::TypeSignature::Exact;
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarUDFImpl, Signature, Volatility,
+};
+use datafusion_macros::user_doc;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Returns a specified number of characters from the left side of a string.",
+    syntax_example = "left(str, n)",
+    sql_example = r#"```sql
+> select left('datafusion', 4);
++-----------------------------------+
+| left(Utf8("datafusion"),Int64(4)) |
++-----------------------------------+
+| data                              |
++-----------------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    argument(name = "n", description = "Number of characters to return."),
+    related_udf(name = "right")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct LeftFunc {
     signature: Signature,
 }
@@ -46,7 +69,11 @@ impl LeftFunc {
         use DataType::*;
         Self {
             signature: Signature::one_of(
-                vec![Exact(vec![Utf8, Int64]), Exact(vec![LargeUtf8, Int64])],
+                vec![
+                    Exact(vec![Utf8View, Int64]),
+                    Exact(vec![Utf8, Int64]),
+                    Exact(vec![LargeUtf8, Int64]),
+                ],
                 Volatility::Immutable,
             ),
         }
@@ -70,23 +97,49 @@ impl ScalarUDFImpl for LeftFunc {
         utf8_to_str_type(&arg_types[0], "left")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> Result<ColumnarValue> {
+        let args = &args.args;
         match args[0].data_type() {
-            DataType::Utf8 => make_scalar_function(left::<i32>, vec![])(args),
+            DataType::Utf8 | DataType::Utf8View => {
+                make_scalar_function(left::<i32>, vec![])(args)
+            }
             DataType::LargeUtf8 => make_scalar_function(left::<i64>, vec![])(args),
-            other => exec_err!("Unsupported data type {other:?} for function left"),
+            other => exec_err!(
+                "Unsupported data type {other:?} for function left,\
+                expected Utf8View, Utf8 or LargeUtf8."
+            ),
         }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
 /// Returns first n characters in the string, or when n is negative, returns all but last |n| characters.
 /// left('abcde', 2) = 'ab'
 /// The implementation uses UTF-8 code points as characters
-pub fn left<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
-    let string_array = as_generic_string_array::<T>(&args[0])?;
+fn left<T: OffsetSizeTrait>(args: &[ArrayRef]) -> Result<ArrayRef> {
     let n_array = as_int64_array(&args[1])?;
-    let result = string_array
-        .iter()
+
+    if args[0].data_type() == &DataType::Utf8View {
+        let string_array = as_string_view_array(&args[0])?;
+        left_impl::<T, _>(string_array, n_array)
+    } else {
+        let string_array = as_generic_string_array::<T>(&args[0])?;
+        left_impl::<T, _>(string_array, n_array)
+    }
+}
+
+fn left_impl<'a, T: OffsetSizeTrait, V: ArrayAccessor<Item = &'a str>>(
+    string_array: V,
+    n_array: &Int64Array,
+) -> Result<ArrayRef> {
+    let iter = ArrayIter::new(string_array);
+    let result = iter
         .zip(n_array.iter())
         .map(|(string, n)| match (string, n) {
             (Some(string), Some(n)) => match n.cmp(&0) {
@@ -125,7 +178,7 @@ mod tests {
     fn test_functions() -> Result<()> {
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(2i64)),
             ],
@@ -136,7 +189,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(200i64)),
             ],
@@ -147,7 +200,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(-2i64)),
             ],
@@ -158,7 +211,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(-200i64)),
             ],
@@ -169,7 +222,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::from(0i64)),
             ],
@@ -180,7 +233,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::Utf8(None)),
                 ColumnarValue::Scalar(ScalarValue::from(2i64)),
             ],
@@ -191,7 +244,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("abcde")),
                 ColumnarValue::Scalar(ScalarValue::Int64(None)),
             ],
@@ -202,7 +255,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("joséésoj")),
                 ColumnarValue::Scalar(ScalarValue::from(5i64)),
             ],
@@ -213,7 +266,7 @@ mod tests {
         );
         test_function!(
             LeftFunc::new(),
-            &[
+            vec![
                 ColumnarValue::Scalar(ScalarValue::from("joséésoj")),
                 ColumnarValue::Scalar(ScalarValue::from(-3i64)),
             ],

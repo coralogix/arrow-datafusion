@@ -19,13 +19,11 @@
 
 use std::sync::Arc;
 
-use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, OffsetSizeTrait};
+use arrow::array::{Array, OffsetSizeTrait, RecordBatch, cast::AsArray};
 
-use arrow_array::cast::AsArray;
 use datafusion::datasource::MemTable;
+use datafusion_common_runtime::JoinSet;
 use std::collections::HashSet;
-use tokio::task::JoinSet;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use test_utils::StringBatchGenerator;

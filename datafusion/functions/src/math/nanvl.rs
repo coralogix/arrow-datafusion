@@ -18,18 +18,42 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Float32Array, Float64Array};
-use arrow::datatypes::DataType;
-use arrow::datatypes::DataType::{Float32, Float64};
-
-use datafusion_common::{exec_err, DataFusionError, Result};
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::TypeSignature::Exact;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
-
 use crate::utils::make_scalar_function;
 
-#[derive(Debug)]
+use arrow::array::{ArrayRef, AsArray, Float32Array, Float64Array};
+use arrow::datatypes::DataType::{Float32, Float64};
+use arrow::datatypes::{DataType, Float32Type, Float64Type};
+use datafusion_common::{DataFusionError, Result, exec_err};
+use datafusion_expr::TypeSignature::Exact;
+use datafusion_expr::{
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    Volatility,
+};
+use datafusion_macros::user_doc;
+
+#[user_doc(
+    doc_section(label = "Math Functions"),
+    description = r#"Returns the first argument if it's not _NaN_.
+Returns the second argument otherwise."#,
+    syntax_example = "nanvl(expression_x, expression_y)",
+    sql_example = r#"```sql
+> SELECT nanvl(0, 5);
++------------+
+| nanvl(0,5) |
++------------+
+| 0          |
++------------+
+```"#,
+    argument(
+        name = "expression_x",
+        description = "Numeric expression to return if it's not _NaN_. Can be a constant, column, or function, and any combination of arithmetic operators."
+    ),
+    argument(
+        name = "expression_y",
+        description = "Numeric expression to return if the first expression is _NaN_. Can be a constant, column, or function, and any combination of arithmetic operators."
+    )
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct NanvlFunc {
     signature: Signature,
 }
@@ -72,8 +96,12 @@ impl ScalarUDFImpl for NanvlFunc {
         }
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        make_scalar_function(nanvl, vec![])(args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        make_scalar_function(nanvl, vec![])(&args.args)
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
@@ -82,39 +110,25 @@ fn nanvl(args: &[ArrayRef]) -> Result<ArrayRef> {
     match args[0].data_type() {
         Float64 => {
             let compute_nanvl = |x: f64, y: f64| {
-                if x.is_nan() {
-                    y
-                } else {
-                    x
-                }
+                if x.is_nan() { y } else { x }
             };
 
-            Ok(Arc::new(make_function_inputs2!(
-                &args[0],
-                &args[1],
-                "x",
-                "y",
-                Float64Array,
-                { compute_nanvl }
-            )) as ArrayRef)
+            let x = args[0].as_primitive() as &Float64Array;
+            let y = args[1].as_primitive() as &Float64Array;
+            arrow::compute::binary::<_, _, _, Float64Type>(x, y, compute_nanvl)
+                .map(|res| Arc::new(res) as _)
+                .map_err(DataFusionError::from)
         }
         Float32 => {
             let compute_nanvl = |x: f32, y: f32| {
-                if x.is_nan() {
-                    y
-                } else {
-                    x
-                }
+                if x.is_nan() { y } else { x }
             };
 
-            Ok(Arc::new(make_function_inputs2!(
-                &args[0],
-                &args[1],
-                "x",
-                "y",
-                Float32Array,
-                { compute_nanvl }
-            )) as ArrayRef)
+            let x = args[0].as_primitive() as &Float32Array;
+            let y = args[1].as_primitive() as &Float32Array;
+            arrow::compute::binary::<_, _, _, Float32Type>(x, y, compute_nanvl)
+                .map(|res| Arc::new(res) as _)
+                .map_err(DataFusionError::from)
         }
         other => exec_err!("Unsupported data type {other:?} for function nanvl"),
     }
@@ -122,10 +136,12 @@ fn nanvl(args: &[ArrayRef]) -> Result<ArrayRef> {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use crate::math::nanvl::nanvl;
+
     use arrow::array::{ArrayRef, Float32Array, Float64Array};
     use datafusion_common::cast::{as_float32_array, as_float64_array};
-    use std::sync::Arc;
 
     #[test]
     fn test_nanvl_f64() {

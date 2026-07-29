@@ -19,9 +19,12 @@
 
 pub mod context;
 pub mod session_state;
+pub use session_state::{SessionState, SessionStateBuilder};
+
+mod session_state_defaults;
+
+pub use session_state_defaults::SessionStateDefaults;
 
 // backwards compatibility
 pub use crate::datasource::file_format::options;
-
-// backwards compatibility
 pub use datafusion_execution::*;

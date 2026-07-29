@@ -25,22 +25,28 @@ use arrow::array::{ArrayRef, AsArray};
 use arrow::buffer::Buffer;
 use arrow::csv::WriterBuilder;
 use arrow::datatypes::{
-    i256, DataType, Field, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit,
-    Schema, TimeUnit, UnionFields, UnionMode,
+    DataType, Field, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit, Schema,
+    TimeUnit, UnionFields, UnionMode, i256,
 };
-use arrow::ipc::{reader::read_record_batch, root_as_message};
+use arrow::ipc::{
+    convert::fb_to_schema,
+    reader::{read_dictionary, read_record_batch},
+    root_as_message,
+    writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions},
+};
 
 use datafusion_common::{
+    Column, ColumnStatistics, Constraint, Constraints, DFSchema, DFSchemaRef,
+    DataFusionError, JoinSide, ScalarValue, Statistics, TableReference,
     arrow_datafusion_err,
     config::{
-        ColumnOptions, CsvOptions, JsonOptions, ParquetOptions, TableParquetOptions,
+        CsvOptions, JsonOptions, ParquetColumnOptions, ParquetOptions,
+        TableParquetOptions,
     },
     file_options::{csv_writer::CsvWriterOptions, json_writer::JsonWriterOptions},
     parsers::CompressionTypeVariant,
     plan_datafusion_err,
     stats::Precision,
-    Column, ColumnStatistics, Constraint, Constraints, DFSchema, DFSchemaRef,
-    DataFusionError, JoinSide, ScalarValue, Statistics, TableReference,
 };
 
 #[derive(Debug)]
@@ -137,11 +143,17 @@ where
     }
 }
 
+impl From<protobuf::ColumnRelation> for TableReference {
+    fn from(rel: protobuf::ColumnRelation) -> Self {
+        Self::parse_str_normalized(rel.relation.as_str(), true)
+    }
+}
+
 impl From<protobuf::Column> for Column {
     fn from(c: protobuf::Column) -> Self {
         let protobuf::Column { relation, name } = c;
 
-        Self::new(relation.map(|r| r.relation), name)
+        Self::new(relation, name)
     }
 }
 
@@ -163,10 +175,7 @@ impl TryFrom<&protobuf::DfSchema> for DFSchema {
             .map(|df_field| {
                 let field: Field = df_field.field.as_ref().required("field")?;
                 Ok((
-                    df_field
-                        .qualifier
-                        .as_ref()
-                        .map(|q| q.relation.clone().into()),
+                    df_field.qualifier.as_ref().map(|q| q.clone().into()),
                     Arc::new(field),
                 ))
             })
@@ -256,10 +265,22 @@ impl TryFrom<&protobuf::arrow_type::ArrowTypeEnum> for DataType {
             arrow_type::ArrowTypeEnum::Interval(interval_unit) => {
                 DataType::Interval(parse_i32_to_interval_unit(interval_unit)?)
             }
-            arrow_type::ArrowTypeEnum::Decimal(protobuf::Decimal {
+            arrow_type::ArrowTypeEnum::Decimal32(protobuf::Decimal32Type {
+                precision,
+                scale,
+            }) => DataType::Decimal32(*precision as u8, *scale as i8),
+            arrow_type::ArrowTypeEnum::Decimal64(protobuf::Decimal64Type {
+                precision,
+                scale,
+            }) => DataType::Decimal64(*precision as u8, *scale as i8),
+            arrow_type::ArrowTypeEnum::Decimal128(protobuf::Decimal128Type {
                 precision,
                 scale,
             }) => DataType::Decimal128(*precision as u8, *scale as i8),
+            arrow_type::ArrowTypeEnum::Decimal256(protobuf::Decimal256Type {
+                precision,
+                scale,
+            }) => DataType::Decimal256(*precision as u8, *scale as i8),
             arrow_type::ArrowTypeEnum::List(list) => {
                 let list_type =
                     list.as_ref().field_type.as_deref().required("field_type")?;
@@ -315,19 +336,8 @@ impl TryFrom<&protobuf::Field> for Field {
     type Error = Error;
     fn try_from(field: &protobuf::Field) -> Result<Self, Self::Error> {
         let datatype = field.arrow_type.as_deref().required("arrow_type")?;
-        let field = if field.dict_id != 0 {
-            Self::new_dict(
-                field.name.as_str(),
-                datatype,
-                field.nullable,
-                field.dict_id,
-                field.dict_ordered,
-            )
-            .with_metadata(field.metadata.clone())
-        } else {
-            Self::new(field.name.as_str(), datatype, field.nullable)
-                .with_metadata(field.metadata.clone())
-        };
+        let field = Self::new(field.name.as_str(), datatype, field.nullable)
+            .with_metadata(field.metadata.clone());
         Ok(field)
     }
 }
@@ -376,11 +386,12 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
             Value::Float32Value(v) => Self::Float32(Some(*v)),
             Value::Float64Value(v) => Self::Float64(Some(*v)),
             Value::Date32Value(v) => Self::Date32(Some(*v)),
-            // ScalarValue::List is serialized using arrow IPC format
+            // Nested ScalarValue types are serialized using arrow IPC format
             Value::ListValue(v)
             | Value::FixedSizeListValue(v)
             | Value::LargeListValue(v)
-            | Value::StructValue(v) => {
+            | Value::StructValue(v)
+            | Value::MapValue(v) => {
                 let protobuf::ScalarNestedValue {
                     ipc_message,
                     arrow_data,
@@ -392,68 +403,83 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
                     schema_ref.try_into()?
                 } else {
                     return Err(Error::General(
-                        "Invalid schema while deserializing ScalarValue::List"
+                        "Invalid schema while deserializing nested ScalarValue"
                             .to_string(),
                     ));
                 };
 
+                // IPC dictionary batch IDs are assigned when encoding the schema, but our protobuf
+                // `Schema` doesn't preserve those IDs. Reconstruct them deterministically by
+                // round-tripping the schema through IPC.
+                let schema: Schema = {
+                    let ipc_gen = IpcDataGenerator {};
+                    let write_options = IpcWriteOptions::default();
+                    let mut dict_tracker = DictionaryTracker::new(false);
+                    let encoded_schema = ipc_gen.schema_to_bytes_with_dictionary_tracker(
+                        &schema,
+                        &mut dict_tracker,
+                        &write_options,
+                    );
+                    let message =
+                        root_as_message(encoded_schema.ipc_message.as_slice()).map_err(
+                            |e| {
+                                Error::General(format!(
+                                    "Error IPC schema message while deserializing nested ScalarValue: {e}"
+                                ))
+                            },
+                        )?;
+                    let ipc_schema = message.header_as_schema().ok_or_else(|| {
+                        Error::General(
+                            "Unexpected message type deserializing nested ScalarValue schema"
+                                .to_string(),
+                        )
+                    })?;
+                    fb_to_schema(ipc_schema)
+                };
+
                 let message = root_as_message(ipc_message.as_slice()).map_err(|e| {
                     Error::General(format!(
-                        "Error IPC message while deserializing ScalarValue::List: {e}"
+                        "Error IPC message while deserializing nested ScalarValue: {e}"
                     ))
                 })?;
-                let buffer = Buffer::from(arrow_data);
+                let buffer = Buffer::from(arrow_data.as_slice());
 
                 let ipc_batch = message.header_as_record_batch().ok_or_else(|| {
                     Error::General(
-                        "Unexpected message type deserializing ScalarValue::List"
+                        "Unexpected message type deserializing nested ScalarValue"
                             .to_string(),
                     )
                 })?;
 
-                let dict_by_id: HashMap<i64,ArrayRef> = dictionaries.iter().map(|protobuf::scalar_nested_value::Dictionary { ipc_message, arrow_data }| {
+                let mut dict_by_id: HashMap<i64, ArrayRef> = HashMap::new();
+                for protobuf::scalar_nested_value::Dictionary {
+                    ipc_message,
+                    arrow_data,
+                } in dictionaries
+                {
                     let message = root_as_message(ipc_message.as_slice()).map_err(|e| {
                         Error::General(format!(
-                            "Error IPC message while deserializing ScalarValue::List dictionary message: {e}"
+                            "Error IPC message while deserializing nested ScalarValue dictionary message: {e}"
                         ))
                     })?;
-                    let buffer = Buffer::from(arrow_data);
+                    let buffer = Buffer::from(arrow_data.as_slice());
 
                     let dict_batch = message.header_as_dictionary_batch().ok_or_else(|| {
                         Error::General(
-                            "Unexpected message type deserializing ScalarValue::List dictionary message"
+                            "Unexpected message type deserializing nested ScalarValue dictionary message"
                                 .to_string(),
                         )
                     })?;
-
-                    let id = dict_batch.id();
-
-                    let fields_using_this_dictionary = schema.fields_with_dict_id(id);
-                    let first_field = fields_using_this_dictionary.first().ok_or_else(|| {
-                        Error::General("dictionary id not found in schema while deserializing ScalarValue::List".to_string())
-                    })?;
-
-                    let values: ArrayRef = match first_field.data_type() {
-                        DataType::Dictionary(_, ref value_type) => {
-                            // Make a fake schema for the dictionary batch.
-                            let value = value_type.as_ref().clone();
-                            let schema = Schema::new(vec![Field::new("", value, true)]);
-                            // Read a single column
-                            let record_batch = read_record_batch(
-                                &buffer,
-                                dict_batch.data().unwrap(),
-                                Arc::new(schema),
-                                &Default::default(),
-                                None,
-                                &message.version(),
-                            )?;
-                            Ok(record_batch.column(0).clone())
-                        }
-                        _ => Err(Error::General("dictionary id not found in schema while deserializing ScalarValue::List".to_string())),
-                    }?;
-
-                    Ok((id,values))
-                }).collect::<datafusion_common::Result<HashMap<_, _>>>()?;
+                    read_dictionary(
+                        &buffer,
+                        dict_batch,
+                        &schema,
+                        &mut dict_by_id,
+                        &message.version(),
+                    )
+                    .map_err(|e| arrow_datafusion_err!(e))
+                    .map_err(|e| e.context("Decoding nested ScalarValue dictionary"))?;
+                }
 
                 let record_batch = read_record_batch(
                     &buffer,
@@ -464,7 +490,7 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
                     &message.version(),
                 )
                 .map_err(|e| arrow_datafusion_err!(e))
-                .map_err(|e| e.context("Decoding ScalarValue::List Value"))?;
+                .map_err(|e| e.context("Decoding nested ScalarValue value"))?;
                 let arr = record_batch.column(0);
                 match value {
                     Value::ListValue(_) => {
@@ -479,12 +505,21 @@ impl TryFrom<&protobuf::ScalarValue> for ScalarValue {
                     Value::StructValue(_) => {
                         Self::Struct(arr.as_struct().to_owned().into())
                     }
+                    Value::MapValue(_) => Self::Map(arr.as_map().to_owned().into()),
                     _ => unreachable!(),
                 }
             }
             Value::NullValue(v) => {
                 let null_type: DataType = v.try_into()?;
                 null_type.try_into().map_err(Error::DataFusionError)?
+            }
+            Value::Decimal32Value(val) => {
+                let array = vec_to_array(val.value.clone());
+                Self::Decimal32(Some(i32::from_be_bytes(array)), val.p as u8, val.s as i8)
+            }
+            Value::Decimal64Value(val) => {
+                let array = vec_to_array(val.value.clone());
+                Self::Decimal64(Some(i64::from_be_bytes(array)), val.p as u8, val.s as i8)
             }
             Value::Decimal128Value(val) => {
                 let array = vec_to_array(val.value.clone());
@@ -687,8 +722,18 @@ impl From<&protobuf::ColumnStats> for ColumnStatistics {
             } else {
                 Precision::Absent
             },
+            sum_value: if let Some(sum) = &cs.sum_value {
+                sum.clone().into()
+            } else {
+                Precision::Absent
+            },
             distinct_count: if let Some(dc) = &cs.distinct_count {
                 dc.clone().into()
+            } else {
+                Precision::Absent
+            },
+            byte_size: if let Some(sbs) = &cs.byte_size {
+                sbs.clone().into()
             } else {
                 Precision::Absent
             },
@@ -771,7 +816,42 @@ impl From<protobuf::JoinSide> for JoinSide {
         match t {
             protobuf::JoinSide::LeftSide => JoinSide::Left,
             protobuf::JoinSide::RightSide => JoinSide::Right,
+            protobuf::JoinSide::None => JoinSide::None,
         }
+    }
+}
+
+impl From<&protobuf::Constraint> for Constraint {
+    fn from(value: &protobuf::Constraint) -> Self {
+        match &value.constraint_mode {
+            Some(protobuf::constraint::ConstraintMode::PrimaryKey(elem)) => {
+                Constraint::PrimaryKey(
+                    elem.indices.iter().map(|&item| item as usize).collect(),
+                )
+            }
+            Some(protobuf::constraint::ConstraintMode::Unique(elem)) => {
+                Constraint::Unique(
+                    elem.indices.iter().map(|&item| item as usize).collect(),
+                )
+            }
+            None => panic!("constraint_mode not set"),
+        }
+    }
+}
+
+impl TryFrom<&protobuf::Constraints> for Constraints {
+    type Error = DataFusionError;
+
+    fn try_from(
+        constraints: &protobuf::Constraints,
+    ) -> datafusion_common::Result<Self, Self::Error> {
+        Ok(Constraints::new_unverified(
+            constraints
+                .constraints
+                .iter()
+                .map(|item| item.into())
+                .collect(),
+        ))
     }
 }
 
@@ -856,9 +936,13 @@ impl TryFrom<&protobuf::CsvOptions> for CsvOptions {
             has_header: proto_opts.has_header.first().map(|h| *h != 0),
             delimiter: proto_opts.delimiter[0],
             quote: proto_opts.quote[0],
+            terminator: proto_opts.terminator.first().copied(),
             escape: proto_opts.escape.first().copied(),
+            double_quote: proto_opts.double_quote.first().map(|h| *h != 0),
+            newlines_in_values: proto_opts.newlines_in_values.first().map(|h| *h != 0),
             compression: proto_opts.compression().into(),
-            schema_infer_max_rec: proto_opts.schema_infer_max_rec as usize,
+            compression_level: proto_opts.compression_level,
+            schema_infer_max_rec: proto_opts.schema_infer_max_rec.map(|h| h as usize),
             date_format: (!proto_opts.date_format.is_empty())
                 .then(|| proto_opts.date_format.clone()),
             datetime_format: (!proto_opts.datetime_format.is_empty())
@@ -871,7 +955,10 @@ impl TryFrom<&protobuf::CsvOptions> for CsvOptions {
                 .then(|| proto_opts.time_format.clone()),
             null_value: (!proto_opts.null_value.is_empty())
                 .then(|| proto_opts.null_value.clone()),
+            null_regex: (!proto_opts.null_regex.is_empty())
+                .then(|| proto_opts.null_regex.clone()),
             comment: proto_opts.comment.first().copied(),
+            truncated_rows: proto_opts.truncated_rows.first().map(|h| *h != 0),
         })
     }
 }
@@ -887,16 +974,19 @@ impl TryFrom<&protobuf::ParquetOptions> for ParquetOptions {
             pruning: value.pruning,
             skip_metadata: value.skip_metadata,
             metadata_size_hint: value
-                .metadata_size_hint_opt.clone()
+                .metadata_size_hint_opt
                 .map(|opt| match opt {
                     protobuf::parquet_options::MetadataSizeHintOpt::MetadataSizeHint(v) => Some(v as usize),
                 })
                 .unwrap_or(None),
             pushdown_filters: value.pushdown_filters,
             reorder_filters: value.reorder_filters,
+            force_filter_selections: value.force_filter_selections,
             data_pagesize_limit: value.data_pagesize_limit as usize,
             write_batch_size: value.write_batch_size as usize,
-            writer_version: value.writer_version.clone(),
+            writer_version: value.writer_version.parse().map_err(|e| {
+                DataFusionError::Internal(format!("Failed to parse writer_version: {e}"))
+            })?,
             compression: value.compression_opt.clone().map(|opt| match opt {
                 protobuf::parquet_options::CompressionOpt::Compression(v) => Some(v),
             }).unwrap_or(None),
@@ -909,18 +999,18 @@ impl TryFrom<&protobuf::ParquetOptions> for ParquetOptions {
                     protobuf::parquet_options::StatisticsEnabledOpt::StatisticsEnabled(v) => Some(v),
                 })
                 .unwrap_or(None),
-            max_statistics_size: value
-                .max_statistics_size_opt.as_ref()
-                .map(|opt| match opt {
-                    protobuf::parquet_options::MaxStatisticsSizeOpt::MaxStatisticsSize(v) => Some(*v as usize),
-                })
-                .unwrap_or(None),
             max_row_group_size: value.max_row_group_size as usize,
             created_by: value.created_by.clone(),
             column_index_truncate_length: value
                 .column_index_truncate_length_opt.as_ref()
                 .map(|opt| match opt {
                     protobuf::parquet_options::ColumnIndexTruncateLengthOpt::ColumnIndexTruncateLength(v) => Some(*v as usize),
+                })
+                .unwrap_or(None),
+            statistics_truncate_length: value
+                .statistics_truncate_length_opt.as_ref()
+                .map(|opt| match opt {
+                    protobuf::parquet_options::StatisticsTruncateLengthOpt::StatisticsTruncateLength(v) => Some(*v as usize),
                 })
                 .unwrap_or(None),
             data_page_row_count_limit: value.data_page_row_count_limit as usize,
@@ -947,53 +1037,55 @@ impl TryFrom<&protobuf::ParquetOptions> for ParquetOptions {
             allow_single_file_parallelism: value.allow_single_file_parallelism,
             maximum_parallel_row_group_writers: value.maximum_parallel_row_group_writers as usize,
             maximum_buffered_record_batches_per_stream: value.maximum_buffered_record_batches_per_stream as usize,
-
+            schema_force_view_types: value.schema_force_view_types,
+            binary_as_string: value.binary_as_string,
+            coerce_int96: value.coerce_int96_opt.clone().map(|opt| match opt {
+                protobuf::parquet_options::CoerceInt96Opt::CoerceInt96(v) => Some(v),
+            }).unwrap_or(None),
+            skip_arrow_metadata: value.skip_arrow_metadata,
+            max_predicate_cache_size: value.max_predicate_cache_size_opt.map(|opt| match opt {
+                protobuf::parquet_options::MaxPredicateCacheSizeOpt::MaxPredicateCacheSize(v) => Some(v as usize),
+            }).unwrap_or(None),
         })
     }
 }
 
-impl TryFrom<&protobuf::ColumnOptions> for ColumnOptions {
+impl TryFrom<&protobuf::ParquetColumnOptions> for ParquetColumnOptions {
     type Error = DataFusionError;
     fn try_from(
-        value: &protobuf::ColumnOptions,
+        value: &protobuf::ParquetColumnOptions,
     ) -> datafusion_common::Result<Self, Self::Error> {
-        Ok(ColumnOptions {
+        Ok(ParquetColumnOptions {
             compression: value.compression_opt.clone().map(|opt| match opt {
-                protobuf::column_options::CompressionOpt::Compression(v) => Some(v),
+                protobuf::parquet_column_options::CompressionOpt::Compression(v) => Some(v),
             }).unwrap_or(None),
-            dictionary_enabled: value.dictionary_enabled_opt.as_ref().map(|protobuf::column_options::DictionaryEnabledOpt::DictionaryEnabled(v)| *v),
+            dictionary_enabled: value.dictionary_enabled_opt.as_ref().map(|protobuf::parquet_column_options::DictionaryEnabledOpt::DictionaryEnabled(v)| *v),
             statistics_enabled: value
                 .statistics_enabled_opt.clone()
                 .map(|opt| match opt {
-                    protobuf::column_options::StatisticsEnabledOpt::StatisticsEnabled(v) => Some(v),
-                })
-                .unwrap_or(None),
-            max_statistics_size: value
-                .max_statistics_size_opt.clone()
-                .map(|opt| match opt {
-                    protobuf::column_options::MaxStatisticsSizeOpt::MaxStatisticsSize(v) => Some(v as usize),
+                    protobuf::parquet_column_options::StatisticsEnabledOpt::StatisticsEnabled(v) => Some(v),
                 })
                 .unwrap_or(None),
             encoding: value
                 .encoding_opt.clone()
                 .map(|opt| match opt {
-                    protobuf::column_options::EncodingOpt::Encoding(v) => Some(v),
+                    protobuf::parquet_column_options::EncodingOpt::Encoding(v) => Some(v),
                 })
                 .unwrap_or(None),
-            bloom_filter_enabled: value.bloom_filter_enabled_opt.clone().map(|opt| match opt {
-                protobuf::column_options::BloomFilterEnabledOpt::BloomFilterEnabled(v) => Some(v),
+            bloom_filter_enabled: value.bloom_filter_enabled_opt.map(|opt| match opt {
+                protobuf::parquet_column_options::BloomFilterEnabledOpt::BloomFilterEnabled(v) => Some(v),
             })
                 .unwrap_or(None),
             bloom_filter_fpp: value
-                .bloom_filter_fpp_opt.clone()
+                .bloom_filter_fpp_opt
                 .map(|opt| match opt {
-                    protobuf::column_options::BloomFilterFppOpt::BloomFilterFpp(v) => Some(v),
+                    protobuf::parquet_column_options::BloomFilterFppOpt::BloomFilterFpp(v) => Some(v),
                 })
                 .unwrap_or(None),
             bloom_filter_ndv: value
-                .bloom_filter_ndv_opt.clone()
+                .bloom_filter_ndv_opt
                 .map(|opt| match opt {
-                    protobuf::column_options::BloomFilterNdvOpt::BloomFilterNdv(v) => Some(v),
+                    protobuf::parquet_column_options::BloomFilterNdvOpt::BloomFilterNdv(v) => Some(v),
                 })
                 .unwrap_or(None),
         })
@@ -1005,8 +1097,9 @@ impl TryFrom<&protobuf::TableParquetOptions> for TableParquetOptions {
     fn try_from(
         value: &protobuf::TableParquetOptions,
     ) -> datafusion_common::Result<Self, Self::Error> {
-        let mut column_specific_options: HashMap<String, ColumnOptions> = HashMap::new();
-        for protobuf::ColumnSpecificOptions {
+        let mut column_specific_options: HashMap<String, ParquetColumnOptions> =
+            HashMap::new();
+        for protobuf::ParquetColumnSpecificOptions {
             column_name,
             options: maybe_options,
         } in &value.column_specific_options
@@ -1024,6 +1117,7 @@ impl TryFrom<&protobuf::TableParquetOptions> for TableParquetOptions {
                 .unwrap(),
             column_specific_options,
             key_value_metadata: Default::default(),
+            crypto: Default::default(),
         })
     }
 }
@@ -1037,7 +1131,8 @@ impl TryFrom<&protobuf::JsonOptions> for JsonOptions {
         let compression: protobuf::CompressionTypeVariant = proto_opts.compression();
         Ok(JsonOptions {
             compression: compression.into(),
-            schema_infer_max_rec: proto_opts.schema_infer_max_rec as usize,
+            compression_level: proto_opts.compression_level,
+            schema_infer_max_rec: proto_opts.schema_infer_max_rec.map(|h| h as usize),
         })
     }
 }
@@ -1091,11 +1186,34 @@ pub(crate) fn csv_writer_options_from_proto(
             return Err(proto_error("Error parsing CSV Delimiter"));
         }
     }
+    if !writer_options.quote.is_empty() {
+        if let Some(quote) = writer_options.quote.chars().next() {
+            if quote.is_ascii() {
+                builder = builder.with_quote(quote as u8);
+            } else {
+                return Err(proto_error("CSV Quote is not ASCII"));
+            }
+        } else {
+            return Err(proto_error("Error parsing CSV Quote"));
+        }
+    }
+    if !writer_options.escape.is_empty() {
+        if let Some(escape) = writer_options.escape.chars().next() {
+            if escape.is_ascii() {
+                builder = builder.with_escape(escape as u8);
+            } else {
+                return Err(proto_error("CSV Escape is not ASCII"));
+            }
+        } else {
+            return Err(proto_error("Error parsing CSV Escape"));
+        }
+    }
     Ok(builder
         .with_header(writer_options.has_header)
         .with_date_format(writer_options.date_format.clone())
         .with_datetime_format(writer_options.datetime_format.clone())
         .with_timestamp_format(writer_options.timestamp_format.clone())
         .with_time_format(writer_options.time_format.clone())
-        .with_null(writer_options.null_value.clone()))
+        .with_null(writer_options.null_value.clone())
+        .with_double_quote(writer_options.double_quote))
 }

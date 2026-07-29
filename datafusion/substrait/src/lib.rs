@@ -15,6 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg"
+)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// Make sure fast / cheap clones on Arc are explicit:
+// https://github.com/apache/datafusion/issues/11143
+#![cfg_attr(not(test), deny(clippy::clone_on_ref_ptr))]
+#![deny(clippy::allow_attributes)]
+#![cfg_attr(test, allow(clippy::needless_pass_by_value))]
+
 //! Serialize / Deserialize DataFusion Plans to [Substrait.io]
 //!
 //! This crate provides support for serializing and deserializing both DataFusion
@@ -57,22 +68,30 @@
 //! # use datafusion::arrow::array::{Int32Array, RecordBatch};
 //! # use datafusion_substrait::logical_plan;
 //! // Create a plan that scans table 't'
-//!  let ctx = SessionContext::new();
-//!  let batch = RecordBatch::try_from_iter(vec![("x", Arc::new(Int32Array::from(vec![42])) as _)])?;
-//!  ctx.register_batch("t", batch)?;
-//!  let df = ctx.sql("SELECT x from t").await?;
-//!  let plan = df.into_optimized_plan()?;
+//! let ctx = SessionContext::new();
+//! let batch = RecordBatch::try_from_iter(vec![(
+//!     "x",
+//!     Arc::new(Int32Array::from(vec![42])) as _,
+//! )])?;
+//! ctx.register_batch("t", batch)?;
+//! let df = ctx.sql("SELECT x from t").await?;
+//! let plan = df.into_optimized_plan()?;
 //!
-//!  // Convert the plan into a substrait (protobuf) Plan
-//!  let substrait_plan = logical_plan::producer::to_substrait_plan(&plan, &ctx)?;
+//! // Convert the plan into a substrait (protobuf) Plan
+//! let substrait_plan = logical_plan::producer::to_substrait_plan(&plan, &ctx.state())?;
 //!
-//!  // Receive a substrait protobuf from somewhere, and turn it into a LogicalPlan
-//!  let logical_round_trip = logical_plan::consumer::from_substrait_plan(&ctx, &substrait_plan).await?;
-//!  assert_eq!(format!("{:?}", plan), format!("{:?}", logical_round_trip));
+//! // Receive a substrait protobuf from somewhere, and turn it into a LogicalPlan
+//! let logical_round_trip =
+//!     logical_plan::consumer::from_substrait_plan(&ctx.state(), &substrait_plan)
+//!         .await?;
+//! let logical_round_trip = ctx.state().optimize(&logical_round_trip)?;
+//! assert_eq!(format!("{:?}", plan), format!("{:?}", logical_round_trip));
 //! # Ok(())
 //! # }
 //! ```
+pub mod extensions;
 pub mod logical_plan;
+#[cfg(feature = "physical")]
 pub mod physical_plan;
 pub mod serializer;
 pub mod variation_const;

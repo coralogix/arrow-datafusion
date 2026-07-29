@@ -16,12 +16,31 @@
 // under the License.
 
 use arrow::datatypes::DataType;
-use datafusion_common::{exec_err, Result, ScalarValue};
-use datafusion_expr::ColumnarValue;
+use datafusion_common::{Result, ScalarValue, utils::take_function_args};
+use datafusion_expr::{ColumnarValue, Documentation, ScalarFunctionArgs};
 use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use datafusion_macros::user_doc;
 use std::any::Any;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "Other Functions"),
+    description = "Returns the name of the underlying [Arrow data type](https://docs.rs/arrow/latest/arrow/datatypes/enum.DataType.html) of the expression.",
+    syntax_example = "arrow_typeof(expression)",
+    sql_example = r#"```sql
+> select arrow_typeof('foo'), arrow_typeof(1);
++---------------------------+------------------------+
+| arrow_typeof(Utf8("foo")) | arrow_typeof(Int64(1)) |
++---------------------------+------------------------+
+| Utf8                      | Int64                  |
++---------------------------+------------------------+
+```
+"#,
+    argument(
+        name = "expression",
+        description = "Expression to evaluate. The expression can be a constant, column, or function, and any combination of operators."
+    )
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrowTypeOfFunc {
     signature: Signature,
 }
@@ -56,17 +75,15 @@ impl ScalarUDFImpl for ArrowTypeOfFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 1 {
-            return exec_err!(
-                "arrow_typeof function requires 1 arguments, got {}",
-                args.len()
-            );
-        }
-
-        let input_data_type = args[0].data_type();
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let [arg] = take_function_args(self.name(), args.args)?;
+        let input_data_type = arg.data_type();
         Ok(ColumnarValue::Scalar(ScalarValue::from(format!(
             "{input_data_type}"
         ))))
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }

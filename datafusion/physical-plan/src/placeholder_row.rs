@@ -20,24 +20,24 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{
-    common, DisplayAs, ExecutionMode, PlanProperties, SendableRecordBatchStream,
-    Statistics,
+use crate::coop::cooperative;
+use crate::execution_plan::{Boundedness, EmissionType, SchedulingType};
+use crate::memory::MemoryStream;
+use crate::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics, common,
 };
-use crate::{memory::MemoryStream, DisplayFormatType, ExecutionPlan, Partitioning};
 
-use arrow::array::{ArrayRef, NullArray};
+use arrow::array::{ArrayRef, NullArray, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
-use arrow::record_batch::RecordBatch;
-use arrow_array::RecordBatchOptions;
-use datafusion_common::{internal_err, Result};
+use datafusion_common::{Result, assert_or_internal_err};
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::EquivalenceProperties;
 
 use log::trace;
 
 /// Execution plan for empty relation with produce_one_row=true
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlaceholderRowExec {
     /// The schema for the produced row
     schema: SchemaRef,
@@ -50,7 +50,7 @@ impl PlaceholderRowExec {
     /// Create a new PlaceholderRowExec
     pub fn new(schema: SchemaRef) -> Self {
         let partitions = 1;
-        let cache = Self::compute_properties(schema.clone(), partitions);
+        let cache = Self::compute_properties(Arc::clone(&schema), partitions);
         PlaceholderRowExec {
             schema,
             partitions,
@@ -96,11 +96,13 @@ impl PlaceholderRowExec {
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef, n_partitions: usize) -> PlanProperties {
-        let eq_properties = EquivalenceProperties::new(schema);
-        // Get output partitioning:
-        let output_partitioning = Self::output_partitioning_helper(n_partitions);
-
-        PlanProperties::new(eq_properties, output_partitioning, ExecutionMode::Bounded)
+        PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Self::output_partitioning_helper(n_partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        )
+        .with_scheduling_type(SchedulingType::Cooperative)
     }
 }
 
@@ -114,6 +116,8 @@ impl DisplayAs for PlaceholderRowExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "PlaceholderRowExec")
             }
+
+            DisplayFormatType::TreeRender => Ok(()),
         }
     }
 }
@@ -148,29 +152,40 @@ impl ExecutionPlan for PlaceholderRowExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        trace!("Start PlaceholderRowExec::execute for partition {} of context session_id {} and task_id {:?}", partition, context.session_id(), context.task_id());
+        trace!(
+            "Start PlaceholderRowExec::execute for partition {} of context session_id {} and task_id {:?}",
+            partition,
+            context.session_id(),
+            context.task_id()
+        );
 
-        if partition >= self.partitions {
-            return internal_err!(
-                "PlaceholderRowExec invalid partition {} (expected less than {})",
-                partition,
-                self.partitions
-            );
-        }
+        assert_or_internal_err!(
+            partition < self.partitions,
+            "PlaceholderRowExec invalid partition {partition} (expected less than {})",
+            self.partitions
+        );
 
-        Ok(Box::pin(MemoryStream::try_new(
-            self.data()?,
-            self.schema.clone(),
-            None,
-        )?))
+        let ms = MemoryStream::try_new(self.data()?, Arc::clone(&self.schema), None)?;
+        Ok(Box::pin(cooperative(ms)))
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        let batch = self
+        self.partition_statistics(None)
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        let batches = self
             .data()
             .expect("Create single row placeholder RecordBatch should not fail");
+
+        let batches = match partition {
+            Some(_) => vec![batches],
+            // entire plan
+            None => vec![batches; self.partitions],
+        };
+
         Ok(common::compute_record_batch_statistics(
-            &[batch],
+            &batches,
             &self.schema,
             None,
         ))
@@ -180,7 +195,8 @@ impl ExecutionPlan for PlaceholderRowExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test, with_new_children_if_necessary};
+    use crate::test;
+    use crate::with_new_children_if_necessary;
 
     #[test]
     fn with_new_children() -> Result<()> {
@@ -188,7 +204,10 @@ mod tests {
 
         let placeholder = Arc::new(PlaceholderRowExec::new(schema));
 
-        let placeholder_2 = with_new_children_if_necessary(placeholder.clone(), vec![])?;
+        let placeholder_2 = with_new_children_if_necessary(
+            Arc::clone(&placeholder) as Arc<dyn ExecutionPlan>,
+            vec![],
+        )?;
         assert_eq!(placeholder.schema(), placeholder_2.schema());
 
         let too_many_kids = vec![placeholder_2];
@@ -205,8 +224,8 @@ mod tests {
         let schema = test::aggr_test_schema();
         let placeholder = PlaceholderRowExec::new(schema);
 
-        // ask for the wrong partition
-        assert!(placeholder.execute(1, task_ctx.clone()).is_err());
+        // Ask for the wrong partition
+        assert!(placeholder.execute(1, Arc::clone(&task_ctx)).is_err());
         assert!(placeholder.execute(20, task_ctx).is_err());
         Ok(())
     }
@@ -220,7 +239,7 @@ mod tests {
         let iter = placeholder.execute(0, task_ctx)?;
         let batches = common::collect(iter).await?;
 
-        // should have one item
+        // Should have one item
         assert_eq!(batches.len(), 1);
 
         Ok(())
@@ -234,10 +253,10 @@ mod tests {
         let placeholder = PlaceholderRowExec::new(schema).with_partitions(partitions);
 
         for n in 0..partitions {
-            let iter = placeholder.execute(n, task_ctx.clone())?;
+            let iter = placeholder.execute(n, Arc::clone(&task_ctx))?;
             let batches = common::collect(iter).await?;
 
-            // should have one item
+            // Should have one item
             assert_eq!(batches.len(), 1);
         }
 

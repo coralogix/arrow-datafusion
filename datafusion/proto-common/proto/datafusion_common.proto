@@ -51,6 +51,13 @@ message ParquetFormat {
 
 message AvroFormat {}
 
+message NdJsonFormat {
+  JsonOptions options = 1;
+}
+
+message ArrowFormat {}
+
+
 message PrimaryKeyConstraint{
   repeated uint64 indices = 1;
 }
@@ -79,11 +86,18 @@ enum JoinType {
   LEFTANTI = 5;
   RIGHTSEMI = 6;
   RIGHTANTI = 7;
+  LEFTMARK = 8;
+  RIGHTMARK = 9;
 }
 
 enum JoinConstraint {
   ON = 0;
   USING = 1;
+}
+
+enum NullEquality {
+  NULL_EQUALS_NOTHING = 0;
+  NULL_EQUALS_NULL = 1;
 }
 
 message AvroOptions {}
@@ -102,8 +116,6 @@ message Field {
   // for complex data types like structs, unions
   repeated Field children = 4;
   map<string, string> metadata = 5;
-  int64 dict_id = 6;
-  bool dict_ordered = 7;
 }
 
 message Timestamp{
@@ -124,7 +136,25 @@ enum IntervalUnit{
   MonthDayNano = 2;
 }
 
-message Decimal{
+message Decimal32Type {
+  reserved 1, 2;
+  uint32 precision = 3;
+  int32 scale = 4;
+}
+
+message Decimal64Type {
+  reserved 1, 2;
+  uint32 precision = 3;
+  int32 scale = 4;
+}
+
+message Decimal128Type {
+  reserved 1, 2;
+  uint32 precision = 3;
+  int32 scale = 4;
+}
+
+message Decimal256Type{
   reserved 1, 2;
   uint32 precision = 3;
   int32 scale = 4;
@@ -164,7 +194,7 @@ message Union{
   repeated int32 type_ids = 3;
 }
 
-// Used for List/FixedSizeList/LargeList/Struct
+// Used for List/FixedSizeList/LargeList/Struct/Map
 message ScalarNestedValue {
   message Dictionary {
     bytes ipc_message = 1;
@@ -266,7 +296,10 @@ message ScalarValue{
     ScalarNestedValue list_value = 17;
     ScalarNestedValue fixed_size_list_value = 18;
     ScalarNestedValue struct_value = 32;
+    ScalarNestedValue map_value = 41;
 
+    Decimal32 decimal32_value = 43;
+    Decimal64 decimal64_value = 44;
     Decimal128 decimal128_value = 20;
     Decimal256 decimal256_value = 39;
 
@@ -289,6 +322,18 @@ message ScalarValue{
     ScalarFixedSizeBinary fixed_size_binary_value = 34;
     UnionValue union_value = 42;
   }
+}
+
+message Decimal32{
+  bytes value = 1;
+  int64 p = 2;
+  int64 s = 3;
+}
+
+message Decimal64{
+  bytes value = 1;
+  int64 p = 2;
+  int64 s = 3;
 }
 
 message Decimal128{
@@ -333,7 +378,10 @@ message ArrowType{
     TimeUnit TIME32 = 21 ;
     TimeUnit TIME64 = 22 ;
     IntervalUnit INTERVAL = 23 ;
-    Decimal DECIMAL = 24 ;
+    Decimal32Type DECIMAL32 = 40;
+    Decimal64Type DECIMAL64 = 41;
+    Decimal128Type DECIMAL128 = 24;
+    Decimal256Type DECIMAL256 = 36;
     List LIST = 25;
     List LARGE_LIST = 26;
     FixedSizeList FIXED_SIZE_LIST = 27;
@@ -385,6 +433,12 @@ message CsvWriterOptions {
   string time_format = 7;
   // Optional value to represent null
   string null_value = 8;
+  // Optional quote. Defaults to `b'"'`
+  string quote = 9;
+  // Optional escape. Defaults to `'\\'`
+  string escape = 10;
+  // Optional flag whether to double quotes, instead of escaping. Defaults to `true`
+  bool double_quote = 11;
 }
 
 // Options controlling CSV format
@@ -394,33 +448,41 @@ message CsvOptions {
   bytes quote = 3; // Quote character as a byte
   bytes escape = 4; // Optional escape character as a byte
   CompressionTypeVariant compression = 5; // Compression type
-  uint64 schema_infer_max_rec = 6; // Max records for schema inference
+  optional uint64 schema_infer_max_rec = 6; // Optional max records for schema inference
   string date_format = 7; // Optional date format
   string datetime_format = 8; // Optional datetime format
   string timestamp_format = 9; // Optional timestamp format
   string timestamp_tz_format = 10; // Optional timestamp with timezone format
   string time_format = 11; // Optional time format
   string null_value = 12; // Optional representation of null value
-  bytes comment = 13; // Optional comment character as a byte
+  string null_regex = 13; // Optional representation of null loading regex
+  bytes comment = 14; // Optional comment character as a byte
+  bytes double_quote = 15; // Indicates if quotes are doubled
+  bytes newlines_in_values = 16; // Indicates if newlines are supported in values
+  bytes terminator = 17; // Optional terminator character as a byte
+  bytes truncated_rows = 18; // Indicates if truncated rows are allowed
+  optional uint32 compression_level = 19; // Optional compression level
 }
 
 // Options controlling CSV format
 message JsonOptions {
   CompressionTypeVariant compression = 1; // Compression type
-  uint64 schema_infer_max_rec = 2; // Max records for schema inference
+  optional uint64 schema_infer_max_rec = 2; // Optional max records for schema inference
+  optional uint32 compression_level = 3; // Optional compression level
 }
 
 message TableParquetOptions {
   ParquetOptions global = 1;
-  repeated ColumnSpecificOptions column_specific_options = 2;
+  repeated ParquetColumnSpecificOptions column_specific_options = 2;
+  map<string, string> key_value_metadata = 3;
 }
 
-message ColumnSpecificOptions {
+message ParquetColumnSpecificOptions {
   string column_name = 1;
-  ColumnOptions options = 2;
+  ParquetColumnOptions options = 2;
 }
 
-message ColumnOptions {
+message ParquetColumnOptions {
   oneof bloom_filter_enabled_opt {
     bool bloom_filter_enabled = 1;
   }
@@ -449,9 +511,7 @@ message ColumnOptions {
     uint64 bloom_filter_ndv = 7;
   }
 
-  oneof max_statistics_size_opt {
-    uint32 max_statistics_size = 8;
-  }
+  reserved 8; // used to be uint32 max_statistics_size = 8;
 }
 
 message ParquetOptions {
@@ -461,6 +521,7 @@ message ParquetOptions {
   bool skip_metadata = 3; // default = true
   bool pushdown_filters = 5; // default = false
   bool reorder_filters = 6; // default = false
+  bool force_filter_selections = 34; // default = false
   uint64 data_pagesize_limit = 7; // default = 1024 * 1024
   uint64 write_batch_size = 8; // default = 1024
   string writer_version = 9; // default = "1.0"
@@ -470,6 +531,9 @@ message ParquetOptions {
   uint64 maximum_buffered_record_batches_per_stream = 25; // default = 2
   bool bloom_filter_on_read = 26; // default = true
   bool bloom_filter_on_write = 27; // default = false
+  bool schema_force_view_types = 28; // default = false
+  bool binary_as_string = 29; // default = false
+  bool skip_arrow_metadata = 30; // default = false
 
   oneof metadata_size_hint_opt {
     uint64 metadata_size_hint = 4;
@@ -487,12 +551,14 @@ message ParquetOptions {
     string statistics_enabled = 13;
   }
 
-  oneof max_statistics_size_opt {
-    uint64 max_statistics_size = 14;
-  }
+  reserved 14; // used to be uint32 max_statistics_size = 20;
 
   oneof column_index_truncate_length_opt {
     uint64 column_index_truncate_length = 17;
+  }
+
+  oneof statistics_truncate_length_opt {
+    uint64 statistics_truncate_length = 31;
   }
 
   oneof encoding_opt {
@@ -514,11 +580,20 @@ message ParquetOptions {
   uint64 max_row_group_size = 15;
 
   string created_by = 16;
+
+  oneof coerce_int96_opt {
+    string coerce_int96 = 32;
+  }
+
+  oneof max_predicate_cache_size_opt {
+    uint64 max_predicate_cache_size = 33;
+  }
 }
 
-enum JoinSide{
+enum JoinSide {
   LEFT_SIDE = 0;
   RIGHT_SIDE = 1;
+  NONE = 2;
 }
 
 message Precision{
@@ -536,11 +611,15 @@ message Statistics {
   Precision num_rows = 1;
   Precision total_byte_size = 2;
   repeated ColumnStats column_stats = 3;
+  // total_rows was removed - field 4 is reserved
+  reserved 4;
 }
 
 message ColumnStats {
   Precision min_value = 1;
   Precision max_value = 2;
+  Precision sum_value = 5;
   Precision null_count = 3;
   Precision distinct_count = 4;
+  Precision byte_size = 6;
 }

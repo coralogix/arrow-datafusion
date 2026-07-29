@@ -15,6 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![cfg_attr(test, allow(clippy::needless_pass_by_value))]
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg"
+)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// Make sure fast / cheap clones on Arc are explicit:
+// https://github.com/apache/datafusion/issues/11143
+#![deny(clippy::clone_on_ref_ptr)]
+// https://github.com/apache/datafusion/issues/18881
+#![deny(clippy::allow_attributes)]
+
 //! Aggregate Function packages for [DataFusion].
 //!
 //! This crate contains a collection of various aggregate function packages for DataFusion,
@@ -50,28 +62,38 @@
 //! 3. Add a new feature to `Cargo.toml`, with any optional dependencies
 //!
 //! 4. Use the `make_package!` macro to expose the module when the
-//! feature is enabled.
+//!    feature is enabled.
 
 #[macro_use]
 pub mod macros;
 
 pub mod approx_distinct;
-pub mod count;
-pub mod covariance;
-pub mod first_last;
-pub mod hyperloglog;
-pub mod median;
-pub mod regr;
-pub mod stddev;
-pub mod sum;
-pub mod variance;
-
 pub mod approx_median;
 pub mod approx_percentile_cont;
 pub mod approx_percentile_cont_with_weight;
+pub mod array_agg;
+pub mod average;
 pub mod bit_and_or_xor;
 pub mod bool_and_or;
+pub mod correlation;
+pub mod count;
+pub mod covariance;
+pub mod first_last;
+pub mod grouping;
+pub mod hyperloglog;
+pub mod median;
+pub mod min_max;
+pub mod nth_value;
+pub mod percentile_cont;
+pub mod regr;
+pub mod stddev;
 pub mod string_agg;
+pub mod sum;
+pub mod variance;
+
+pub mod planner;
+mod utils;
+
 use crate::approx_percentile_cont::approx_percentile_cont_udaf;
 use crate::approx_percentile_cont_with_weight::approx_percentile_cont_with_weight_udaf;
 use datafusion_common::Result;
@@ -82,22 +104,31 @@ use std::sync::Arc;
 
 /// Fluent-style API for creating `Expr`s
 pub mod expr_fn {
-    pub use super::approx_distinct;
+    pub use super::approx_distinct::approx_distinct;
     pub use super::approx_median::approx_median;
     pub use super::approx_percentile_cont::approx_percentile_cont;
     pub use super::approx_percentile_cont_with_weight::approx_percentile_cont_with_weight;
+    pub use super::array_agg::array_agg;
+    pub use super::average::avg;
+    pub use super::average::avg_distinct;
     pub use super::bit_and_or_xor::bit_and;
     pub use super::bit_and_or_xor::bit_or;
     pub use super::bit_and_or_xor::bit_xor;
     pub use super::bool_and_or::bool_and;
     pub use super::bool_and_or::bool_or;
+    pub use super::correlation::corr;
     pub use super::count::count;
     pub use super::count::count_distinct;
     pub use super::covariance::covar_pop;
     pub use super::covariance::covar_samp;
     pub use super::first_last::first_value;
     pub use super::first_last::last_value;
+    pub use super::grouping::grouping;
     pub use super::median::median;
+    pub use super::min_max::max;
+    pub use super::min_max::min;
+    pub use super::nth_value::nth_value;
+    pub use super::percentile_cont::percentile_cont;
     pub use super::regr::regr_avgx;
     pub use super::regr::regr_avgy;
     pub use super::regr::regr_count;
@@ -110,6 +141,7 @@ pub mod expr_fn {
     pub use super::stddev::stddev;
     pub use super::stddev::stddev_pop;
     pub use super::sum::sum;
+    pub use super::sum::sum_distinct;
     pub use super::variance::var_pop;
     pub use super::variance::var_sample;
 }
@@ -117,11 +149,15 @@ pub mod expr_fn {
 /// Returns all default aggregate functions
 pub fn all_default_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
     vec![
+        array_agg::array_agg_udaf(),
         first_last::first_value_udaf(),
         first_last::last_value_udaf(),
         covariance::covar_samp_udaf(),
-        sum::sum_udaf(),
         covariance::covar_pop_udaf(),
+        correlation::corr_udaf(),
+        sum::sum_udaf(),
+        min_max::max_udaf(),
+        min_max::min_udaf(),
         median::median_udaf(),
         count::count_udaf(),
         regr::regr_slope_udaf(),
@@ -141,12 +177,16 @@ pub fn all_default_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
         approx_distinct::approx_distinct_udaf(),
         approx_percentile_cont_udaf(),
         approx_percentile_cont_with_weight_udaf(),
+        percentile_cont::percentile_cont_udaf(),
         string_agg::string_agg_udaf(),
         bit_and_or_xor::bit_and_udaf(),
         bit_and_or_xor::bit_or_udaf(),
         bit_and_or_xor::bit_xor_udaf(),
         bool_and_or::bool_and_udaf(),
         bool_and_or::bool_or_udaf(),
+        average::avg_udaf(),
+        grouping::grouping_udaf(),
+        nth_value::nth_value_udaf(),
     ]
 }
 
@@ -175,11 +215,6 @@ mod tests {
     fn test_no_duplicate_name() -> Result<()> {
         let mut names = HashSet::new();
         for func in all_default_aggregate_functions() {
-            // TODO: remove this
-            // These functions are in intermidiate migration state, skip them
-            if func.name().to_lowercase() == "count" {
-                continue;
-            }
             assert!(
                 names.insert(func.name().to_string().to_lowercase()),
                 "duplicate function name: {}",
@@ -188,8 +223,7 @@ mod tests {
             for alias in func.aliases() {
                 assert!(
                     names.insert(alias.to_string().to_lowercase()),
-                    "duplicate function name: {}",
-                    alias
+                    "duplicate function name: {alias}"
                 );
             }
         }

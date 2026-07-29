@@ -19,11 +19,31 @@ use crate::string::common::to_upper;
 use crate::utils::utf8_to_str_type;
 use arrow::datatypes::DataType;
 use datafusion_common::Result;
-use datafusion_expr::ColumnarValue;
-use datafusion_expr::{ScalarUDFImpl, Signature, Volatility};
+use datafusion_common::types::logical_string;
+use datafusion_expr::{
+    Coercion, ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
+    TypeSignatureClass, Volatility,
+};
+use datafusion_macros::user_doc;
 use std::any::Any;
 
-#[derive(Debug)]
+#[user_doc(
+    doc_section(label = "String Functions"),
+    description = "Converts a string to upper-case.",
+    syntax_example = "upper(str)",
+    sql_example = r#"```sql
+> select upper('dataFusion');
++---------------------------+
+| upper(Utf8("dataFusion")) |
++---------------------------+
+| DATAFUSION                |
++---------------------------+
+```"#,
+    standard_argument(name = "str", prefix = "String"),
+    related_udf(name = "initcap"),
+    related_udf(name = "lower")
+)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct UpperFunc {
     signature: Signature,
 }
@@ -36,11 +56,11 @@ impl Default for UpperFunc {
 
 impl UpperFunc {
     pub fn new() -> Self {
-        use DataType::*;
         Self {
-            signature: Signature::uniform(
-                1,
-                vec![Utf8, LargeUtf8],
+            signature: Signature::coercible(
+                vec![Coercion::new_exact(TypeSignatureClass::Native(
+                    logical_string(),
+                ))],
                 Volatility::Immutable,
             ),
         }
@@ -64,23 +84,39 @@ impl ScalarUDFImpl for UpperFunc {
         utf8_to_str_type(&arg_types[0], "upper")
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        to_upper(args, "upper")
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        to_upper(&args.args, "upper")
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        self.doc()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, StringArray};
+    use arrow::array::{Array, ArrayRef, StringArray};
+    use arrow::datatypes::DataType::Utf8;
+    use arrow::datatypes::Field;
+    use datafusion_common::config::ConfigOptions;
     use std::sync::Arc;
 
     fn to_upper(input: ArrayRef, expected: ArrayRef) -> Result<()> {
         let func = UpperFunc::new();
-        let args = vec![ColumnarValue::Array(input)];
-        let result = match func.invoke(&args)? {
+
+        let arg_field = Field::new("a", input.data_type().clone(), true).into();
+        let args = ScalarFunctionArgs {
+            number_rows: input.len(),
+            args: vec![ColumnarValue::Array(input)],
+            arg_fields: vec![arg_field],
+            return_field: Field::new("f", Utf8, true).into(),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+
+        let result = match func.invoke_with_args(args)? {
             ColumnarValue::Array(result) => result,
-            _ => unreachable!(),
+            _ => unreachable!("upper"),
         };
         assert_eq!(&expected, &result);
         Ok(())

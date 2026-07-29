@@ -15,25 +15,33 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::arrow::datatypes::DataType;
-use datafusion::datasource::physical_plan::ParquetExec;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::{displayable, ExecutionPlan};
 use std::collections::HashMap;
-use substrait::proto::expression::mask_expression::{StructItem, StructSelect};
-use substrait::proto::expression::MaskExpression;
-use substrait::proto::r#type::{
-    Boolean, Fp64, Kind, Nullability, String as SubstraitString, Struct, I64,
+
+use crate::variation_const::{
+    DEFAULT_CONTAINER_TYPE_VARIATION_REF, LARGE_CONTAINER_TYPE_VARIATION_REF,
+    VIEW_CONTAINER_TYPE_VARIATION_REF,
 };
-use substrait::proto::read_rel::local_files::file_or_files::ParquetReadOptions;
-use substrait::proto::read_rel::local_files::file_or_files::{FileFormat, PathType};
-use substrait::proto::read_rel::local_files::FileOrFiles;
-use substrait::proto::read_rel::LocalFiles;
-use substrait::proto::read_rel::ReadType;
-use substrait::proto::rel::RelType;
+
+use datafusion::arrow::datatypes::DataType;
+use datafusion::datasource::source::DataSourceExec;
+use datafusion::error::{DataFusionError, Result};
+use datafusion::physical_plan::{ExecutionPlan, displayable};
+
+use datafusion::datasource::physical_plan::ParquetSource;
 use substrait::proto::ReadRel;
 use substrait::proto::Rel;
-use substrait::proto::{extensions, NamedStruct, Type};
+use substrait::proto::expression::MaskExpression;
+use substrait::proto::expression::mask_expression::{StructItem, StructSelect};
+use substrait::proto::read_rel::LocalFiles;
+use substrait::proto::read_rel::ReadType;
+use substrait::proto::read_rel::local_files::FileOrFiles;
+use substrait::proto::read_rel::local_files::file_or_files::ParquetReadOptions;
+use substrait::proto::read_rel::local_files::file_or_files::{FileFormat, PathType};
+use substrait::proto::rel::RelType;
+use substrait::proto::r#type::{
+    Binary, Boolean, Fp64, I64, Kind, Nullability, String as SubstraitString, Struct,
+};
+use substrait::proto::{NamedStruct, Type, extensions};
 
 /// Convert DataFusion ExecutionPlan to Substrait Rel
 pub fn to_substrait_rel(
@@ -43,15 +51,17 @@ pub fn to_substrait_rel(
         HashMap<String, u32>,
     ),
 ) -> Result<Box<Rel>> {
-    if let Some(scan) = plan.as_any().downcast_ref::<ParquetExec>() {
-        let base_config = scan.base_config();
+    if let Some(data_source_exec) = plan.as_any().downcast_ref::<DataSourceExec>()
+        && let Some((file_config, _)) =
+            data_source_exec.downcast_to_file_source::<ParquetSource>()
+    {
         let mut substrait_files = vec![];
-        for (partition_index, files) in base_config.file_groups.iter().enumerate() {
-            for file in files {
+        for (partition_index, files) in file_config.file_groups.iter().enumerate() {
+            for file in files.iter() {
                 substrait_files.push(FileOrFiles {
                     partition_index: partition_index.try_into().unwrap(),
                     start: 0,
-                    length: file.object_meta.size as u64,
+                    length: file.object_meta.size,
                     path_type: Some(PathType::UriPath(
                         file.object_meta.location.as_ref().to_string(),
                     )),
@@ -63,7 +73,7 @@ pub fn to_substrait_rel(
         let mut names = vec![];
         let mut types = vec![];
 
-        for field in base_config.file_schema.fields.iter() {
+        for field in file_config.file_schema().fields.iter() {
             match to_substrait_type(field.data_type(), field.is_nullable()) {
                 Ok(t) => {
                     names.push(field.name().clone());
@@ -82,11 +92,12 @@ pub fn to_substrait_rel(
         };
 
         let mut select_struct = None;
-        if let Some(projection) = base_config.projection.as_ref() {
+        if let Some(projection) = file_config.file_source().projection().as_ref() {
             let struct_items = projection
-                .iter()
+                .column_indices()
+                .into_iter()
                 .map(|index| StructItem {
-                    field: *index as i32,
+                    field: index as i32,
                     // FIXME: duckdb sets this to None, but it's not clear why.
                     // https://github.com/duckdb/substrait/blob/b6f56643cb11d52de0e32c24a01dfd5947df62be/src/to_substrait.cpp#L1191
                     child: None,
@@ -96,7 +107,7 @@ pub fn to_substrait_rel(
             select_struct = Some(StructSelect { struct_items });
         }
 
-        Ok(Box::new(Rel {
+        return Ok(Box::new(Rel {
             rel_type: Some(RelType::Read(Box::new(ReadRel {
                 common: None,
                 base_schema: Some(NamedStruct {
@@ -117,13 +128,12 @@ pub fn to_substrait_rel(
                     advanced_extension: None,
                 })),
             }))),
-        }))
-    } else {
-        Err(DataFusionError::Substrait(format!(
-            "Unsupported plan in Substrait physical plan producer: {}",
-            displayable(plan).one_line()
-        )))
+        }));
     }
+    Err(DataFusionError::Substrait(format!(
+        "Unsupported plan in Substrait physical plan producer: {}",
+        displayable(plan).one_line()
+    )))
 }
 
 // see https://github.com/duckdb/substrait/blob/b6f56643cb11d52de0e32c24a01dfd5947df62be/src/to_substrait.cpp#L954-L1094.
@@ -155,7 +165,37 @@ fn to_substrait_type(data_type: &DataType, nullable: bool) -> Result<Type> {
         }),
         DataType::Utf8 => Ok(Type {
             kind: Some(Kind::String(SubstraitString {
-                type_variation_reference: 0,
+                type_variation_reference: DEFAULT_CONTAINER_TYPE_VARIATION_REF,
+                nullability,
+            })),
+        }),
+        DataType::LargeUtf8 => Ok(Type {
+            kind: Some(Kind::String(SubstraitString {
+                type_variation_reference: LARGE_CONTAINER_TYPE_VARIATION_REF,
+                nullability,
+            })),
+        }),
+        DataType::Utf8View => Ok(Type {
+            kind: Some(Kind::String(SubstraitString {
+                type_variation_reference: VIEW_CONTAINER_TYPE_VARIATION_REF,
+                nullability,
+            })),
+        }),
+        DataType::Binary => Ok(Type {
+            kind: Some(Kind::Binary(Binary {
+                type_variation_reference: DEFAULT_CONTAINER_TYPE_VARIATION_REF,
+                nullability,
+            })),
+        }),
+        DataType::LargeBinary => Ok(Type {
+            kind: Some(Kind::Binary(Binary {
+                type_variation_reference: LARGE_CONTAINER_TYPE_VARIATION_REF,
+                nullability,
+            })),
+        }),
+        DataType::BinaryView => Ok(Type {
+            kind: Some(Kind::Binary(Binary {
+                type_variation_reference: VIEW_CONTAINER_TYPE_VARIATION_REF,
                 nullability,
             })),
         }),

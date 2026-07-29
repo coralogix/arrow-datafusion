@@ -17,27 +17,40 @@
 
 use std::any::Any;
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::physical_expr::down_cast_any_ref;
 use crate::PhysicalExpr;
 use arrow::compute;
-use arrow::compute::{cast_with_options, CastOptions};
-use arrow::datatypes::{DataType, Schema};
+use arrow::compute::CastOptions;
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use compute::can_cast_types;
 use datafusion_common::format::DEFAULT_FORMAT_OPTIONS;
-use datafusion_common::{not_impl_err, Result, ScalarValue};
+use datafusion_common::{Result, not_impl_err};
 use datafusion_expr::ColumnarValue;
 
-/// TRY_CAST expression casts an expression to a specific data type and retuns NULL on invalid cast
-#[derive(Debug, Hash)]
+/// TRY_CAST expression casts an expression to a specific data type and returns NULL on invalid cast
+#[derive(Debug, Eq)]
 pub struct TryCastExpr {
     /// The expression to cast
     expr: Arc<dyn PhysicalExpr>,
     /// The data type to cast to
     cast_type: DataType,
+}
+
+// Manually derive PartialEq and Hash to work around https://github.com/rust-lang/rust/issues/78808
+impl PartialEq for TryCastExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr.eq(&other.expr) && self.cast_type == other.cast_type
+    }
+}
+
+impl Hash for TryCastExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.expr.hash(state);
+        self.cast_type.hash(state);
+    }
 }
 
 impl TryCastExpr {
@@ -83,18 +96,14 @@ impl PhysicalExpr for TryCastExpr {
             safe: true,
             format_options: DEFAULT_FORMAT_OPTIONS,
         };
-        match value {
-            ColumnarValue::Array(array) => {
-                let cast = cast_with_options(&array, &self.cast_type, &options)?;
-                Ok(ColumnarValue::Array(cast))
-            }
-            ColumnarValue::Scalar(scalar) => {
-                let array = scalar.to_array()?;
-                let cast_array = cast_with_options(&array, &self.cast_type, &options)?;
-                let cast_scalar = ScalarValue::try_from_array(&cast_array, 0)?;
-                Ok(ColumnarValue::Scalar(cast_scalar))
-            }
-        }
+        value.cast_to(&self.cast_type, Some(&options))
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> Result<FieldRef> {
+        self.expr
+            .return_field(input_schema)
+            .map(|f| f.as_ref().clone().with_data_type(self.cast_type.clone()))
+            .map(Arc::new)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -106,23 +115,15 @@ impl PhysicalExpr for TryCastExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(TryCastExpr::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.cast_type.clone(),
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.hash(&mut s);
-    }
-}
-
-impl PartialEq<dyn Any> for TryCastExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.expr.eq(&x.expr) && self.cast_type == x.cast_type)
-            .unwrap_or(false)
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TRY_CAST(")?;
+        self.expr.fmt_sql(f)?;
+        write!(f, " AS {:?})", self.cast_type)
     }
 }
 
@@ -137,11 +138,11 @@ pub fn try_cast(
 ) -> Result<Arc<dyn PhysicalExpr>> {
     let expr_type = expr.data_type(input_schema)?;
     if expr_type == cast_type {
-        Ok(expr.clone())
+        Ok(Arc::clone(&expr))
     } else if can_cast_types(&expr_type, &cast_type) {
         Ok(Arc::new(TryCastExpr::new(expr, cast_type)))
     } else {
-        not_impl_err!("Unsupported TRY_CAST from {expr_type:?} to {cast_type:?}")
+        not_impl_err!("Unsupported TRY_CAST from {expr_type} to {cast_type}")
     }
 }
 
@@ -154,11 +155,12 @@ mod tests {
     };
     use arrow::{
         array::{
-            Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
-            Int8Array, TimestampNanosecondArray, UInt32Array,
+            Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
+            Int64Array, TimestampNanosecondArray, UInt32Array,
         },
         datatypes::*,
     };
+    use datafusion_physical_expr_common::physical_expr::fmt_sql;
 
     // runs an end-to-end test of physical type cast
     // 1. construct a record batch with a column "a" of type A
@@ -573,5 +575,27 @@ mod tests {
             .finish()
             .with_precision_and_scale(precision, scale)
             .unwrap()
+    }
+
+    #[test]
+    fn test_fmt_sql() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+
+        // Test numeric casting
+        let expr = try_cast(col("a", &schema)?, &schema, DataType::Int64)?;
+        let display_string = expr.to_string();
+        assert_eq!(display_string, "TRY_CAST(a@0 AS Int64)");
+        let sql_string = fmt_sql(expr.as_ref()).to_string();
+        assert_eq!(sql_string, "TRY_CAST(a AS Int64)");
+
+        // Test string casting
+        let schema = Schema::new(vec![Field::new("b", DataType::Utf8, true)]);
+        let expr = try_cast(col("b", &schema)?, &schema, DataType::Int32)?;
+        let display_string = expr.to_string();
+        assert_eq!(display_string, "TRY_CAST(b@0 AS Int32)");
+        let sql_string = fmt_sql(expr.as_ref()).to_string();
+        assert_eq!(sql_string, "TRY_CAST(b AS Int32)");
+
+        Ok(())
     }
 }

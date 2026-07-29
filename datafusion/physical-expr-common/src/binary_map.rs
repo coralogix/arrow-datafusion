@@ -19,19 +19,19 @@
 //! StringArray / LargeStringArray / BinaryArray / LargeBinaryArray.
 
 use ahash::RandomState;
-use arrow::array::cast::AsArray;
-use arrow::array::types::{ByteArrayType, GenericBinaryType, GenericStringType};
 use arrow::array::{
-    Array, ArrayRef, BooleanBufferBuilder, BufferBuilder, GenericBinaryArray,
-    GenericStringArray, OffsetSizeTrait,
+    Array, ArrayRef, BufferBuilder, GenericBinaryArray, GenericStringArray,
+    NullBufferBuilder, OffsetSizeTrait,
+    cast::AsArray,
+    types::{ByteArrayType, GenericBinaryType, GenericStringType},
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::DataType;
 use datafusion_common::hash_utils::create_hashes;
-use datafusion_common::utils::proxy::{RawTableAllocExt, VecAllocExt};
+use datafusion_common::utils::proxy::{HashTableAllocExt, VecAllocExt};
 use std::any::type_name;
 use std::fmt::Debug;
-use std::mem;
+use std::mem::{size_of, swap};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -40,8 +40,12 @@ use std::sync::Arc;
 pub enum OutputType {
     /// `StringArray` or `LargeStringArray`
     Utf8,
+    /// `StringViewArray`
+    Utf8View,
     /// `BinaryArray` or `LargeBinaryArray`
     Binary,
+    /// `BinaryViewArray`
+    BinaryView,
 }
 
 /// HashSet optimized for storing string or binary values that can produce that
@@ -56,7 +60,7 @@ impl<O: OffsetSizeTrait> ArrowBytesSet<O> {
 
     /// Return the contents of this set and replace it with a new empty
     /// set with the same output type
-    pub(super) fn take(&mut self) -> Self {
+    pub fn take(&mut self) -> Self {
         Self(self.0.take())
     }
 
@@ -100,8 +104,9 @@ impl<O: OffsetSizeTrait> ArrowBytesSet<O> {
 /// `Binary`, and `LargeBinary`) values that can produce the set of keys on
 /// output as `GenericBinaryArray` without copies.
 ///
-/// Equivalent to `HashSet<String, V>` but with better performance for arrow
-/// data.
+/// Equivalent to `HashSet<String, V>` but with better performance if you need
+/// to emit the keys as an Arrow `StringArray` / `BinaryArray`. For other
+/// purposes it is the same as a `HashMap<String, V>`
 ///
 /// # Generic Arguments
 ///
@@ -113,13 +118,13 @@ impl<O: OffsetSizeTrait> ArrowBytesSet<O> {
 /// This is a specialized HashMap with the following properties:
 ///
 /// 1. Optimized for storing and emitting Arrow byte types  (e.g.
-/// `StringArray` / `BinaryArray`) very efficiently by minimizing copying of
-/// the string values themselves, both when inserting and when emitting the
-/// final array.
+///    `StringArray` / `BinaryArray`) very efficiently by minimizing copying of
+///    the string values themselves, both when inserting and when emitting the
+///    final array.
 ///
 ///
 /// 2. Retains the insertion order of entries in the final array. The values are
-/// in the same order as they were inserted.
+///    in the same order as they were inserted.
 ///
 /// Note this structure can be used as a `HashSet` by specifying the value type
 /// as `()`, as is done by [`ArrowBytesSet`].
@@ -134,18 +139,18 @@ impl<O: OffsetSizeTrait> ArrowBytesSet<O> {
 /// "Foo", NULL, "Bar", "TheQuickBrownFox":
 ///
 /// * `hashtable` stores entries for each distinct string that has been
-/// inserted. The entries contain the payload as well as information about the
-/// value (either an offset or the actual bytes, see `Entry` docs for more
-/// details)
+///   inserted. The entries contain the payload as well as information about the
+///   value (either an offset or the actual bytes, see `Entry` docs for more
+///   details)
 ///
 /// * `offsets` stores offsets into `buffer` for each distinct string value,
-/// following the same convention as the offsets in a `StringArray` or
-/// `LargeStringArray`.
+///   following the same convention as the offsets in a `StringArray` or
+///   `LargeStringArray`.
 ///
 /// * `buffer` stores the actual byte data
 ///
 /// * `null`: stores the index and payload of the null value, in this case the
-/// second value (index 1)
+///   second value (index 1)
 ///
 /// ```text
 /// ┌───────────────────────────────────┐    ┌─────┐    ┌────┐
@@ -210,7 +215,7 @@ where
     /// Should the output be String or Binary?
     output_type: OutputType,
     /// Underlying hash set for each distinct value
-    map: hashbrown::raw::RawTable<Entry<O, V>>,
+    map: hashbrown::hash_table::HashTable<Entry<O, V>>,
     /// Total size of the map in bytes
     map_size: usize,
     /// In progress arrow `Buffer` containing all values
@@ -233,7 +238,7 @@ where
 /// The size, in number of entries, of the initial hash table
 const INITIAL_MAP_CAPACITY: usize = 128;
 /// The initial size, in bytes, of the string data
-const INITIAL_BUFFER_CAPACITY: usize = 8 * 1024;
+pub const INITIAL_BUFFER_CAPACITY: usize = 8 * 1024;
 impl<O: OffsetSizeTrait, V> ArrowBytesMap<O, V>
 where
     V: Debug + PartialEq + Eq + Clone + Copy + Default,
@@ -241,7 +246,7 @@ where
     pub fn new(output_type: OutputType) -> Self {
         Self {
             output_type,
-            map: hashbrown::raw::RawTable::with_capacity(INITIAL_MAP_CAPACITY),
+            map: hashbrown::hash_table::HashTable::with_capacity(INITIAL_MAP_CAPACITY),
             map_size: 0,
             buffer: BufferBuilder::new(INITIAL_BUFFER_CAPACITY),
             offsets: vec![O::default()], // first offset is always 0
@@ -255,7 +260,7 @@ where
     /// the same output type
     pub fn take(&mut self) -> Self {
         let mut new_self = Self::new(self.output_type);
-        std::mem::swap(self, &mut new_self);
+        swap(self, &mut new_self);
         new_self
     }
 
@@ -318,6 +323,7 @@ where
                     observe_payload_fn,
                 )
             }
+            _ => unreachable!("View types should use `ArrowBytesViewMap`"),
         };
     }
 
@@ -343,7 +349,7 @@ where
         let batch_hashes = &mut self.hashes_buffer;
         batch_hashes.clear();
         batch_hashes.resize(values.len(), 0);
-        create_hashes(&[values.clone()], &self.random_state, batch_hashes)
+        create_hashes([values], &self.random_state, batch_hashes)
             // hash is supported for all types and create_hashes only
             // returns errors for unsupported types
             .unwrap();
@@ -355,7 +361,7 @@ where
         assert_eq!(values.len(), batch_hashes.len());
 
         for (value, &hash) in values.iter().zip(batch_hashes.iter()) {
-            // hande null value
+            // handle null value
             let Some(value) = value else {
                 let payload = if let Some(&(payload, _offset)) = self.null.as_ref() {
                     payload
@@ -378,10 +384,10 @@ where
 
             // value is "small"
             let payload = if value.len() <= SHORT_VALUE_LEN {
-                let inline = value.iter().fold(0usize, |acc, &x| acc << 8 | x as usize);
+                let inline = value.iter().fold(0usize, |acc, &x| (acc << 8) | x as usize);
 
                 // is value is already present in the set?
-                let entry = self.map.get_mut(hash, |header| {
+                let entry = self.map.find_mut(hash, |header| {
                     // compare value if hashes match
                     if header.len != value_len {
                         return false;
@@ -419,7 +425,7 @@ where
             // value is not "small"
             else {
                 // Check if the value is already present in the set
-                let entry = self.map.get_mut(hash, |header| {
+                let entry = self.map.find_mut(hash, |header| {
                     // compare value if hashes match
                     if header.len != value_len {
                         return false;
@@ -439,7 +445,7 @@ where
                     // Put the small values into buffer and offsets so it
                     // appears the output array, and store that offset
                     // so the bytes can be compared if needed
-                    let offset = self.buffer.len(); // offset of start fof data
+                    let offset = self.buffer.len(); // offset of start for data
                     self.buffer.append_slice(value);
                     self.offsets.push(O::usize_as(self.buffer.len()));
 
@@ -516,6 +522,7 @@ where
                     GenericStringArray::new_unchecked(offsets, values, nulls)
                 })
             }
+            _ => unreachable!("View types should use `ArrowBytesViewMap`"),
         }
     }
 
@@ -538,7 +545,7 @@ where
     /// this set, not including `self`
     pub fn size(&self) -> usize {
         self.map_size
-            + self.buffer.capacity() * std::mem::size_of::<u8>()
+            + self.buffer.capacity() * size_of::<u8>()
             + self.offsets.allocated_size()
             + self.hashes_buffer.allocated_size()
     }
@@ -546,10 +553,12 @@ where
 
 /// Returns a `NullBuffer` with a single null value at the given index
 fn single_null_buffer(num_values: usize, null_index: usize) -> NullBuffer {
-    let mut bool_builder = BooleanBufferBuilder::new(num_values);
-    bool_builder.append_n(num_values, true);
-    bool_builder.set_bit(null_index, false);
-    NullBuffer::from(bool_builder.finish())
+    let mut null_builder = NullBufferBuilder::new(num_values);
+    null_builder.append_n_non_nulls(null_index);
+    null_builder.append_null();
+    null_builder.append_n_non_nulls(num_values - null_index - 1);
+    // SAFETY: inner builder must be constructed
+    null_builder.finish().unwrap()
 }
 
 impl<O: OffsetSizeTrait, V> Debug for ArrowBytesMap<O, V>
@@ -568,7 +577,7 @@ where
 }
 
 /// Maximum size of a value that can be inlined in the hash table
-const SHORT_VALUE_LEN: usize = mem::size_of::<usize>();
+const SHORT_VALUE_LEN: usize = size_of::<usize>();
 
 /// Entry in the hash table -- see [`ArrowBytesMap`] for more details
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
