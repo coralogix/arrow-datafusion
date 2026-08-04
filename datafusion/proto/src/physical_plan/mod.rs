@@ -1013,15 +1013,11 @@ impl protobuf::PhysicalPlanNode {
         })?;
         let schema: SchemaRef = SchemaRef::new(proto_schema.try_into()?);
 
-        let projection = if !scan.projection.is_empty() {
-            Some(
-                scan.projection
-                    .iter()
-                    .map(|i| *i as usize)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            None
+        // Decode the empty-projection sentinel written by `try_from_memory_scan_exec`.
+        let projection = match scan.projection.as_slice() {
+            [] => None,
+            [u32::MAX] => Some(Vec::new()),
+            indices => Some(indices.iter().map(|i| *i as usize).collect::<Vec<_>>()),
         };
 
         let mut sort_information = vec![];
@@ -3132,12 +3128,15 @@ impl protobuf::PhysicalPlanNode {
             let proto_schema: protobuf::Schema =
                 source_conf.original_schema().as_ref().try_into()?;
 
-            let proto_projection = source_conf
-                .projection()
-                .as_ref()
-                .map_or_else(Vec::new, |v| {
-                    v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
-                });
+            // Proto3 `repeated` cannot distinguish `None` from `Some(vec![])`.
+            // `Some(vec![])` projects away every column and so changes the output
+            // schema; it is encoded with the single-element sentinel `[u32::MAX]`
+            // (never a valid column index). Every other state is sent as-is.
+            let proto_projection = match source_conf.projection().as_ref() {
+                None => Vec::new(),
+                Some(v) if v.is_empty() => vec![u32::MAX],
+                Some(v) => v.iter().map(|x| *x as u32).collect::<Vec<u32>>(),
+            };
 
             let proto_sort_information = source_conf
                 .sort_information()
