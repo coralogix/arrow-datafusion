@@ -34,6 +34,7 @@ use datafusion::datasource::file_format::parquet::ParquetSink;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl, PartitionedFile,
 };
+use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::{
     ArrowSource, FileGroup, FileOutputMode, FileScanConfig, FileScanConfigBuilder,
@@ -333,6 +334,59 @@ fn roundtrip_nested_loop_join() -> Result<()> {
             None,
             join_type,
             Some(vec![0]),
+        )?))?;
+    }
+    Ok(())
+}
+
+/// Regression: proto3 `repeated` fields cannot distinguish "absent" from "empty",
+/// so a naive encoding collapses `Some(vec![])` and `None` into the same wire
+/// representation. `try_embed_projection` (DataFusion 53+) produces
+/// `HashJoinExec.projection = Some(vec![])` for `SELECT count(1) … JOIN …`,
+/// which previously round-tripped to `None` and caused downstream consumers (e.g.
+/// distributed Flight executors) to receive a different number of output
+/// columns than the planner declared. Verify all three states preserve.
+#[test]
+fn roundtrip_hash_join_projection_states() -> Result<()> {
+    let field_a = Field::new("col", DataType::Int64, false);
+    let schema_left = Arc::new(Schema::new(vec![field_a.clone()]));
+    let schema_right = Arc::new(Schema::new(vec![field_a]));
+    let on = vec![(
+        Arc::new(Column::new("col", schema_left.index_of("col")?)) as _,
+        Arc::new(Column::new("col", schema_right.index_of("col")?)) as _,
+    )];
+
+    for projection in [None, Some(vec![]), Some(vec![0]), Some(vec![1])] {
+        roundtrip_test(Arc::new(HashJoinExec::try_new(
+            Arc::new(EmptyExec::new(schema_left.clone())),
+            Arc::new(EmptyExec::new(schema_right.clone())),
+            on.clone(),
+            None,
+            &JoinType::Inner,
+            projection,
+            PartitionMode::Partitioned,
+            NullEquality::NullEqualsNothing,
+            false,
+        )?))?;
+    }
+    Ok(())
+}
+
+/// Same regression coverage for `NestedLoopJoinExec`, which shares the
+/// `repeated uint32 projection` proto field shape with `HashJoinExec`.
+#[test]
+fn roundtrip_nested_loop_join_projection_states() -> Result<()> {
+    let field_a = Field::new("col", DataType::Int64, false);
+    let schema_left = Arc::new(Schema::new(vec![field_a.clone()]));
+    let schema_right = Arc::new(Schema::new(vec![field_a]));
+
+    for projection in [None, Some(vec![]), Some(vec![0]), Some(vec![1])] {
+        roundtrip_test(Arc::new(NestedLoopJoinExec::try_new(
+            Arc::new(EmptyExec::new(schema_left.clone())),
+            Arc::new(EmptyExec::new(schema_right.clone())),
+            None,
+            &JoinType::Inner,
+            projection,
         )?))?;
     }
     Ok(())
@@ -2353,6 +2407,24 @@ async fn roundtrip_memory_source() -> Result<()> {
     roundtrip_test(plan)
 }
 
+#[test]
+fn roundtrip_memory_source_projections() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, false),
+        Field::new("b", DataType::Int32, false),
+    ]));
+
+    // `None` (all columns), `Some(vec![])` (no columns) and a partial projection are
+    // three distinct output schemas and must each survive a round-trip.
+    for projection in [None, Some(vec![]), Some(vec![1])] {
+        let source =
+            MemorySourceConfig::try_new(&[vec![]], Arc::clone(&schema), projection)?;
+        roundtrip_test(Arc::new(DataSourceExec::new(Arc::new(source))))?;
+    }
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn roundtrip_listing_table_with_schema_metadata() -> Result<()> {
     let ctx = SessionContext::new();
@@ -3166,4 +3238,40 @@ fn roundtrip_lead_with_default_value() -> Result<()> {
         InputOrderMode::Sorted,
         true,
     )?))
+}
+#[test]
+fn roundtrip_filter_with_none_projection() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, false),
+        Field::new("b", DataType::Int32, false),
+        Field::new("c", DataType::Int32, false),
+    ]));
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("a", 0)),
+        Operator::Gt,
+        lit(ScalarValue::Int32(Some(0))),
+    ));
+    let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::clone(&schema)));
+
+    // Case 1: None projection (return all columns)
+    roundtrip_test(Arc::new(FilterExec::try_new(
+        Arc::clone(&predicate),
+        Arc::clone(&input),
+    )?))?;
+
+    // Case 2: Some(vec![]) — explicitly empty projection
+    roundtrip_test(Arc::new(
+        FilterExecBuilder::new(Arc::clone(&predicate), Arc::clone(&input))
+            .apply_projection(Some(vec![]))?
+            .build()?,
+    ))?;
+
+    // Case 3: Some(vec![2, 0]) — partial projection
+    roundtrip_test(Arc::new(
+        FilterExecBuilder::new(Arc::clone(&predicate), Arc::clone(&input))
+            .apply_projection(Some(vec![2, 0]))?
+            .build()?,
+    ))?;
+
+    Ok(())
 }

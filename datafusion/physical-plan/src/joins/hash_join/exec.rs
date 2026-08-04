@@ -77,8 +77,7 @@ use datafusion_common::config::ConfigOptions;
 use datafusion_common::utils::memory::estimate_memory_size;
 use datafusion_common::{
     DataFusionError, JoinSide, JoinType, NullEquality, Result, assert_or_internal_err,
-    internal_err,
-    plan_err, project_schema,
+    internal_err, plan_err, project_schema,
 };
 use datafusion_execution::TaskContext;
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};

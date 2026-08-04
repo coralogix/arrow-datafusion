@@ -680,18 +680,23 @@ impl protobuf::PhysicalPlanNode {
             })?;
 
         let filter_selectivity = filter.default_filter_selectivity.try_into();
-        let projection = if !filter.projection.is_empty() {
-            Some(
-                filter
-                    .projection
-                    .iter()
-                    .map(|i| *i as usize)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
+        // Preserve the `None` state across proto boundaries. Proto cannot distinguish
+        // between `None` (full projection) and `Some(vec![])` (empty projection) since
+        // both serialize as an empty list. If all columns are included, we reconstruct
+        // `None` to avoid losing this semantic distinction on deserialization.
+        let num_fields = input.schema().fields().len();
+        let mut is_full_projection = filter.projection.len() == num_fields;
+        let mut projection_vec: Vec<usize> = Vec::with_capacity(filter.projection.len());
+        for (i, idx) in filter.projection.iter().enumerate() {
+            let idx = *idx as usize;
+            is_full_projection &= idx == i;
+            projection_vec.push(idx);
+        }
+        let projection = if is_full_projection {
             None
+        } else {
+            Some(projection_vec)
         };
-
         let filter = FilterExecBuilder::new(predicate, input)
             .apply_projection(projection)?
             .with_batch_size(filter.batch_size as usize)
@@ -929,15 +934,11 @@ impl protobuf::PhysicalPlanNode {
         })?;
         let schema: SchemaRef = SchemaRef::new(proto_schema.try_into()?);
 
-        let projection = if !scan.projection.is_empty() {
-            Some(
-                scan.projection
-                    .iter()
-                    .map(|i| *i as usize)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            None
+        // Decode the empty-projection sentinel written by `try_from_memory_scan_exec`.
+        let projection = match scan.projection.as_slice() {
+            [] => None,
+            [u32::MAX] => Some(Vec::new()),
+            indices => Some(indices.iter().map(|i| *i as usize).collect::<Vec<_>>()),
         };
 
         let mut sort_information = vec![];
@@ -1395,16 +1396,15 @@ impl protobuf::PhysicalPlanNode {
             protobuf::PartitionMode::Partitioned => PartitionMode::Partitioned,
             protobuf::PartitionMode::Auto => PartitionMode::Auto,
         };
-        let projection = if !hashjoin.projection.is_empty() {
-            Some(
-                hashjoin
-                    .projection
-                    .iter()
-                    .map(|i| *i as usize)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            None
+        // Proto3 `repeated` cannot distinguish `None` from `Some(vec![])`. The latter
+        // is reachable via `try_embed_projection` for `SELECT count(1) … JOIN …` and
+        // changes the join's output schema, so the encoder reserves the single-element
+        // sentinel `[u32::MAX]` (never a valid column index) to mean "explicitly empty";
+        // every other state is sent as-is. See `try_from_hash_join_exec`.
+        let projection = match hashjoin.projection.as_slice() {
+            [] => None,
+            [u32::MAX] => Some(Vec::new()),
+            indices => Some(indices.iter().map(|i| *i as usize).collect()),
         };
         Ok(Arc::new(HashJoinExec::try_new(
             left,
@@ -1799,15 +1799,13 @@ impl protobuf::PhysicalPlanNode {
                     })
                     .map_or(Ok(None), |v: Result<JoinFilter>| v.map(Some))?;
 
-        let projection = if !join.projection.is_empty() {
-            Some(
-                join.projection
-                    .iter()
-                    .map(|i| *i as usize)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            None
+        // See `try_into_hash_join_physical_plan` for the rationale behind the
+        // `[u32::MAX]` sentinel; `NestedLoopJoinExec` has the same `Option<Vec<usize>>`
+        // projection field and shares the proto3 `repeated` ambiguity.
+        let projection = match join.projection.as_slice() {
+            [] => None,
+            [u32::MAX] => Some(Vec::new()),
+            indices => Some(indices.iter().map(|i| *i as usize).collect()),
         };
 
         Ok(Arc::new(NestedLoopJoinExec::try_new(
@@ -2331,9 +2329,12 @@ impl protobuf::PhysicalPlanNode {
                             .physical_expr_to_proto(exec.predicate(), codec)?,
                     ),
                     default_filter_selectivity: exec.default_selectivity() as u32,
-                    projection: exec.projection().as_ref().map_or_else(Vec::new, |v| {
-                        v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
-                    }),
+                    projection: match exec.projection() {
+                        None => (0..exec.input().schema().fields().len())
+                            .map(|i| i as u32)
+                            .collect(),
+                        Some(v) => v.iter().map(|x| *x as u32).collect(),
+                    },
                     batch_size: exec.batch_size() as u32,
                     fetch: exec.fetch().map(|f| f as u32),
                 },
@@ -2457,9 +2458,14 @@ impl protobuf::PhysicalPlanNode {
                     partition_mode: partition_mode.into(),
                     null_equality: null_equality.into(),
                     filter,
-                    projection: exec.projection.as_ref().map_or_else(Vec::new, |v| {
-                        v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
-                    }),
+                    // Send `Some(vec![])` as `[u32::MAX]` (never a valid index) so the
+                    // wire format can distinguish it from `None` (which stays empty).
+                    // See `try_into_hash_join_physical_plan` for the matching decoder.
+                    projection: match exec.projection.as_ref() {
+                        None => Vec::new(),
+                        Some(v) if v.is_empty() => vec![u32::MAX],
+                        Some(v) => v.iter().map(|x| *x as u32).collect(),
+                    },
                     null_aware: exec.null_aware,
                 },
             ))),
@@ -2978,12 +2984,15 @@ impl protobuf::PhysicalPlanNode {
             let proto_schema: protobuf::Schema =
                 source_conf.original_schema().as_ref().try_into()?;
 
-            let proto_projection = source_conf
-                .projection()
-                .as_ref()
-                .map_or_else(Vec::new, |v| {
-                    v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
-                });
+            // Proto3 `repeated` cannot distinguish `None` from `Some(vec![])`.
+            // `Some(vec![])` projects away every column and so changes the output
+            // schema; it is encoded with the single-element sentinel `[u32::MAX]`
+            // (never a valid column index). Every other state is sent as-is.
+            let proto_projection = match source_conf.projection().as_ref() {
+                None => Vec::new(),
+                Some(v) if v.is_empty() => vec![u32::MAX],
+                Some(v) => v.iter().map(|x| *x as u32).collect::<Vec<u32>>(),
+            };
 
             let proto_sort_information = source_conf
                 .sort_information()
@@ -3231,9 +3240,13 @@ impl protobuf::PhysicalPlanNode {
                     right: Some(Box::new(right)),
                     join_type: join_type.into(),
                     filter,
-                    projection: exec.projection().as_ref().map_or_else(Vec::new, |v| {
-                        v.iter().map(|x| *x as u32).collect::<Vec<u32>>()
-                    }),
+                    // `[u32::MAX]` sentinel distinguishes `Some(vec![])` from `None`;
+                    // see `try_from_hash_join_exec`.
+                    projection: match exec.projection().as_ref() {
+                        None => Vec::new(),
+                        Some(v) if v.is_empty() => vec![u32::MAX],
+                        Some(v) => v.iter().map(|x| *x as u32).collect(),
+                    },
                 },
             ))),
         })

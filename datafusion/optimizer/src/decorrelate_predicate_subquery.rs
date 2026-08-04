@@ -461,9 +461,11 @@ fn build_join(
     //
     // Additionally, if the join keys are non-nullable on both sides, we don't need
     // null-aware semantics because NULLs cannot exist in the data.
-    let null_aware = join_type == JoinType::LeftAnti
-        && in_predicate_opt.is_some()
-        && join_keys_may_be_null(&join_filter, left.schema(), sub_query_alias.schema())?;
+    // Fork-only: DataPrime's `!x.inArray(y)` is two-valued — a NULL in the
+    // subquery must not drop the row — so we keep the plain anti join instead of
+    // SQL `NOT IN` three-valued semantics. Restores pre-DF53 behaviour.
+    let null_aware = false;
+    let _ = (&in_predicate_opt, &join_filter);
 
     // join our sub query into the main plan
     let new_plan = if null_aware {
