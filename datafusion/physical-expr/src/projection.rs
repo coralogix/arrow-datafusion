@@ -1042,13 +1042,10 @@ impl ProjectionMapping {
         let mut map = IndexMap::<_, ProjectionTargets>::new();
         for (expr_idx, (expr, name)) in expr.into_iter().enumerate() {
             let target_expr = Arc::new(Column::new(&name, expr_idx)) as _;
-            // Sometimes an expression's column name and the name in
-            // `input_schema` do not match. `Column`'s name is part of its
-            // `Hash`/`Eq`, so a stale name makes the map key fail to match the
-            // input's equivalences and orderings, which are named after
-            // `input_schema`. Make sure that every column name agrees with it.
-            // The walk is read-only: rewriting a column would rebuild every
-            // ancestor into an identical tree.
+            // Sometimes, an expression and its name in the input_schema
+            // doesn't match. This can cause problems, so we make sure
+            // that the expression name matches with the name in `input_schema`.
+            // Conceptually, `source_expr` and `expression` should be the same.
             expr.apply(|e| {
                 if let Some(col) = e.as_any().downcast_ref::<Column>() {
                     let idx = col.index();
