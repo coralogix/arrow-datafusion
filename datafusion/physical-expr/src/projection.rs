@@ -27,7 +27,9 @@ use crate::utils::collect_columns;
 use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion_common::stats::{ColumnStatistics, Precision};
-use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::tree_node::{
+    Transformed, TransformedResult, TreeNode, TreeNodeRecursion,
+};
 use datafusion_common::{
     Result, ScalarValue, Statistics, assert_or_internal_err, internal_datafusion_err,
     plan_err,
@@ -1040,12 +1042,15 @@ impl ProjectionMapping {
         let mut map = IndexMap::<_, ProjectionTargets>::new();
         for (expr_idx, (expr, name)) in expr.into_iter().enumerate() {
             let target_expr = Arc::new(Column::new(&name, expr_idx)) as _;
-            let source_expr = expr.transform_down(|e| match e.as_any().downcast_ref::<Column>() {
-                Some(col) => {
-                    // Sometimes, an expression and its name in the input_schema
-                    // doesn't match. This can cause problems, so we make sure
-                    // that the expression name matches with the name in `input_schema`.
-                    // Conceptually, `source_expr` and `expression` should be the same.
+            // Sometimes an expression's column name and the name in
+            // `input_schema` do not match. `Column`'s name is part of its
+            // `Hash`/`Eq`, so a stale name makes the map key fail to match the
+            // input's equivalences and orderings, which are named after
+            // `input_schema`. Make sure that every column name agrees with it.
+            // The walk is read-only: rewriting a column would rebuild every
+            // ancestor into an identical tree.
+            expr.apply(|e| {
+                if let Some(col) = e.as_any().downcast_ref::<Column>() {
                     let idx = col.index();
                     let matching_field = input_schema.field(idx);
                     let matching_name = matching_field.name();
@@ -1054,15 +1059,10 @@ impl ProjectionMapping {
                         "Input field name {matching_name} does not match with the projection expression {}",
                         col.name()
                     );
-                    let matching_column = Column::new(matching_name, idx);
-                    Ok(Transformed::yes(Arc::new(matching_column)))
                 }
-                None => Ok(Transformed::no(e)),
-            })
-            .data()?;
-            map.entry(source_expr)
-                .or_default()
-                .push((target_expr, expr_idx));
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+            map.entry(expr).or_default().push((target_expr, expr_idx));
         }
         Ok(Self { map })
     }
@@ -1196,7 +1196,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::equivalence::{EquivalenceProperties, convert_to_orderings};
-    use crate::expressions::{BinaryExpr, Literal, col};
+    use crate::expressions::{BinaryExpr, Literal, case, col, lit};
     use crate::utils::tests::TestScalarUDF;
     use crate::{PhysicalExprRef, ScalarFunctionExpr};
 
@@ -3005,6 +3005,48 @@ pub(crate) mod tests {
             output_stats.column_statistics[1].max_value,
             Precision::Exact(ScalarValue::Int64(Some(21)))
         );
+
+        Ok(())
+    }
+
+    /// Builds `CASE WHEN i > 1 THEN CASE WHEN i > 2 THEN i + 1 ELSE i END ELSE i END`
+    /// over `schema`, so that every `Column` leaf already matches the schema.
+    fn nested_case_expr(schema: &SchemaRef) -> Result<Arc<dyn PhysicalExpr>> {
+        let i = col("i", schema)?;
+        let inner = case(
+            None,
+            vec![(
+                Arc::new(BinaryExpr::new(Arc::clone(&i), Operator::Gt, lit(2i32))),
+                Arc::new(BinaryExpr::new(Arc::clone(&i), Operator::Plus, lit(1i32))),
+            )],
+            Some(Arc::clone(&i)),
+        )?;
+        case(
+            None,
+            vec![(
+                Arc::new(BinaryExpr::new(Arc::clone(&i), Operator::Gt, lit(1i32))),
+                inner,
+            )],
+            Some(i),
+        )
+    }
+
+    /// `ProjectionMapping::try_new` must not deep-copy an expression whose
+    /// columns already match `input_schema`.
+    #[test]
+    fn projection_mapping_reuses_source_expr_allocation() -> Result<()> {
+        let input_schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, true)]));
+        let expr = nested_case_expr(&input_schema)?;
+
+        let mapping = ProjectionMapping::try_new(
+            vec![(Arc::clone(&expr), "out".to_string())],
+            &input_schema,
+        )?;
+
+        assert_eq!(mapping.len(), 1);
+        let (source, _) = mapping.iter().next().unwrap();
+        assert!(Arc::ptr_eq(source, &expr));
 
         Ok(())
     }
