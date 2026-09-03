@@ -1045,7 +1045,6 @@ impl ProjectionMapping {
             // Sometimes, an expression and its name in the input_schema
             // doesn't match. This can cause problems, so we make sure
             // that the expression name matches with the name in `input_schema`.
-            // Conceptually, `source_expr` and `expression` should be the same.
             expr.apply(|e| {
                 if let Some(col) = e.as_any().downcast_ref::<Column>() {
                     let idx = col.index();
