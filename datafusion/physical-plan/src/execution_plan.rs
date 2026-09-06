@@ -1883,6 +1883,13 @@ mod tests {
         ) -> Result<Arc<Statistics>> {
             unimplemented!()
         }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            unimplemented!()
+        }
     }
     /// Returns a simple literal `Arc<dyn PhysicalExpr>` for use in tests.
     fn lit_expr(val: i64) -> Arc<dyn PhysicalExpr> {
