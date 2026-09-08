@@ -378,7 +378,7 @@ impl PhysicalExtensionCodec for TestCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         internal_err!("TestCodec::try_decode must not be reached")

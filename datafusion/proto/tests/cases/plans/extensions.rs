@@ -32,7 +32,7 @@ use datafusion_common::{
 };
 use datafusion_proto::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
-    PhysicalProtoConverterExtension,
+    PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::physical_plan_node::PhysicalPlanType;
 use datafusion_proto::protobuf::{PhysicalExtensionNode, PhysicalPlanNode};
@@ -292,7 +292,7 @@ impl PhysicalExtensionCodec for LegacyCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if buf != b"legacy" {
@@ -327,7 +327,7 @@ impl PhysicalExtensionCodec for GreedyCodec {
         &self,
         _buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(LegacyExec {
@@ -357,7 +357,7 @@ impl PhysicalExtensionCodec for ExhaustedCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         resources_err!("the decode buffer pool is empty")
