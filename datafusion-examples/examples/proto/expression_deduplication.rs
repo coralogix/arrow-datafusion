@@ -40,7 +40,6 @@ use std::sync::{Arc, RwLock};
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::Result;
-use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
@@ -186,7 +185,7 @@ impl PhysicalExtensionCodec for CachingCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         datafusion::common::not_impl_err!("No custom extension nodes")
     }

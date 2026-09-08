@@ -45,7 +45,6 @@ use datafusion::datasource::listing::{
 };
 use datafusion::datasource::physical_plan::{FileScanConfig, FileScanConfigBuilder};
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::parquet::arrow::ArrowWriter;
@@ -274,7 +273,7 @@ impl PhysicalExtensionCodec for AdapterPreservingCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Try to parse as our extension payload
         if let Ok(payload) = serde_json::from_slice::<ExtensionPayload>(buf)

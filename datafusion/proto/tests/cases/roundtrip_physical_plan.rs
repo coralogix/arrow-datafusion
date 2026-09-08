@@ -46,7 +46,6 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::sink::DataSinkExec;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::TaskContext;
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::first_last::first_value_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
@@ -1195,7 +1194,7 @@ fn roundtrip_parquet_exec_with_custom_predicate_expr() -> Result<()> {
             &self,
             _buf: &[u8],
             _inputs: &[Arc<dyn ExecutionPlan>],
-            _ctx: &TaskContext,
+            _ctx: &PhysicalPlanDecodeContext<'_>,
         ) -> Result<Arc<dyn ExecutionPlan>> {
             unreachable!()
         }
@@ -1304,7 +1303,7 @@ impl PhysicalExtensionCodec for UDFExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("No extension codec provided")
     }
