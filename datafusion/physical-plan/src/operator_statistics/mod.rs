@@ -1034,6 +1034,7 @@ mod tests {
     use std::fmt;
 
     use crate::execution_plan::{Boundedness, EmissionType};
+    use datafusion_common::tree_node::TreeNodeRecursion;
 
     fn make_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
@@ -1111,6 +1112,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             &self.cache
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn execute(
@@ -1212,6 +1220,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.input.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn execute(
