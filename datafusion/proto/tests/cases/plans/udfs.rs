@@ -26,7 +26,6 @@ use crate::cases::{
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::compute::kernels::sort::SortOptions;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Operator, Volatility, create_udf};
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
 use datafusion::physical_expr::expressions::Literal;
@@ -56,7 +55,7 @@ use datafusion_expr::{
 use datafusion_functions_aggregate::min_max::max_udaf;
 use datafusion_physical_expr::expressions::{LambdaVariable, is_not_null, lambda};
 use datafusion_proto::physical_plan::{
-    DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
+    DefaultPhysicalProtoConverter, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
     PhysicalProtoConverterExtension,
 };
 use prost::Message;
@@ -119,7 +118,7 @@ impl PhysicalExtensionCodec for UDFExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("No extension codec provided")

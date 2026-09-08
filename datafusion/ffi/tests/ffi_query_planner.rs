@@ -48,7 +48,7 @@ mod tests {
     use datafusion_physical_plan::union::UnionExec;
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
     use datafusion_proto::physical_plan::{
-        DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
+        DefaultPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
         PhysicalProtoConverterExtension,
     };
     use datafusion_session::QueryPlanner;
@@ -162,7 +162,7 @@ mod tests {
             &self,
             buf: &[u8],
             inputs: &[Arc<dyn ExecutionPlan>],
-            _ctx: &TaskContext,
+            _ctx: &PhysicalPlanDecodeContext<'_>,
             _proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> Result<Arc<dyn ExecutionPlan>> {
             if buf != b"library-b-empty-exec" || !inputs.is_empty() {

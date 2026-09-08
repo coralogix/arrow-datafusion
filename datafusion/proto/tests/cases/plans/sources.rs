@@ -37,7 +37,6 @@ use datafusion::datasource::physical_plan::{
     ParquetSource, wrap_partition_type_in_dict, wrap_partition_value_in_dict,
 };
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_plan::expressions::{
@@ -59,7 +58,7 @@ use datafusion_physical_expr_common::physical_expr::proto_decode::PhysicalExprDe
 use datafusion_physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion_proto::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
-    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    PhysicalExtensionCodec, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use prost::Message;
@@ -384,7 +383,7 @@ fn roundtrip_parquet_exec_with_custom_predicate_expr() -> Result<()> {
             &self,
             _buf: &[u8],
             _inputs: &[Arc<dyn ExecutionPlan>],
-            _ctx: &TaskContext,
+            _ctx: &PhysicalPlanDecodeContext<'_>,
             _proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> Result<Arc<dyn ExecutionPlan>> {
             unreachable!()

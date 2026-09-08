@@ -636,7 +636,7 @@ mod tests {
                 &self,
                 _buf: &[u8],
                 _inputs: &[Arc<dyn ExecutionPlan>],
-                _ctx: &TaskContext,
+                _ctx: &PhysicalPlanDecodeContext<'_>,
                 _proto_converter: &dyn PhysicalProtoConverterExtension,
             ) -> Result<Arc<dyn ExecutionPlan>> {
                 internal_err!("not needed for these tests")
@@ -703,7 +703,7 @@ mod tests {
                 &self,
                 _buf: &[u8],
                 _inputs: &[Arc<dyn ExecutionPlan>],
-                _ctx: &TaskContext,
+                _ctx: &PhysicalPlanDecodeContext<'_>,
                 _proto_converter: &dyn PhysicalProtoConverterExtension,
             ) -> Result<Arc<dyn ExecutionPlan>> {
                 internal_err!("not needed for these tests")
@@ -1290,7 +1290,7 @@ pub trait PhysicalPlanNodeExt: Sized {
         let extension_node = ctx.codec().try_decode(
             extension.node.as_slice(),
             &inputs,
-            ctx.task_ctx(),
+            ctx,
             proto_converter,
         )?;
 
@@ -1537,7 +1537,7 @@ pub trait PhysicalExtensionCodec: Debug + Send + Sync + Any {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
+        ctx: &PhysicalPlanDecodeContext<'_>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>>;
 
@@ -1643,7 +1643,7 @@ impl PhysicalExtensionCodec for DefaultPhysicalExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("PhysicalExtensionCodec is not provided")
@@ -1976,7 +1976,7 @@ impl PhysicalExtensionCodec for ComposedPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
+        ctx: &PhysicalPlanDecodeContext<'_>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.decode_protobuf(buf, |codec, data| {
