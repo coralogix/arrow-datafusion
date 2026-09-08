@@ -1840,7 +1840,7 @@ impl protobuf::PhysicalPlanNode {
 
         let extension_node =
             ctx.codec()
-                .try_decode(extension.node.as_slice(), &inputs, ctx.task_ctx())?;
+                .try_decode(extension.node.as_slice(), &inputs, ctx)?;
 
         Ok(extension_node)
     }
@@ -3856,7 +3856,7 @@ pub trait PhysicalExtensionCodec: Debug + Send + Sync + Any {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
+        ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>>;
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()>;
@@ -3912,7 +3912,7 @@ impl PhysicalExtensionCodec for DefaultPhysicalExtensionCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("PhysicalExtensionCodec is not provided")
     }
@@ -4243,7 +4243,7 @@ impl PhysicalExtensionCodec for ComposedPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
+        ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.decode_protobuf(buf, |codec, data| codec.try_decode(data, inputs, ctx))
     }

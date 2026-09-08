@@ -25,7 +25,9 @@ use datafusion_expr::{
     AggregateUDF, AggregateUDFImpl, ScalarUDF, ScalarUDFImpl, WindowUDF, WindowUDFImpl,
 };
 use datafusion_physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+};
 
 use stabby::slice::Slice as SSlice;
 use stabby::str::Str as SStr;
@@ -139,14 +141,16 @@ unsafe extern "C" fn try_decode_fn_wrapper(
     let task_ctx: Arc<TaskContext> =
         sresult_return!((&codec.task_ctx_provider).try_into());
     let codec = codec.inner();
+
+    let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx.as_ref(), codec.as_ref());
+
     let inputs = inputs
         .into_iter()
         .map(|plan| <Arc<dyn ExecutionPlan>>::try_from(&plan))
         .collect::<Result<Vec<_>>>();
     let inputs = sresult_return!(inputs);
 
-    let plan =
-        sresult_return!(codec.try_decode(buf.as_ref(), &inputs, task_ctx.as_ref()));
+    let plan = sresult_return!(codec.try_decode(buf.as_ref(), &inputs, &decode_ctx));
 
     FFI_Result::Ok(FFI_ExecutionPlan::new(plan, runtime))
 }
@@ -334,7 +338,7 @@ impl PhysicalExtensionCodec for ForeignPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let inputs = inputs
             .iter()
@@ -419,14 +423,15 @@ pub(crate) mod tests {
 
     use arrow_schema::{DataType, Field, Schema};
     use datafusion_common::{Result, exec_err};
-    use datafusion_execution::TaskContext;
     use datafusion_expr::ptr_eq::arc_ptr_eq;
     use datafusion_expr::{AggregateUDF, ScalarUDF, WindowUDF, WindowUDFImpl};
     use datafusion_functions::math::abs::AbsFunc;
     use datafusion_functions_aggregate::sum::Sum;
     use datafusion_functions_window::rank::{Rank, RankType};
     use datafusion_physical_plan::ExecutionPlan;
-    use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    use datafusion_proto::physical_plan::{
+        PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+    };
 
     use crate::execution_plan::tests::EmptyExec;
     use crate::proto::physical_extension_codec::FFI_PhysicalExtensionCodec;
@@ -448,7 +453,7 @@ pub(crate) mod tests {
             &self,
             buf: &[u8],
             _inputs: &[Arc<dyn ExecutionPlan>],
-            _ctx: &TaskContext,
+            _ctx: &PhysicalPlanDecodeContext<'_>,
         ) -> Result<Arc<dyn ExecutionPlan>> {
             if buf[0] != Self::MAGIC_NUMBER {
                 return exec_err!(
@@ -576,11 +581,12 @@ pub(crate) mod tests {
 
     #[test]
     fn roundtrip_ffi_physical_extension_codec_exec_plan() -> Result<()> {
-        let codec = Arc::new(TestExtensionCodec {});
+        let codec: Arc<dyn PhysicalExtensionCodec + Send> =
+            Arc::new(TestExtensionCodec {});
         let (ctx, task_ctx_provider) = crate::util::tests::test_session_and_ctx();
 
         let mut ffi_codec =
-            FFI_PhysicalExtensionCodec::new(codec, None, task_ctx_provider);
+            FFI_PhysicalExtensionCodec::new(Arc::clone(&codec), None, task_ctx_provider);
         ffi_codec.library_marker_id = crate::mock_foreign_marker_id;
         let foreign_codec: Arc<dyn PhysicalExtensionCodec> = (&ffi_codec).into();
 
@@ -589,8 +595,12 @@ pub(crate) mod tests {
         let mut bytes = Vec::new();
         foreign_codec.try_encode(Arc::clone(&exec), &mut bytes)?;
 
+        let task_ctx = ctx.task_ctx();
+        let decode_ctx =
+            PhysicalPlanDecodeContext::new(task_ctx.as_ref(), codec.as_ref());
+
         let returned_exec =
-            foreign_codec.try_decode(&bytes, &input_execs, ctx.task_ctx().as_ref())?;
+            foreign_codec.try_decode(&bytes, &input_execs, &decode_ctx)?;
 
         assert!(returned_exec.is::<EmptyExec>());
 
