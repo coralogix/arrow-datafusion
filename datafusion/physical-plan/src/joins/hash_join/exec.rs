@@ -20,6 +20,7 @@ use std::fmt;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use std::vec;
 
 use crate::execution_plan::{
@@ -70,6 +71,7 @@ use crate::{
 };
 
 use arrow::array::{ArrayRef, BooleanBufferBuilder};
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
@@ -79,8 +81,8 @@ use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::utils::memory::{RecordBatchMemoryCounter, estimate_memory_size};
 use datafusion_common::{
-    JoinSide, JoinType, NullEquality, Result, assert_or_internal_err, internal_err,
-    plan_err, project_schema,
+    DataFusionError, JoinSide, JoinType, NullEquality, Result, assert_or_internal_err,
+    internal_err, plan_err, project_schema,
 };
 use datafusion_execution::TaskContext;
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -102,7 +104,7 @@ use parking_lot::Mutex;
 use super::partitioned_hash_eval::SeededRandomState;
 
 /// Hard-coded seed to ensure hash values from the hash join differ from `RepartitionExec`, avoiding collisions.
-pub(crate) const HASH_JOIN_SEED: SeededRandomState =
+pub const HASH_JOIN_SEED: SeededRandomState =
     SeededRandomState::with_seed(12210250226015887276);
 
 const ARRAY_MAP_CREATED_COUNT_METRIC_NAME: &str = "array_map_created_count";
@@ -190,8 +192,91 @@ fn try_create_array_map(
     Ok(Some((array_map, batch, left_values)))
 }
 
+#[derive(Default)]
+pub struct JoinContext {
+    build_state: Mutex<Option<Arc<JoinLeftData>>>,
+}
+
+impl JoinContext {
+    pub fn set_build_state(&self, state: Arc<JoinLeftData>) {
+        self.build_state.lock().replace(state);
+    }
+    pub fn get_build_state(&self) -> Option<Arc<JoinLeftData>> {
+        self.build_state.lock().clone()
+    }
+}
+
+pub struct SharedJoinState {
+    state_impl: Arc<dyn SharedJoinStateImpl>,
+}
+
+impl SharedJoinState {
+    pub fn new(state_impl: Arc<dyn SharedJoinStateImpl>) -> Self {
+        Self { state_impl }
+    }
+
+    fn num_task_partitions(&self) -> usize {
+        self.state_impl.num_task_partitions()
+    }
+
+    pub(super) fn poll_probe_completed(
+        &self,
+        mask: &BooleanBufferBuilder,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SharedProbeState>> {
+        self.state_impl.poll_probe_completed(mask, cx)
+    }
+
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize) {
+        self.state_impl.register_metrics(metrics, partition)
+    }
+}
+
+pub enum SharedProbeState {
+    /// Probes are still running in other distributed tasks
+    Continue,
+    /// Current task is last probe running so emit unmatched rows
+    /// if required by join type
+    Ready(BooleanBuffer),
+}
+
+pub trait SharedJoinStateImpl: Send + Sync + 'static {
+    fn num_task_partitions(&self) -> usize;
+
+    fn poll_probe_completed(
+        &self,
+        visited_indices_bitmap: &BooleanBufferBuilder,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SharedProbeState>>;
+
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize);
+}
+
+pub(super) fn merge_bitmap(
+    m1: &mut BooleanBufferBuilder,
+    m2: &BooleanBuffer,
+) -> Result<()> {
+    if m1.len() != m2.len() {
+        return Err(DataFusionError::Execution(format!(
+            "local and shared indices bitmaps have different lengths: {} and {}",
+            m1.len(),
+            m2.len()
+        )));
+    }
+
+    for (b1, b2) in m1
+        .as_slice_mut()
+        .iter_mut()
+        .zip(m2.inner().as_slice().iter().copied())
+    {
+        *b1 |= b2;
+    }
+
+    Ok(())
+}
+
 /// HashTable and input data for the left (build side) of a join
-pub(super) struct JoinLeftData {
+pub struct JoinLeftData {
     /// The hash table with indices into `batch`
     /// Arc is used to allow sharing with SharedBuildAccumulator for hash map pushdown
     pub(super) map: Arc<Map>,
@@ -204,6 +289,8 @@ pub(super) struct JoinLeftData {
     /// Counter of running probe-threads, potentially
     /// able to update `visited_indices_bitmap`
     probe_threads_counter: AtomicUsize,
+    /// Shared state for distributed join coordination
+    pub(super) shared_state: Option<Arc<SharedJoinState>>,
     /// We need to keep this field to maintain accurate memory accounting, even though we don't directly use it.
     /// Without holding onto this reservation, the recorded memory usage would become inconsistent with actual usage.
     /// This could hide potential out-of-memory issues, especially when upstream operators increase their memory consumption.
@@ -224,6 +311,15 @@ pub(super) struct JoinLeftData {
 }
 
 impl JoinLeftData {
+    /// Returns `true` if the build side may contain the given hash value.
+    /// `ArrayMap` does not store hashes, so it conservatively returns `true`.
+    pub fn contains_hash(&self, hash: u64) -> bool {
+        match self.map.as_ref() {
+            Map::HashMap(map) => map.contains_hash(hash),
+            Map::ArrayMap(_) => true,
+        }
+    }
+
     /// return a reference to the map
     pub(super) fn map(&self) -> &Map {
         &self.map
@@ -269,7 +365,8 @@ impl JoinLeftData {
     /// Decrements the counter of running threads, and returns `true`
     /// if caller is the last running thread
     pub(super) fn report_probe_completed(&self) -> bool {
-        self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
+        self.probe_threads_counter.load(Ordering::Relaxed) == 0
+            || self.probe_threads_counter.fetch_sub(1, Ordering::Relaxed) == 1
     }
 }
 
@@ -1451,6 +1548,10 @@ impl ExecutionPlan for HashJoinExec {
             false
         };
 
+        let distributed_state =
+            context.session_config().get_extension::<SharedJoinState>();
+        let join_context = context.session_config().get_extension::<JoinContext>();
+
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
 
         let array_map_created_count = MetricBuilder::new(&self.metrics)
@@ -1493,6 +1594,16 @@ impl ExecutionPlan for HashJoinExec {
                 let reservation =
                     MemoryConsumer::new("HashJoinInput").register(context.memory_pool());
 
+                let probe_threads = distributed_state
+                    .as_ref()
+                    .map(|s| {
+                        s.register_metrics(&self.metrics, partition);
+                        s.num_task_partitions()
+                    })
+                    .unwrap_or_else(|| {
+                        self.right().output_partitioning().partition_count()
+                    });
+
                 Ok(collect_left_input(
                     self.random_state.random_state().clone(),
                     left_stream,
@@ -1500,11 +1611,12 @@ impl ExecutionPlan for HashJoinExec {
                     join_metrics.clone(),
                     reservation,
                     need_produce_result_in_final(self.join_type),
-                    self.right().output_partitioning().partition_count(),
+                    probe_threads,
                     enable_dynamic_filter_pushdown,
                     Arc::clone(context.session_config().options()),
                     self.null_equality,
                     array_map_created_count,
+                    distributed_state,
                 ))
             })?,
             PartitionMode::Partitioned => {
@@ -1525,6 +1637,7 @@ impl ExecutionPlan for HashJoinExec {
                     Arc::clone(context.session_config().options()),
                     self.null_equality,
                     array_map_created_count,
+                    None,
                 ))
             }
             PartitionMode::Auto => {
@@ -1576,6 +1689,7 @@ impl ExecutionPlan for HashJoinExec {
             self.mode,
             self.null_aware,
             self.fetch,
+            join_context,
         )))
     }
 
@@ -2239,6 +2353,7 @@ async fn collect_left_input(
     config: Arc<ConfigOptions>,
     null_equality: NullEquality,
     array_map_created_count: Count,
+    distributed_state: Option<Arc<SharedJoinState>>,
 ) -> Result<JoinLeftData> {
     let schema = left_stream.schema();
 
@@ -2425,6 +2540,7 @@ async fn collect_left_input(
         membership,
         probe_side_non_empty: AtomicBool::new(false),
         probe_side_has_null: AtomicBool::new(false),
+        shared_state: distributed_state,
     };
 
     Ok(data)
