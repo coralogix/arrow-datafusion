@@ -825,10 +825,9 @@ impl PhysicalExtensionCodec for CustomExecWithExprsCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
+        ctx: &PhysicalPlanDecodeContext<'_>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
         let input_schema = inputs[0].schema();
         let proto = CustomExecWithExprsProto::decode(buf)
             .map_err(|e| internal_datafusion_err!("Failed to decode custom exec: {e}"))?;
@@ -839,7 +838,7 @@ impl PhysicalExtensionCodec for CustomExecWithExprsCodec {
                 proto_converter.proto_to_physical_expr(
                     expr_proto,
                     input_schema.as_ref(),
-                    &decode_ctx,
+                    ctx,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1013,7 +1012,7 @@ impl PhysicalExtensionCodec for WrapperCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         internal_err!("not used")
