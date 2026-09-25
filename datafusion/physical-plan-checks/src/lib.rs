@@ -1,0 +1,56 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/apache/datafusion/19fe44cf2f30cbdd63d4a4f52c74055163c6cc38/docs/logos/standalone_logo/logo_original.svg"
+)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// Make sure fast / cheap clones on Arc are explicit:
+// https://github.com/apache/datafusion/issues/11143
+#![deny(clippy::clone_on_ref_ptr)]
+#![cfg_attr(test, allow(clippy::needless_pass_by_value))]
+
+//! Property checks for [`ExecutionPlan`] implementations.
+//!
+//! [`ExecutionPlan`] has many methods that describe a plan rather than run it,
+//! such as [`ExecutionPlan::cardinality_effect`],
+//! [`ExecutionPlan::maintains_input_order`] and the statistics it reports.
+//! Optimizer rules trust these descriptions, so an implementation that gets one
+//! wrong can make DataFusion return wrong results or miss optimizations. This
+//! crate checks that the descriptions are consistent with each other and, in
+//! later versions, with what the plan does when it runs.
+//!
+//! Use [`PlanChecker`] to run every built-in check against every node of a
+//! plan. Build the plan under test on top of [`fixtures::MockSourceExec`] to
+//! control the statistics, partitioning and ordering of its input.
+//!
+//! See `CHECKS.md` in this crate for the catalog of checks, why each one
+//! matters and how to fix a violation, and `IMPLEMENTATION_STATUS.md` for which
+//! checks are implemented.
+//!
+//! [`ExecutionPlan`]: datafusion_physical_plan::ExecutionPlan
+//! [`ExecutionPlan::cardinality_effect`]: datafusion_physical_plan::ExecutionPlan::cardinality_effect
+//! [`ExecutionPlan::maintains_input_order`]: datafusion_physical_plan::ExecutionPlan::maintains_input_order
+
+mod checker;
+pub mod checks;
+pub mod fixtures;
+mod report;
+
+pub use checker::{PlanCheck, PlanChecker};
+pub use report::{Finding, Report, Severity, Violation};
