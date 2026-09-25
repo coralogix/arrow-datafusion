@@ -26,7 +26,7 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 
 use super::{overall_statistics, partition_count, partition_statistics};
-use crate::{Finding, PlanCheck};
+use crate::{CheckContext, Finding, PlanCheck};
 
 /// A1: a single-child node with `CardinalityEffect::Equal` and no fetch reports
 /// the same `num_rows` as its input, with the same precision.
@@ -42,7 +42,11 @@ impl PlanCheck for EqualCardinalityNumRows {
         "equal_cardinality_num_rows"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         if !matches!(node.cardinality_effect(), CardinalityEffect::Equal)
             || node.fetch().is_some()
         {
@@ -108,7 +112,11 @@ impl PlanCheck for FetchNotEqualCardinality {
         "fetch_not_equal_cardinality"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         match (node.fetch(), node.cardinality_effect()) {
             (Some(fetch), CardinalityEffect::Equal) => {
                 Ok(vec![Finding::invariant(format!(
@@ -157,7 +165,11 @@ impl PlanCheck for FetchBoundsNumRows {
         "fetch_bounds_num_rows"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         let Some(fetch) = node.fetch() else {
             return Ok(vec![]);
         };
@@ -249,7 +261,11 @@ impl PlanCheck for CardinalityEffectBoundsNumRows {
         "cardinality_effect_bounds_num_rows"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         let effect = node.cardinality_effect();
         if !matches!(
             effect,

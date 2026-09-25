@@ -24,7 +24,7 @@ use datafusion_physical_plan::execution_plan::InvariantLevel;
 use datafusion_physical_plan::{ChildStats, ExecutionPlan};
 
 use super::partition_count;
-use crate::{Finding, PlanCheck};
+use crate::{CheckContext, Finding, PlanCheck};
 
 /// A7: every method that returns one entry per child returns exactly
 /// `children().len()` entries.
@@ -79,7 +79,11 @@ impl PlanCheck for PerChildLengths {
         "per_child_lengths"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         let expected = node.children().len();
         let mut findings = vec![];
         Self::check_len(
@@ -134,7 +138,11 @@ impl PlanCheck for CheckInvariants {
         "check_invariants"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         match node.check_invariants(InvariantLevel::Always) {
             Ok(()) => Ok(vec![]),
             Err(e) => Ok(vec![Finding::invariant(format!(

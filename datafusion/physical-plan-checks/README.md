@@ -31,6 +31,13 @@ be used to test your own plans.
 
 ```rust
 use datafusion_physical_plan_checks::PlanChecker;
+use datafusion_physical_plan_checks::fixtures::SourceSpec;
+
+// Generate an input with known data, statistics, ordering and partitioning
+let input = SourceSpec::new(schema)
+    .with_partition_rows(&[100, 0, 250])
+    .build_arc()?;
+let plan = build_my_plan(input)?;
 
 let report = PlanChecker::new().check(&plan)?;
 report.assert_no_invariant_violations();
@@ -40,6 +47,8 @@ report.assert_no_invariant_violations();
   violation.
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) tracks which checks are
   implemented, and the violations currently found in DataFusion's own plans.
+- [DESIGN.md](DESIGN.md) describes how the crate is structured and where it is
+  heading.
 
 [apache arrow]: https://arrow.apache.org/
 [apache datafusion]: https://datafusion.apache.org/

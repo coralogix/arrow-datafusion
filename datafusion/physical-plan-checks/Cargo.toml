@@ -42,6 +42,10 @@ datafusion-common = { workspace = true, default-features = true }
 datafusion-execution = { workspace = true }
 datafusion-physical-expr = { workspace = true }
 datafusion-physical-plan = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 insta = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

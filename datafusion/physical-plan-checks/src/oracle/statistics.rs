@@ -1,0 +1,84 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use std::cmp::Ordering;
+use std::collections::HashSet;
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::Schema;
+use datafusion_common::stats::Precision;
+use datafusion_common::{ColumnStatistics, Result, ScalarValue, Statistics};
+
+/// Computes the exact statistics of `batches`, which must all have `schema`.
+///
+/// For every column this computes the null count, the minimum and maximum
+/// non-null values, and the number of distinct non-null values. The minimum
+/// and maximum are `Absent` when a column has no non-null values. The sum,
+/// the byte sizes and the total byte size are not computed and are `Absent`,
+/// because their exact values depend on implementation details such as buffer
+/// sizes.
+pub fn exact_statistics(schema: &Schema, batches: &[RecordBatch]) -> Result<Statistics> {
+    let num_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    let column_statistics = (0..schema.fields().len())
+        .map(|column| column_statistics(batches, column))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Statistics {
+        num_rows: Precision::Exact(num_rows),
+        total_byte_size: Precision::Absent,
+        column_statistics,
+    })
+}
+
+fn column_statistics(batches: &[RecordBatch], column: usize) -> Result<ColumnStatistics> {
+    let mut null_count = 0;
+    let mut min: Option<ScalarValue> = None;
+    let mut max: Option<ScalarValue> = None;
+    let mut distinct = HashSet::new();
+
+    for batch in batches {
+        let array = batch.column(column);
+        // Logical nulls include values that are null without a null buffer,
+        // such as every value of a `NullArray`
+        let nulls = array.logical_nulls();
+        for row in 0..array.len() {
+            if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
+                null_count += 1;
+                continue;
+            }
+            let value = ScalarValue::try_from_array(array, row)?;
+            if min
+                .as_ref()
+                .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Less))
+            {
+                min = Some(value.clone());
+            }
+            if max
+                .as_ref()
+                .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Greater))
+            {
+                max = Some(value.clone());
+            }
+            distinct.insert(value);
+        }
+    }
+
+    Ok(ColumnStatistics::new_unknown()
+        .with_null_count(Precision::Exact(null_count))
+        .with_min_value(min.map_or(Precision::Absent, Precision::Exact))
+        .with_max_value(max.map_or(Precision::Absent, Precision::Exact))
+        .with_distinct_count(Precision::Exact(distinct.len())))
+}

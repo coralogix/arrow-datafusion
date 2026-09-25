@@ -25,6 +25,7 @@ use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext}
 use crate::PlanCheck;
 
 mod cardinality;
+mod runtime;
 mod statistics;
 mod structure;
 
@@ -32,11 +33,33 @@ pub use cardinality::{
     CardinalityEffectBoundsNumRows, EqualCardinalityNumRows, FetchBoundsNumRows,
     FetchNotEqualCardinality,
 };
+pub use runtime::{
+    BatchSchema, CardinalityEffectHolds, ExactStatisticsHold, ExecutionSucceeds,
+    OrderingsHold,
+};
 pub use statistics::{PartitionStatisticsSum, StatisticsIgnoreInputs, StatisticsShape};
 pub use structure::{CheckInvariants, PerChildLengths};
 
 /// All built-in checks, in catalog order
 pub fn all_checks() -> Vec<Arc<dyn PlanCheck>> {
+    let mut checks = static_checks();
+    checks.extend(execution_checks());
+    checks
+}
+
+/// Built-in checks that execute the plan (sections B to F), in catalog order
+pub fn execution_checks() -> Vec<Arc<dyn PlanCheck>> {
+    vec![
+        Arc::new(ExecutionSucceeds),
+        Arc::new(BatchSchema),
+        Arc::new(ExactStatisticsHold),
+        Arc::new(OrderingsHold),
+        Arc::new(CardinalityEffectHolds),
+    ]
+}
+
+/// Built-in checks that do not execute the plan (section A), in catalog order
+pub fn static_checks() -> Vec<Arc<dyn PlanCheck>> {
     vec![
         Arc::new(EqualCardinalityNumRows),
         Arc::new(FetchNotEqualCardinality),

@@ -59,9 +59,16 @@ Checks come in four kinds:
 Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
 Checks run on one node at a time, but the checker visits every node of a
-plan. Tests should build the plan under test on top of
-`fixtures::MockSourceExec`, whose statistics, partitioning and ordering are
-treated as the truth.
+plan. Tests should build the plan under test on inputs generated with
+`fixtures::SourceSpec`. It produces a `fixtures::MockSourceExec` whose
+statistics are computed from its data and whose declared ordering and
+partitioning are verified against it, so checks treat what it reports as the
+truth.
+
+When any enabled check needs execution, the checker executes every node of
+the plan on its own before running checks. Each execution uses a fresh copy of
+the node's subtree made with `reset_plan_states`, so state left behind by one
+execution, such as a dynamic filter, does not affect another.
 
 ### Terms
 
@@ -281,13 +288,33 @@ These checks only call methods that describe the plan. They never call
 These checks run the plan on generated input and compare the output with
 what the plan reports.
 
+### B0 `execution_succeeds`
+
+- **Severity:** Invariant.
+- **What:** executing every output partition of the node on valid input
+  finishes without an error, a panic, or exceeding the checker's timeout (30
+  seconds by default). A failure caused by a failing child is only reported
+  on the child.
+- **Why:** every other execution check needs output to compare against. A
+  node that fails on input meeting its requirements is broken for real
+  queries too.
+- **Fix:** depends on the error. If the node fails because its input does not
+  meet a requirement the node does not declare, declare it (see C2 and C3).
+
 ### B1 `batch_schema`
 
-- **Severity:** Invariant. Lint for field metadata differences.
-- **What:** every batch has exactly `schema()`, including nullability, and
-  columns of non-nullable fields contain no nulls.
-- **Why:** parent operators build their own schema from `schema()`. A
-  mismatched batch causes errors or wrong results downstream.
+- **Severity:** Invariant for the column count, field names, data types, and
+  nulls in non-nullable fields. Lint for differences in nullability flags and
+  metadata.
+- **What:** every batch has the same fields as `schema()`: the same number,
+  names and data types, and no nulls in fields that `schema()` declares
+  non-nullable. Nulls are counted logically, so every value of a `NullArray`
+  counts as null. The nullability flags and metadata of the batch should also
+  match.
+- **Why:** parent operators build their own schema from `schema()` and look
+  up columns by position. A mismatched batch causes errors or wrong results
+  downstream. A non-nullable field that contains nulls breaks operators that
+  skip null handling for non-nullable input.
 - **Fix:** make the produced batches match `schema()`, or correct `schema()`.
 
 ### B2 `exact_statistics_hold`
@@ -295,9 +322,12 @@ what the plan reports.
 - **Severity:** Invariant.
 - **What:** every exact statistic is true for the actual output, overall and
   for each partition: `num_rows`, and for each column `min_value`,
-  `max_value`, `null_count` and `distinct_count`. The check runs once with
-  input statistics marked exact and once with them marked inexact, to catch
-  nodes that turn estimates into exact values.
+  `max_value`, `null_count` and `distinct_count`. An exact minimum or maximum
+  is not checked when the output has no non-null values in that column, since
+  there is nothing to contradict it. `sum_value`, byte sizes and
+  `total_byte_size` are not checked. The check should run once with input
+  statistics marked exact and once with them marked inexact, to catch nodes
+  that turn estimates into exact values.
 - **Why:** exact statistics are used to prove things, for example to remove a
   limit or to answer an aggregate without reading data.
 - **Fix:** report `Inexact` for anything that cannot be proven.

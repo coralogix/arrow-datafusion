@@ -26,7 +26,7 @@ use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::{ChildStats, ExecutionPlan};
 
 use super::{overall_statistics, partition_count, partition_statistics};
-use crate::{Finding, PlanCheck};
+use crate::{CheckContext, Finding, PlanCheck};
 
 /// Returns true if computing statistics for any child fails, overall or for any
 /// partition. Errors from a child are reported on the child, not again on its
@@ -53,7 +53,11 @@ impl PlanCheck for StatisticsShape {
         "statistics_shape"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         let fields = node.schema().fields().len();
         let targets = std::iter::once(None)
             .chain((0..partition_count(node.as_ref())).map(Some))
@@ -110,7 +114,11 @@ impl PlanCheck for PartitionStatisticsSum {
         "partition_statistics_sum"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         let partitions = partition_count(node.as_ref());
         if partitions == 0 {
             return Ok(vec![]);
@@ -184,7 +192,11 @@ impl PlanCheck for StatisticsIgnoreInputs {
         "statistics_ignore_inputs"
     }
 
-    fn check_node(&self, node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+    fn check_node(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        _context: &CheckContext,
+    ) -> Result<Vec<Finding>> {
         if !matches!(node.cardinality_effect(), CardinalityEffect::Equal)
             || node.fetch().is_some()
         {

@@ -52,22 +52,23 @@ Status values:
 
 ## B. Reported properties hold at runtime
 
-| Code | Name                           | Status  | Notes |
-| ---- | ------------------------------ | ------- | ----- |
-| B1   | `batch_schema`                 | Pending |       |
-| B2   | `exact_statistics_hold`        | Pending |       |
-| B3   | `orderings_hold`               | Pending |       |
-| B4   | `constants_hold`               | Pending |       |
-| B5   | `equivalence_classes_hold`     | Pending |       |
-| B6   | `constraints_hold`             | Pending |       |
-| B7   | `hash_partitioning_holds`      | Pending |       |
-| B7   | `invalid_partition_errors`     | Pending |       |
-| B8   | `cardinality_effect_holds`     | Pending |       |
-| B9   | `metrics_output_rows`          | Pending |       |
-| B10  | `boundedness_holds`            | Pending |       |
-| B11  | `emission_type_holds`          | Pending |       |
-| B12  | `lazy_evaluation_holds`        | Pending |       |
-| B13  | `cooperative_scheduling_holds` | Pending |       |
+| Code | Name                           | Status  | Notes                                                                                                                                                                                            |
+| ---- | ------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| B0   | `execution_succeeds`           | Done    |                                                                                                                                                                                                  |
+| B1   | `batch_schema`                 | Done    |                                                                                                                                                                                                  |
+| B2   | `exact_statistics_hold`        | Partial | Checks the statistics of the input the test provides. Running each plan with both exact and inexact input statistics needs the harness to vary inputs (see Harness). `sum_value` is not checked. |
+| B3   | `orderings_hold`               | Done    |                                                                                                                                                                                                  |
+| B4   | `constants_hold`               | Pending |                                                                                                                                                                                                  |
+| B5   | `equivalence_classes_hold`     | Pending |                                                                                                                                                                                                  |
+| B6   | `constraints_hold`             | Pending |                                                                                                                                                                                                  |
+| B7   | `hash_partitioning_holds`      | Pending | `oracle::rows_outside_hash_partition` is the building block.                                                                                                                                     |
+| B7   | `invalid_partition_errors`     | Pending |                                                                                                                                                                                                  |
+| B8   | `cardinality_effect_holds`     | Done    |                                                                                                                                                                                                  |
+| B9   | `metrics_output_rows`          | Pending |                                                                                                                                                                                                  |
+| B10  | `boundedness_holds`            | Pending | Needs an unbounded mock stream.                                                                                                                                                                  |
+| B11  | `emission_type_holds`          | Pending | Needs a mock stream that stays pending.                                                                                                                                                          |
+| B12  | `lazy_evaluation_holds`        | Pending | Needs a mock stream that counts polls.                                                                                                                                                           |
+| B13  | `cooperative_scheduling_holds` | Pending |                                                                                                                                                                                                  |
 
 ## C. Order and input requirements
 
@@ -114,19 +115,23 @@ Status values:
 
 ## Harness
 
-| Component                  | Status  | Notes                                                                                                    |
-| -------------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `PlanCheck`, `PlanChecker` | Done    | Visits every node. Checks can be allowed by name.                                                        |
-| `Report`, `Violation`      | Done    |                                                                                                          |
-| `MockSourceExec`           | Partial | Sets statistics, partition count and ordering. Does not produce data yet.                                |
-| Data generation            | Pending | Needed for sections B to F: random batches that meet ordering and distribution requirements, `__row_id`. |
-| Controllable mock streams  | Pending | Pending forever, errors at batch `k`, poll counting, drop detection.                                     |
-| Plan factories             | Pending | Build a node from given children, needed for D8 and for users to register their own plans.               |
+| Component                    | Status  | Notes                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PlanCheck`, `PlanChecker`   | Done    | Visits every node. Checks can be allowed by name. Sync `check` and async `check_async`.                                                                                                                                                                                                                                                 |
+| `CheckContext`               | Done    | Holds the output of executing each node, each on a fresh copy made with `reset_plan_states`. Execution only happens when an enabled check needs it.                                                                                                                                                                                     |
+| `Report`, `Violation`        | Done    |                                                                                                                                                                                                                                                                                                                                         |
+| `MockSourceExec`             | Done    | Serves fixed batches. Statistics are computed from the data. Declared orderings and hash partitioning are verified against the data. Range partitioning is not supported.                                                                                                                                                               |
+| `SourceSpec` data generation | Partial | Seeded random data with partition row counts, hash partitioning, batch layouts with empty batches, null fraction, value domain size, ordering, statistics precision and a row id column. Missing: dictionary, nested, binary, interval and duration types; NaN and extreme values; constants and equivalences in the source properties. |
+| `oracle`                     | Partial | Exact statistics, sortedness and hash partition placement.                                                                                                                                                                                                                                                                              |
+| Controllable mock streams    | Pending | Pending forever, errors at batch `k`, poll counting, drop detection, unbounded input.                                                                                                                                                                                                                                                   |
+| Input variation              | Pending | Deriving many `SourceSpec`s from one (seeds, partition counts, batch layouts, statistics precision) and running the checks for each.                                                                                                                                                                                                    |
+| Plan factories               | Pending | Build the plan under test from generated children, probe it (for example `with_fetch`, `required_input_ordering`, `input_distribution_requirements`) and generate the cases to test. See `DESIGN.md`.                                                                                                                                   |
 
 ## Built-in plans covered
 
-`tests/builtin_plans.rs` runs every implemented check against these plans
-and records the findings in `tests/snapshots/`:
+`tests/builtin_plans.rs` runs every implemented check against these plans,
+on generated data with exact statistics, and records the findings in
+`tests/snapshots/`:
 
 - `EmptyExec`, `PlaceholderRowExec`
 - `ProjectionExec`
@@ -134,7 +139,7 @@ and records the findings in `tests/snapshots/`:
 - `CoalesceBatchesExec`, with and without fetch
 - `CoalescePartitionsExec`, with and without fetch
 - `SortExec`, with and without fetch, with and without
-  `preserve_partitioning`
+  `preserve_partitioning`, and on a nullable column
 - `SortPreservingMergeExec`, with and without fetch
 - `RepartitionExec`, round robin and hash
 - `GlobalLimitExec`, `LocalLimitExec`
@@ -151,11 +156,15 @@ sinks.
 Violations currently recorded in the snapshot. Remove an entry when the plan
 is fixed and the snapshot is updated.
 
-| Plan                                              | Check                         | Summary                                                                                                                                                                                                |
-| ------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CoalesceBatchesExec` with fetch                  | `fetch_not_equal_cardinality` | `cardinality_effect()` is `Equal` even when a fetch is set.                                                                                                                                            |
-| `CoalescePartitionsExec` with fetch               | `fetch_not_equal_cardinality` | `cardinality_effect()` is `Equal` even when a fetch is set.                                                                                                                                            |
-| `CoalesceBatchesExec` with fetch                  | `partition_statistics_sum`    | Reports overall `Exact(10)` for 3 partitions that each report `Exact(10)`. The per-partition fetch is applied to the merged input statistics as if it were a global limit (`with_fetch(fetch, 0, 1)`). |
-| `LocalLimitExec`                                  | `partition_statistics_sum`    | Same cause as above.                                                                                                                                                                                   |
-| `SortExec` with `preserve_partitioning` and fetch | `partition_statistics_sum`    | Same cause as above.                                                                                                                                                                                   |
-| `FilterExec` with fetch                           | `fetch_bounds_num_rows`       | Lint: the row count estimate does not apply the fetch.                                                                                                                                                 |
+| Plan                                              | Checks                                                    | Summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CoalesceBatchesExec` with fetch                  | `fetch_not_equal_cardinality`, `cardinality_effect_holds` | `cardinality_effect()` is `Equal` even when a fetch is set. At runtime it produces 30 rows from 600.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `CoalescePartitionsExec` with fetch               | `fetch_not_equal_cardinality`, `cardinality_effect_holds` | `cardinality_effect()` is `Equal` even when a fetch is set. At runtime it produces 10 rows from 600.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `CoalesceBatchesExec` with fetch                  | `partition_statistics_sum`, `exact_statistics_hold`       | Reports overall `num_rows` `Exact(10)`, but produces 30 rows from 3 partitions. The per-partition fetch is applied to the merged input statistics as if it were a global limit (`with_fetch(fetch, 0, 1)`).                                                                                                                                                                                                                                                                                                                                                                         |
+| `LocalLimitExec`                                  | `partition_statistics_sum`, `exact_statistics_hold`       | Same cause as above: reports `Exact(10)` and produces 30 rows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `SortExec` with `preserve_partitioning` and fetch | `partition_statistics_sum`, `exact_statistics_hold`       | Same cause as above for the overall count. In addition, partitions share one TopK threshold, so a partition only keeps rows that can be in the global top `fetch`. Partitions report `Exact(fetch)` but can produce fewer rows, and how many depends on how partitions interleave at runtime (see `topk/mod.rs`). The results are correct under a `SortPreservingMergeExec` with the same fetch, but the statistics are false, and the semantics of the fetch differ from other per-partition fetches. Needs a decision: report `Inexact` per partition, or document the semantics. |
+| `PlaceholderRowExec`                              | `batch_schema`                                            | With a non-empty schema, produces a batch of `Null` columns named `placeholder_N` instead of the declared fields.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `FilterExec` with fetch                           | `fetch_bounds_num_rows`                                   | Lint: the row count estimate does not apply the fetch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+
+The audit runs on a current-thread Tokio runtime so the snapshot is
+deterministic despite the timing-dependent TopK output above.

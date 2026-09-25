@@ -32,12 +32,14 @@
 //! [`ExecutionPlan::maintains_input_order`] and the statistics it reports.
 //! Optimizer rules trust these descriptions, so an implementation that gets one
 //! wrong can make DataFusion return wrong results or miss optimizations. This
-//! crate checks that the descriptions are consistent with each other and, in
-//! later versions, with what the plan does when it runs.
+//! crate checks that the descriptions are consistent with each other and with
+//! what the plan does when it runs.
 //!
 //! Use [`PlanChecker`] to run every built-in check against every node of a
-//! plan. Build the plan under test on top of [`fixtures::MockSourceExec`] to
-//! control the statistics, partitioning and ordering of its input.
+//! plan. Build the plan under test on inputs generated with
+//! [`fixtures::SourceSpec`], which produces a [`fixtures::MockSourceExec`]
+//! whose data, statistics, partitioning and ordering are known to be
+//! consistent.
 //!
 //! See `CHECKS.md` in this crate for the catalog of checks, why each one
 //! matters and how to fix a violation, and `IMPLEMENTATION_STATUS.md` for which
@@ -49,8 +51,11 @@
 
 mod checker;
 pub mod checks;
+mod context;
 pub mod fixtures;
+pub mod oracle;
 mod report;
 
 pub use checker::{PlanCheck, PlanChecker};
+pub use context::{CheckContext, NodeOutput};
 pub use report::{Finding, Report, Severity, Violation};

@@ -2574,7 +2574,10 @@ dependencies = [
  "datafusion-execution",
  "datafusion-physical-expr",
  "datafusion-physical-plan",
+ "futures",
  "insta",
+ "rand 0.9.4",
+ "tokio",
 ]
 
 [[package]]

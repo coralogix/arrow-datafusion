@@ -22,6 +22,9 @@
 //! a plan is fixed, or a new check finds a new problem, the snapshot changes
 //! and must be reviewed and updated with `cargo insta review` (or by running
 //! the test with `INSTA_UPDATE=always`).
+//!
+//! Known findings are also listed, with their causes, in
+//! `IMPLEMENTATION_STATUS.md`.
 
 use std::fmt::Write;
 use std::sync::Arc;
@@ -44,7 +47,7 @@ use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeE
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::{ExecutionPlan, displayable};
 use datafusion_physical_plan_checks::PlanChecker;
-use datafusion_physical_plan_checks::fixtures::MockSourceExec;
+use datafusion_physical_plan_checks::fixtures::{BatchLayout, SourceSpec};
 
 const FETCH: usize = 10;
 
@@ -52,6 +55,7 @@ fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("a", DataType::Int32, false),
         Field::new("b", DataType::Boolean, false),
+        Field::new("c", DataType::Utf8, true),
     ]))
 }
 
@@ -62,25 +66,31 @@ fn ordering_on_a() -> Result<LexOrdering> {
     )
 }
 
+/// The spec every source starts from: random batches of up to 16 rows,
+/// including empty batches, with exact statistics
+fn spec() -> SourceSpec {
+    SourceSpec::new(schema()).with_batch_layout(BatchLayout::Random {
+        max_rows: 16,
+        empty_batches: true,
+    })
+}
+
 /// Three partitions with exact row counts
-fn multi_partition_source() -> Arc<dyn ExecutionPlan> {
-    Arc::new(
-        MockSourceExec::new(schema()).with_exact_partition_num_rows(&[100, 200, 300]),
-    )
+fn multi_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
+    spec().with_partition_rows(&[100, 200, 300]).build_arc()
 }
 
 /// Three partitions with exact row counts, each sorted on `a`
 fn sorted_multi_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
-    Ok(Arc::new(
-        MockSourceExec::new(schema())
-            .with_exact_partition_num_rows(&[100, 200, 300])
-            .with_output_ordering(ordering_on_a()?),
-    ))
+    spec()
+        .with_partition_rows(&[100, 200, 300])
+        .with_ordering(ordering_on_a()?)
+        .build_arc()
 }
 
 /// One partition with an exact row count
-fn single_partition_source() -> Arc<dyn ExecutionPlan> {
-    Arc::new(MockSourceExec::new(schema()).with_exact_partition_num_rows(&[600]))
+fn single_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
+    spec().with_partition_rows(&[600]).build_arc()
 }
 
 #[expect(deprecated)]
@@ -108,63 +118,71 @@ fn builtin_plans() -> Result<Vec<(&'static str, Arc<dyn ExecutionPlan>)>> {
             "ProjectionExec",
             Arc::new(ProjectionExec::try_new(
                 vec![(Arc::clone(&a), "a".to_string())],
-                multi_partition_source(),
+                multi_partition_source()?,
             )?),
         ),
         (
             "FilterExec",
             Arc::new(FilterExec::try_new(
                 Arc::clone(&b),
-                multi_partition_source(),
+                multi_partition_source()?,
             )?),
         ),
         (
             "FilterExec with fetch",
-            FilterExec::try_new(Arc::clone(&b), multi_partition_source())?
+            FilterExec::try_new(Arc::clone(&b), multi_partition_source()?)?
                 .with_fetch(Some(FETCH))
                 .expect("FilterExec supports fetch"),
         ),
         (
             "CoalesceBatchesExec",
-            coalesce_batches(multi_partition_source(), None),
+            coalesce_batches(multi_partition_source()?, None),
         ),
         (
             "CoalesceBatchesExec with fetch",
-            coalesce_batches(multi_partition_source(), Some(FETCH)),
+            coalesce_batches(multi_partition_source()?, Some(FETCH)),
         ),
         (
             "CoalescePartitionsExec",
-            Arc::new(CoalescePartitionsExec::new(multi_partition_source())),
+            Arc::new(CoalescePartitionsExec::new(multi_partition_source()?)),
         ),
         (
             "CoalescePartitionsExec with fetch",
             Arc::new(
-                CoalescePartitionsExec::new(multi_partition_source())
+                CoalescePartitionsExec::new(multi_partition_source()?)
                     .with_fetch(Some(FETCH)),
             ),
         ),
         (
             "SortExec",
-            Arc::new(SortExec::new(ordering_on_a()?, single_partition_source())),
+            Arc::new(SortExec::new(ordering_on_a()?, single_partition_source()?)),
         ),
         (
             "SortExec with fetch",
             Arc::new(
-                SortExec::new(ordering_on_a()?, single_partition_source())
+                SortExec::new(ordering_on_a()?, single_partition_source()?)
                     .with_fetch(Some(FETCH)),
             ),
         ),
         (
+            "SortExec on a nullable column",
+            Arc::new(SortExec::new(
+                LexOrdering::new(vec![PhysicalSortExpr::new_default(col("c", &schema)?)])
+                    .unwrap(),
+                single_partition_source()?,
+            )),
+        ),
+        (
             "SortExec with preserve_partitioning",
             Arc::new(
-                SortExec::new(ordering_on_a()?, multi_partition_source())
+                SortExec::new(ordering_on_a()?, multi_partition_source()?)
                     .with_preserve_partitioning(true),
             ),
         ),
         (
             "SortExec with preserve_partitioning and fetch",
             Arc::new(
-                SortExec::new(ordering_on_a()?, multi_partition_source())
+                SortExec::new(ordering_on_a()?, multi_partition_source()?)
                     .with_preserve_partitioning(true)
                     .with_fetch(Some(FETCH)),
             ),
@@ -189,54 +207,57 @@ fn builtin_plans() -> Result<Vec<(&'static str, Arc<dyn ExecutionPlan>)>> {
         (
             "RepartitionExec round robin",
             Arc::new(RepartitionExec::try_new(
-                multi_partition_source(),
+                multi_partition_source()?,
                 Partitioning::RoundRobinBatch(4),
             )?),
         ),
         (
             "RepartitionExec hash",
             Arc::new(RepartitionExec::try_new(
-                multi_partition_source(),
+                multi_partition_source()?,
                 Partitioning::Hash(vec![Arc::clone(&a)], 4),
             )?),
         ),
         (
             "GlobalLimitExec",
             Arc::new(GlobalLimitExec::new(
-                single_partition_source(),
+                single_partition_source()?,
                 5,
                 Some(FETCH),
             )),
         ),
         (
             "LocalLimitExec",
-            Arc::new(LocalLimitExec::new(multi_partition_source(), FETCH)),
+            Arc::new(LocalLimitExec::new(multi_partition_source()?, FETCH)),
         ),
         (
             "UnionExec",
             UnionExec::try_new(vec![
-                multi_partition_source(),
-                single_partition_source(),
+                multi_partition_source()?,
+                single_partition_source()?,
             ])?,
         ),
         (
             "BufferExec",
-            Arc::new(BufferExec::new(multi_partition_source(), 1024)),
+            Arc::new(BufferExec::new(multi_partition_source()?, 1024)),
         ),
         (
             "CooperativeExec",
-            Arc::new(CooperativeExec::new(multi_partition_source())),
+            Arc::new(CooperativeExec::new(multi_partition_source()?)),
         ),
     ];
     Ok(plans)
 }
 
-#[test]
-fn builtin_plan_findings() -> Result<()> {
+/// Runs on a current-thread runtime so that execution, and therefore the
+/// snapshot, is deterministic. Some plans, such as a partitioned TopK
+/// `SortExec`, produce output that depends on how partitions interleave.
+#[tokio::test]
+async fn builtin_plan_findings() -> Result<()> {
     let checker = PlanChecker::new();
     let mut output = String::new();
     for (name, plan) in builtin_plans()? {
-        let report = checker.check(&plan)?;
+        let report = checker.check_async(&plan).await?;
         writeln!(output, "## {name}").unwrap();
         let display = displayable(plan.as_ref()).indent(true).to_string();
         for line in display.lines() {
