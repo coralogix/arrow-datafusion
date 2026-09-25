@@ -41,7 +41,7 @@ use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::{
     Accumulator, AggregateUDFImpl, Documentation, Signature, Volatility,
     function::{AccumulatorArgs, StateFieldsArgs},
-    utils::format_state_name,
+    utils::{AggregateOrderSensitivity, format_state_name},
 };
 use datafusion_functions_aggregate_common::stats::StatsType;
 use datafusion_macros::user_doc;
@@ -128,6 +128,10 @@ impl AggregateUDFImpl for Correlation {
         .into_iter()
         .map(Arc::new)
         .collect())
+    }
+
+    fn order_sensitivity(&self) -> AggregateOrderSensitivity {
+        AggregateOrderSensitivity::Insensitive
     }
 
     fn documentation(&self) -> Option<&Documentation> {
