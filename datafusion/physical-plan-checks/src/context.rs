@@ -33,6 +33,7 @@ use crate::experiments::{
     self, Experiment, ExperimentOptions, StreamRun, TrackingPool,
     experiment_task_context, wait_until, with_memory_pool,
 };
+use crate::variants::{self, Variant, VariantKind, VariantOptions, VariantRun};
 
 /// The output of executing one node: the batches of each output partition
 #[derive(Debug, Clone)]
@@ -41,6 +42,10 @@ pub struct NodeOutput {
 }
 
 impl NodeOutput {
+    pub(crate) fn new(partitions: Vec<Vec<RecordBatch>>) -> Self {
+        Self { partitions }
+    }
+
     /// The batches of each output partition
     pub fn partitions(&self) -> &[Vec<RecordBatch>] {
         &self.partitions
@@ -80,6 +85,9 @@ pub(crate) struct ContextOptions {
     pub execute: bool,
     /// Stream experiments to run on every node
     pub experiments: BTreeSet<Experiment>,
+    /// Variant runs to collect for every node. Requires `execute`, since the
+    /// runs are sized by the normal outputs.
+    pub variants: BTreeSet<VariantKind>,
     pub task_context: Arc<TaskContext>,
     /// Time allowed for executing a node to completion
     pub timeout: Duration,
@@ -102,18 +110,27 @@ pub(crate) struct ContextOptions {
 /// too. Experiments rebuild the node on inputs whose streams behave
 /// differently and observe how the node drives them; see [`Experiment`].
 ///
+/// When an enabled check requests a [`VariantKind`], the variants of that kind
+/// that apply to each node are executed after every node was executed
+/// normally, and their outputs are recorded as [`VariantRun`]s. Variants run
+/// a rewritten copy of the node, such as the plan returned by `with_fetch`,
+/// or a copy under different settings, such as another batch size; see
+/// [`Variant`].
+///
 /// Each node is executed on a fresh copy of its subtree made with
 /// [`reset_plan_states`], so runtime state such as dynamic filters from one
 /// execution does not affect the next. The plan passed to the checker is never
 /// executed itself.
 ///
 /// [`PlanChecker`]: crate::PlanChecker
+/// [`Variant`]: crate::Variant
 #[derive(Debug, Default)]
 pub struct CheckContext {
     executions: HashMap<usize, Execution>,
     /// Bytes still reserved after executing each node to completion
     memory: HashMap<usize, usize>,
     runs: HashMap<(usize, Experiment), Vec<StreamRun>>,
+    variant_runs: HashMap<(usize, VariantKind), Vec<VariantRun>>,
 }
 
 fn node_key(node: &Arc<dyn ExecutionPlan>) -> usize {
@@ -134,6 +151,7 @@ impl CheckContext {
         };
         let mut context = Self::default();
         let mut visited = HashSet::new();
+        let mut nodes = vec![];
         let mut stack = vec![Arc::clone(plan)];
         while let Some(node) = stack.pop() {
             stack.extend(node.children().into_iter().cloned());
@@ -153,8 +171,40 @@ impl CheckContext {
                     experiments::run(&node, *experiment, &experiment_options).await;
                 context.runs.insert((key, *experiment), runs);
             }
+            nodes.push(node);
+        }
+
+        // Variants are sized by the normal outputs of each node and its
+        // children, so they run once every node has been executed
+        let variant_options = VariantOptions {
+            task_context: Arc::clone(&options.task_context),
+            timeout: options.timeout,
+        };
+        for node in &nodes {
+            for kind in &options.variants {
+                let larger = context.larger_than_output(node);
+                let runs = variants::run(node, *kind, larger, &variant_options).await;
+                context.variant_runs.insert((node_key(node), *kind), runs);
+            }
         }
         context
+    }
+
+    /// A row count larger than the output of `node`, with and without its
+    /// fetch, and than the output of each of its children, as far as they
+    /// are known
+    fn larger_than_output(&self, node: &Arc<dyn ExecutionPlan>) -> usize {
+        let unfetched = self
+            .variant_run(node, Variant::WithoutFetch)
+            .and_then(|run| run.output.as_ref().ok());
+        let rows = std::iter::once(node)
+            .chain(node.children())
+            .filter_map(|plan| self.output(plan))
+            .chain(unfetched)
+            .map(NodeOutput::num_rows)
+            .max()
+            .unwrap_or(0);
+        rows + 1
     }
 
     /// The output of executing `node`, or `None` if it was not executed or
@@ -198,6 +248,44 @@ impl CheckContext {
             .unwrap_or_default()
     }
 
+    /// The variant runs of `kind` on `node`, in the order they ran. Empty if
+    /// the kind was not requested, or no variant of it applies to the node,
+    /// for example [`VariantKind::WithFetch`] for a node whose `with_fetch`
+    /// returns `None`.
+    pub fn variant_runs(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        kind: VariantKind,
+    ) -> &[VariantRun] {
+        self.variant_runs
+            .get(&(node_key(node), kind))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// The run of `variant` on `node`, if it ran
+    pub fn variant_run(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        variant: Variant,
+    ) -> Option<&VariantRun> {
+        self.variant_runs(node, variant.kind())
+            .iter()
+            .find(|run| run.variant == variant)
+    }
+
+    /// The output of `node` without its fetch: its normal output if it has no
+    /// fetch, and otherwise the output of the plan returned by
+    /// `with_fetch(None)`, which requires [`VariantKind::WithoutFetch`].
+    /// `None` if that output is not known.
+    pub fn unfetched_output(&self, node: &Arc<dyn ExecutionPlan>) -> Option<&NodeOutput> {
+        if node.fetch().is_none() {
+            return self.output(node);
+        }
+        self.variant_run(node, Variant::WithoutFetch)
+            .and_then(|run| run.output.as_ref().ok())
+    }
+
     /// The outputs of all children of `node`, or `None` if any child was not
     /// executed or failed
     pub fn child_outputs(
@@ -239,15 +327,9 @@ async fn execute_node(
                 return (Execution::Failed(error), None);
             }
         };
-    let future = AssertUnwindSafe(collect_partitioned(node, task_context)).catch_unwind();
-    let timeout = options.timeout;
-    let execution = match tokio::time::timeout(timeout, future).await {
-        Ok(Ok(Ok(partitions))) => Execution::Output(NodeOutput { partitions }),
-        Ok(Ok(Err(e))) => Execution::Failed(e.strip_backtrace()),
-        Ok(Err(panic)) => {
-            Execution::Failed(format!("panicked: {}", panic_message(&panic)))
-        }
-        Err(_) => Execution::Failed(format!("did not finish within {timeout:?}")),
+    let execution = match collect_output(node, task_context, options.timeout).await {
+        Ok(output) => Execution::Output(output),
+        Err(error) => Execution::Failed(error),
     };
     let memory = match execution {
         Execution::Output(_) => {
@@ -259,6 +341,23 @@ async fn execute_node(
         Execution::Failed(_) => None,
     };
     (execution, memory)
+}
+
+/// Execute every partition of `plan` concurrently and collect the output.
+/// Errors, panics and running longer than `timeout` are returned as a
+/// description.
+pub(crate) async fn collect_output(
+    plan: Arc<dyn ExecutionPlan>,
+    task_context: Arc<TaskContext>,
+    timeout: Duration,
+) -> Result<NodeOutput, String> {
+    let future = AssertUnwindSafe(collect_partitioned(plan, task_context)).catch_unwind();
+    match tokio::time::timeout(timeout, future).await {
+        Ok(Ok(Ok(partitions))) => Ok(NodeOutput { partitions }),
+        Ok(Ok(Err(e))) => Err(e.strip_backtrace()),
+        Ok(Err(panic)) => Err(format!("panicked: {}", panic_message(&panic))),
+        Err(_) => Err(format!("did not finish within {timeout:?}")),
+    }
 }
 
 pub(crate) fn panic_message(panic: &Box<dyn Any + Send>) -> String {

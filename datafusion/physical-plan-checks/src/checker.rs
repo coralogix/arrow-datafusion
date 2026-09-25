@@ -30,6 +30,7 @@ use crate::checks;
 use crate::context::{CheckContext, ContextOptions};
 use crate::experiments::Experiment;
 use crate::report::{Finding, Report, Violation};
+use crate::variants::VariantKind;
 
 /// A single property that every [`ExecutionPlan`] node should satisfy.
 ///
@@ -44,7 +45,10 @@ use crate::report::{Finding, Report, Violation};
 /// available through [`CheckContext::output`]. A check that needs to observe
 /// how a node drives its input streams lists the [`Experiment`]s it needs in
 /// [`Self::experiments`], and reads their results with
-/// [`CheckContext::stream_runs`].
+/// [`CheckContext::stream_runs`]. A check that compares the node's output with
+/// the output of a rewritten copy, or of a run under other settings, lists the
+/// [`VariantKind`]s it needs in [`Self::variants`], and reads their results
+/// with [`CheckContext::variant_runs`].
 ///
 /// See `CHECKS.md` in this crate for the catalog of checks.
 pub trait PlanCheck: Debug + Send + Sync {
@@ -68,6 +72,15 @@ pub trait PlanCheck: Debug + Send + Sync {
         &[]
     }
 
+    /// The variant runs whose outputs the check reads from the
+    /// [`CheckContext`]. The [`PlanChecker`] collects the variants of each
+    /// requested kind that apply to each node. Variant runs are compared with
+    /// normal outputs, so requesting any also executes every node, as
+    /// [`Self::requires_execution`] does.
+    fn variants(&self) -> &'static [VariantKind] {
+        &[]
+    }
+
     /// Check a single node and return any problems found.
     ///
     /// Returning an `Err` means the check itself could not run and aborts the
@@ -84,8 +97,9 @@ pub trait PlanCheck: Debug + Send + Sync {
 /// Runs a set of [`PlanCheck`]s over every node of an [`ExecutionPlan`] tree.
 ///
 /// If any enabled check requires execution, every node of the plan is executed
-/// first, each on its own, and its output is collected. Stream experiments
-/// requested by enabled checks run on every node too. Plans under test should
+/// first, each on its own, and its output is collected. Stream experiments and
+/// variant runs requested by enabled checks run on every node too. Plans under
+/// test should
 /// therefore be built on inputs that can be executed repeatedly, such as
 /// [`MockSourceExec`]. Experiments that control how inputs behave only change
 /// `MockSourceExec` leaves.
@@ -171,9 +185,9 @@ impl PlanChecker {
     }
 
     /// Set the time allowed for executing a single node. A node that takes
-    /// longer is reported as failing to execute. Stream experiments on finite
-    /// inputs, which should end like a normal execution, use it too. Defaults
-    /// to 30 seconds.
+    /// longer is reported as failing to execute. Variant runs, and stream
+    /// experiments on finite inputs, which should end like a normal execution,
+    /// use it too. Defaults to 30 seconds.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -233,8 +247,11 @@ impl PlanChecker {
     }
 
     fn requires_execution(&self) -> bool {
-        self.active_checks()
-            .any(|check| check.requires_execution() || !check.experiments().is_empty())
+        self.active_checks().any(|check| {
+            check.requires_execution()
+                || !check.experiments().is_empty()
+                || !check.variants().is_empty()
+        })
     }
 
     async fn context(&self, plan: &Arc<dyn ExecutionPlan>) -> CheckContext {
@@ -242,10 +259,16 @@ impl PlanChecker {
             return CheckContext::default();
         }
         let options = ContextOptions {
-            execute: self.active_checks().any(|check| check.requires_execution()),
+            execute: self
+                .active_checks()
+                .any(|check| check.requires_execution() || !check.variants().is_empty()),
             experiments: self
                 .active_checks()
                 .flat_map(|check| check.experiments().iter().copied())
+                .collect::<BTreeSet<_>>(),
+            variants: self
+                .active_checks()
+                .flat_map(|check| check.variants().iter().copied())
                 .collect::<BTreeSet<_>>(),
             task_context: Arc::clone(&self.task_context),
             timeout: self.timeout,

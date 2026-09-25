@@ -37,8 +37,8 @@ use datafusion_physical_plan_checks::{
 };
 
 use crate::common::{
-    ConfigurableExec, Effect, HoldInput, OnInputError, exact_source, schema, source,
-    summary,
+    ConfigurableExec, Effect, FetchMode, HoldInput, OnInputError, exact_source, schema,
+    source, summary,
 };
 
 /// A checker with short timeouts, so that plans that never end are reported
@@ -79,7 +79,7 @@ fn correct_plans_are_clean() {
         let mut limited = ConfigurableExec::new(Arc::clone(&input))
             .fetch(5)
             .effect(Effect::LowerEqual);
-        limited.enforce_fetch = true;
+        limited.fetch_mode = FetchMode::Enforce;
         limited.boundedness = Some(Boundedness::Bounded);
         plans.push(limited.build());
     }
@@ -126,7 +126,7 @@ fn bounded_claim_that_does_not_hold() {
 #[test]
 fn fetch_that_makes_the_output_bounded_is_a_lint() {
     let mut exec = ConfigurableExec::new(multi_partition_source()).fetch(5);
-    exec.enforce_fetch = true;
+    exec.fetch_mode = FetchMode::Enforce;
     let plan = exec.build();
     let report = check_with(Arc::new(checks::BoundednessHolds), &plan);
     assert_eq!(
@@ -139,7 +139,7 @@ fn fetch_that_makes_the_output_bounded_is_a_lint() {
     let mut exec = ConfigurableExec::new(multi_partition_source())
         .fetch(5)
         .effect(Effect::LowerEqual);
-    exec.enforce_fetch = true;
+    exec.fetch_mode = FetchMode::Enforce;
     let plan = exec.build();
     check_with(Arc::new(checks::BoundednessHolds), &plan).assert_clean();
 }
@@ -303,7 +303,7 @@ fn error_after_the_fetch_is_satisfied_does_not_have_to_propagate() {
         .fetch(1)
         .effect(Effect::LowerEqual);
     exec.eager = true;
-    exec.enforce_fetch = true;
+    exec.fetch_mode = FetchMode::Enforce;
     exec.on_input_error = OnInputError::Swallow;
     let plan = exec.build();
     check_with(Arc::new(checks::ErrorsPropagate), &plan).assert_clean();

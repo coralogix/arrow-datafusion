@@ -35,9 +35,13 @@ use crate::common::{
     summary,
 };
 
-/// Run only the execution checks
+/// Run only the execution checks. `Transform::DropHalf` keeps half of each
+/// batch, so its output depends on batch boundaries, which
+/// `batch_boundary_invariance` reports; that check is tested in
+/// `variant_checks.rs`.
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
     PlanChecker::with_checks(checks::execution_checks())
+        .allow("batch_boundary_invariance")
         .check(plan)
         .unwrap()
 }

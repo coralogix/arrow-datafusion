@@ -21,9 +21,11 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{RecordBatch, UInt32Array, new_null_array};
+use arrow::array::{
+    ArrayRef, AsArray, Float64Array, RecordBatch, UInt32Array, new_null_array,
+};
 use arrow::compute::{concat_batches, take_record_batch};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Float64Type, Schema, SchemaRef};
 use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{Result, Statistics, internal_err};
@@ -38,11 +40,13 @@ use datafusion_physical_plan::stream::{
 };
 use datafusion_physical_plan::{
     ChildStats, ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
-    PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs,
+    Partitioning, PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
+    StatisticsArgs,
 };
 use datafusion_physical_plan_checks::fixtures::{SourceSpec, StatisticsPrecision};
 use datafusion_physical_plan_checks::{Report, Severity};
 use futures::StreamExt;
+use futures::stream::BoxStream;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Effect {
@@ -120,6 +124,24 @@ pub enum OnInputError {
     Panic,
 }
 
+/// How `ConfigurableExec` applies its fetch
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchMode {
+    /// Report the fetch without applying it, and return `None` from
+    /// `with_fetch`
+    Ignore,
+    /// Stop after `fetch` rows per partition, without polling the input again
+    Enforce,
+    /// Keep one row more than the fetch
+    KeepOneMore,
+    /// Keep half as many rows as the fetch
+    KeepHalf,
+    /// Skip the first row of each partition, then keep `fetch` rows
+    SkipFirstRow,
+    /// Repeat the first row of each partition `fetch` times
+    RepeatFirstRow,
+}
+
 /// Where `ConfigurableExec` keeps its input streams when its output stream is
 /// dropped
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,8 +193,28 @@ pub struct ConfigurableExec {
     pub buffer_all: bool,
     /// Poll the input from a spawned task
     pub eager: bool,
-    /// Stop after `fetch` rows per partition
-    pub enforce_fetch: bool,
+    /// How to apply the fetch. `with_fetch` returns `None` unless the fetch is
+    /// applied in some way.
+    pub fetch_mode: FetchMode,
+    /// Keep the fetch when `with_fetch(None)` is called
+    pub keep_fetch_on_with_fetch_none: bool,
+    /// Make the plans returned by `with_fetch` report no ordering
+    pub with_fetch_drops_ordering: bool,
+    /// Report no ordering
+    pub drop_ordering: bool,
+    /// Return true from `supports_limit_pushdown`
+    pub limit_pushdown: bool,
+    /// Skip the first `skip` rows of each partition, as an `OFFSET` would
+    pub skip: usize,
+    /// Report a single output partition, and produce the rows of every input
+    /// partition in it
+    pub coalesce: bool,
+    /// End each partition after as many rows as the session batch size, as a
+    /// node that only emits its first output batch would
+    pub stop_after_session_batch: bool,
+    /// Multiply the `Float64` values of the `k`-th batch of each partition,
+    /// counting from 1, by `1 + k * noise`
+    pub float_noise: Option<f64>,
     /// What to do when the input returns an error
     pub on_input_error: OnInputError,
     /// Where to keep input streams when the output stream is dropped
@@ -203,7 +245,15 @@ impl ConfigurableExec {
             evaluation_type: None,
             buffer_all: false,
             eager: false,
-            enforce_fetch: false,
+            fetch_mode: FetchMode::Ignore,
+            keep_fetch_on_with_fetch_none: false,
+            with_fetch_drops_ordering: false,
+            drop_ordering: false,
+            limit_pushdown: false,
+            skip: 0,
+            coalesce: false,
+            stop_after_session_batch: false,
+            float_noise: None,
             on_input_error: OnInputError::Propagate,
             hold_input: HoldInput::No,
             leak_memory: false,
@@ -246,6 +296,8 @@ impl ConfigurableExec {
 
     fn compute_properties(&self) -> Arc<PlanProperties> {
         let overridden = self.claimed_ordering.is_some()
+            || self.drop_ordering
+            || self.coalesce
             || self.boundedness.is_some()
             || self.emission_type.is_some()
             || self.evaluation_type.is_some();
@@ -259,6 +311,14 @@ impl ConfigurableExec {
                     self.input.schema(),
                     [ordering.clone()],
                 ));
+        }
+        if self.drop_ordering || self.coalesce {
+            properties = properties
+                .with_eq_properties(EquivalenceProperties::new(self.input.schema()));
+        }
+        if self.coalesce {
+            properties =
+                properties.with_partitioning(Partitioning::UnknownPartitioning(1));
         }
         if let Some(boundedness) = self.boundedness {
             properties = properties.with_boundedness(boundedness);
@@ -338,7 +398,11 @@ impl ExecutionPlan for Built {
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        vec![true; self.exec.maintains_input_order_len.unwrap_or(1)]
+        vec![!self.exec.coalesce; self.exec.maintains_input_order_len.unwrap_or(1)]
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        self.exec.limit_pushdown
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -393,7 +457,23 @@ impl ExecutionPlan for Built {
             reservation.grow(1024);
             Box::leak(Box::new(reservation));
         }
-        let mut input = self.exec.input.execute(partition, Arc::clone(&context))?;
+        let mut input = if self.exec.coalesce {
+            let partitions = self
+                .exec
+                .input
+                .properties()
+                .output_partitioning()
+                .partition_count();
+            let streams = (0..partitions)
+                .map(|p| self.exec.input.execute(p, Arc::clone(&context)))
+                .collect::<Result<Vec<_>>>()?;
+            Box::pin(RecordBatchStreamAdapter::new(
+                self.exec.input.schema(),
+                futures::stream::iter(streams).flatten(),
+            ))
+        } else {
+            self.exec.input.execute(partition, Arc::clone(&context))?
+        };
         if self.exec.eager {
             let mut builder = RecordBatchReceiverStream::builder(self.schema(), 2);
             let tx = builder.tx();
@@ -436,24 +516,53 @@ impl ExecutionPlan for Built {
         });
         let transform = self.exec.transform;
         let mut stream = items.map(move |batch| transform.apply(batch?)).boxed();
-        if self.exec.enforce_fetch
-            && let Some(fetch) = self.exec.fetch
-        {
-            // End after `fetch` rows, without polling the input again
-            let mut remaining = fetch;
-            let mut inner = stream;
-            stream = futures::stream::poll_fn(move |cx| {
-                if remaining == 0 {
-                    return std::task::Poll::Ready(None);
-                }
-                match inner.poll_next_unpin(cx) {
-                    std::task::Poll::Ready(Some(Ok(batch))) => {
-                        let rows = batch.num_rows().min(remaining);
-                        remaining -= rows;
-                        std::task::Poll::Ready(Some(Ok(batch.slice(0, rows))))
+        if let Some(noise) = self.exec.float_noise {
+            let mut k = 0;
+            stream = stream
+                .map(move |batch| {
+                    k += 1;
+                    scale_floats(&batch?, 1.0 + k as f64 * noise)
+                })
+                .boxed();
+        }
+
+        let fetch = self
+            .exec
+            .fetch
+            .filter(|_| self.exec.fetch_mode != FetchMode::Ignore);
+        let skip = match (fetch, self.exec.fetch_mode) {
+            (Some(_), FetchMode::SkipFirstRow) => self.exec.skip + 1,
+            _ => self.exec.skip,
+        };
+        let fetch_limit = fetch.and_then(|fetch| match self.exec.fetch_mode {
+            FetchMode::Ignore | FetchMode::RepeatFirstRow => None,
+            FetchMode::Enforce | FetchMode::SkipFirstRow => Some(fetch),
+            FetchMode::KeepOneMore => Some(fetch + 1),
+            FetchMode::KeepHalf => Some(fetch / 2),
+        });
+        let batch_limit = self
+            .exec
+            .stop_after_session_batch
+            .then(|| context.session_config().batch_size());
+        let limit = match (fetch_limit, batch_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if skip > 0 || limit.is_some() {
+            stream = skip_and_limit(stream, skip, limit);
+        }
+        if let (Some(fetch), FetchMode::RepeatFirstRow) = (fetch, self.exec.fetch_mode) {
+            let schema = self.schema();
+            stream = futures::stream::once(async move {
+                let mut stream = stream;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    if batch.num_rows() > 0 {
+                        let indices = UInt32Array::from(vec![0; fetch]);
+                        return Ok(take_record_batch(&batch, &indices)?);
                     }
-                    poll => poll,
                 }
+                Ok(RecordBatch::new_empty(schema))
             })
             .boxed();
         }
@@ -475,6 +584,9 @@ impl ExecutionPlan for Built {
     fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
         if self.exec.skip_child_stats {
             vec![ChildStats::Skip]
+        } else if self.exec.coalesce {
+            // The only output partition has all input rows
+            vec![ChildStats::At(None)]
         } else {
             vec![ChildStats::At(partition)]
         }
@@ -514,8 +626,16 @@ impl ExecutionPlan for Built {
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        if self.exec.fetch_mode == FetchMode::Ignore {
+            return None;
+        }
         let mut exec = self.exec.clone();
-        exec.fetch = fetch;
+        if fetch.is_some() || !exec.keep_fetch_on_with_fetch_none {
+            exec.fetch = fetch;
+        }
+        if exec.with_fetch_drops_ordering {
+            exec.drop_ordering = true;
+        }
         Some(exec.build())
     }
 
@@ -527,6 +647,54 @@ impl ExecutionPlan for Built {
             Effect::GreaterEqual => CardinalityEffect::GreaterEqual,
         }
     }
+}
+
+/// Skip the first `skip` rows of `stream`, then end after `limit` rows, if
+/// set, without polling the input again
+fn skip_and_limit(
+    mut stream: BoxStream<'static, Result<RecordBatch>>,
+    skip: usize,
+    limit: Option<usize>,
+) -> BoxStream<'static, Result<RecordBatch>> {
+    let mut to_skip = skip;
+    let mut remaining = limit;
+    futures::stream::poll_fn(move |cx| {
+        if remaining == Some(0) {
+            return std::task::Poll::Ready(None);
+        }
+        match stream.poll_next_unpin(cx) {
+            std::task::Poll::Ready(Some(Ok(batch))) => {
+                let skipped = to_skip.min(batch.num_rows());
+                to_skip -= skipped;
+                let mut batch = batch.slice(skipped, batch.num_rows() - skipped);
+                if let Some(remaining) = remaining.as_mut() {
+                    let rows = batch.num_rows().min(*remaining);
+                    *remaining -= rows;
+                    batch = batch.slice(0, rows);
+                }
+                std::task::Poll::Ready(Some(Ok(batch)))
+            }
+            poll => poll,
+        }
+    })
+    .boxed()
+}
+
+/// Multiply every `Float64` value of `batch` by `factor`
+fn scale_floats(batch: &RecordBatch, factor: f64) -> Result<RecordBatch> {
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| match column.data_type() {
+            DataType::Float64 => {
+                let values: Float64Array =
+                    column.as_primitive::<Float64Type>().unary(|v| v * factor);
+                Arc::new(values) as ArrayRef
+            }
+            _ => Arc::clone(column),
+        })
+        .collect();
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
 }
 
 pub fn schema() -> SchemaRef {

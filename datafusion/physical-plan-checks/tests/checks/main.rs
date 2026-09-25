@@ -23,3 +23,4 @@ mod execution_checks;
 mod fixtures;
 mod static_checks;
 mod stream_checks;
+mod variant_checks;

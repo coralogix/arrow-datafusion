@@ -22,10 +22,12 @@ use std::sync::Arc;
 use datafusion_common::{Result, Statistics};
 use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 
-use crate::PlanCheck;
+use crate::{Finding, PlanCheck};
 
 mod cardinality;
+mod invariance;
 mod lifecycle;
+mod rewrite;
 mod runtime;
 mod statistics;
 mod stream;
@@ -35,7 +37,9 @@ pub use cardinality::{
     CardinalityEffectBoundsNumRows, EqualCardinalityNumRows, FetchBoundsNumRows,
     FetchNotEqualCardinality,
 };
+pub use invariance::{BatchBoundaryInvariance, BatchSizeInvariance};
 pub use lifecycle::{ErrorsPropagate, ResourcesReleased};
+pub use rewrite::{LimitPushdownEquivalent, WithFetchEquivalent};
 pub use runtime::{
     BatchSchema, CardinalityEffectHolds, ExactStatisticsHold, ExecutionSucceeds,
     OrderingsHold,
@@ -62,6 +66,10 @@ pub fn execution_checks() -> Vec<Arc<dyn PlanCheck>> {
         Arc::new(BoundednessHolds),
         Arc::new(EmissionTypeHolds),
         Arc::new(LazyEvaluationHolds),
+        Arc::new(WithFetchEquivalent),
+        Arc::new(LimitPushdownEquivalent),
+        Arc::new(BatchSizeInvariance),
+        Arc::new(BatchBoundaryInvariance),
         Arc::new(ResourcesReleased),
         Arc::new(ErrorsPropagate),
     ]
@@ -101,4 +109,58 @@ fn partition_statistics(
 /// Number of output partitions of `plan`
 fn partition_count(plan: &dyn ExecutionPlan) -> usize {
     plan.properties().output_partitioning().partition_count()
+}
+
+/// Problems found in several runs of one node, such as the variant runs of
+/// one kind. Each kind of problem is reported once, for the first run that
+/// has it, naming the other runs that have it too, so that one cause does not
+/// produce a finding per run.
+#[derive(Debug, Default)]
+struct RunProblems {
+    problems: Vec<RunProblem>,
+}
+
+#[derive(Debug)]
+struct RunProblem {
+    kind: &'static str,
+    run: String,
+    finding: Finding,
+    other_runs: Vec<String>,
+}
+
+impl RunProblems {
+    /// Record a problem of `kind`, described by `finding`, in the run
+    /// described by `run`
+    fn add(&mut self, kind: &'static str, run: impl Into<String>, finding: Finding) {
+        let run = run.into();
+        match self
+            .problems
+            .iter_mut()
+            .find(|problem| problem.kind == kind)
+        {
+            Some(problem) => problem.other_runs.push(run),
+            None => self.problems.push(RunProblem {
+                kind,
+                run,
+                finding,
+                other_runs: vec![],
+            }),
+        }
+    }
+
+    fn into_findings(self) -> Vec<Finding> {
+        self.problems
+            .into_iter()
+            .map(|problem| {
+                let mut finding = problem.finding;
+                let also = if problem.other_runs.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (also {})", problem.other_runs.join(", "))
+                };
+                finding.message = format!("{}: {}{also}", problem.run, finding.message);
+                finding
+            })
+            .collect()
+    }
 }

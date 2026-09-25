@@ -61,11 +61,38 @@ context holds:
   observed to the node itself, so most of these checks need no "skip if a
   child fails the same way" rule. Each run has a timeout, and experiments on
   inputs that never end stop as soon as they have seen what the checks need.
+- Variant runs (`Variant`, `VariantRun`), for checks that compare a node's
+  output with the output of a rewritten copy of the node (the plan returned
+  by `with_fetch`, or the node with its children limited the way
+  `LimitPushdown` limits them) or of the node run under other settings (the
+  session batch size, or `MockSourceExec` leaves split into other batches).
+  Each run executes a `reset_plan_states` copy of the node's subtree to
+  completion within the execution timeout, and records the whole output.
+  Variants run after every node has been executed normally, so that their
+  parameters, such as a fetch larger than the output, can depend on the
+  normal outputs.
 
-A check declares what it needs (`requires_execution`, `experiments`), and the
-checker only gathers the facts that an enabled check needs. Later additions
-belong here too: results of probing rewrite hooks, and outputs under other
-configurations.
+Variant runs are a separate concept from experiments because they answer a
+different question with different machinery. An experiment observes how a
+node drives its streams, often on inputs that never end, through probes, stop
+conditions and observations that are only meaningful for a partial run. A
+variant run needs none of that: it is a normal execution of a different plan
+or with a different setting, whose output is compared row by row with the
+normal output. Keeping them apart keeps `StreamRun` free of outputs and
+`VariantRun` free of stream observations. They share the code that rebuilds a
+node over modified `MockSourceExec` leaves (`map_mock_leaves`).
+
+Settings such as the batch size and the leaf layout apply to the whole
+subtree, so a child's output can change under a variant too. The checks that
+compare variants only compare a node under a variant in which every child
+produced the same rows in the same order and partitions as normally, which
+attributes a difference to the node that causes it.
+
+A check declares what it needs (`requires_execution`, `experiments`,
+`variants`), and the checker only gathers the facts that an enabled check
+needs. Later additions belong here too: results of probing the other rewrite
+hooks of section D, and outputs under the other configurations of section E,
+most of which fit as new kinds of variants.
 
 **Inputs** (`fixtures/`). `SourceSpec` is a plain, cloneable description of
 an input: schema, partition layout, batch layout, value distribution,
@@ -82,12 +109,17 @@ attached to a source, or wrapped around any stream, records what happens to
 the streams of each partition.
 
 **Oracles** (`oracle/`). Reference computations of the true properties of a
-set of batches: exact statistics, sortedness, hash partition placement. The
-sources use them to validate themselves and the checks use them to judge
-plans. They are written for clarity rather than speed, and avoid the code
-paths of the operators under test where possible. The one exception is hash
-partitioning, which must use `BatchPartitioner` because the property being
-checked is agreement with the hash that DataFusion operators assume.
+set of batches: exact statistics, sortedness, hash partition placement, and
+how the rows of two sets of batches compare (as multisets, in order, and as a
+prefix of a sorted sequence apart from rows that tie on the sort key). Row
+comparisons encode values with `arrow::row::RowConverter`, except floating
+point values, which are compared with a relative tolerance because the order
+in which an operator adds them can change with batching. The sources use the
+oracles to validate themselves and the checks use them to judge plans. They
+are written for clarity rather than speed, and avoid the code paths of the
+operators under test where possible. The one exception is hash partitioning,
+which must use `BatchPartitioner` because the property being checked is
+agreement with the hash that DataFusion operators assume.
 
 **Checker** (`PlanChecker`). Selects checks, gathers the context if any check
 needs execution, visits every node, and attributes findings to nodes by path.

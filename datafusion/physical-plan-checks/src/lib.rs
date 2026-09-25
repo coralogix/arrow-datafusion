@@ -46,6 +46,11 @@
 //! node on copies of its inputs that stall, fail or never end, observed with
 //! [`fixtures::StreamProbe`]s.
 //!
+//! Checks that compare a node's output with the output of a rewritten copy of
+//! the node, such as the plan returned by `with_fetch`, or of the node run
+//! under other settings, such as another batch size, read the results of
+//! [`Variant`] runs. The [`oracle`] module compares their rows.
+//!
 //! See `CHECKS.md` in this crate for the catalog of checks, why each one
 //! matters and how to fix a violation, and `IMPLEMENTATION_STATUS.md` for which
 //! checks are implemented.
@@ -61,8 +66,10 @@ mod experiments;
 pub mod fixtures;
 pub mod oracle;
 mod report;
+mod variants;
 
 pub use checker::{PlanCheck, PlanChecker};
 pub use context::{CheckContext, NodeOutput};
 pub use experiments::{Experiment, RunOutcome, StreamRun};
 pub use report::{Finding, Report, Severity, Violation};
+pub use variants::{Variant, VariantKind, VariantRun};

@@ -99,6 +99,41 @@ the checker runs on every node with children before running checks:
 Build plans under test on finite inputs. The checker derives the stalling,
 failing and unbounded variants itself.
 
+### Variant runs
+
+The checks in sections D and E compare a node's output with the output of a
+**variant run** (`Variant`): a rewritten copy of the node, or the node run
+under other settings. The checker runs the variants that enabled checks
+request (`VariantKind`) after it has executed every node normally, so that
+their sizes can depend on the normal outputs:
+
+- Each run executes a fresh `reset_plan_states` copy of the node's subtree to
+  completion, like the normal execution, within the execution timeout.
+- `WithoutFetch` runs the plan returned by `with_fetch(None)`. For a node with
+  a fetch, its output is the **unfetched output** that checks use to judge
+  what the fetch kept. For a node without a fetch, the unfetched output is the
+  normal output.
+- `WithFetch(n)` runs the plan returned by `with_fetch(Some(n))`, and
+  `LimitedInputs(n)` runs the node with every child limited to its first `n`
+  rows per partition, for `n` of 1, 7 and one more than the rows of the
+  node's output (with and without its fetch) and of each child's output. A
+  limit of 0 is not tried, since `LIMIT 0` is replaced by an empty relation
+  during logical optimization and never reaches a physical plan.
+- `BatchSize(n)` runs the node with the session batch size set to 1, 2, 7 and 8192.
+- `BatchLayout(layout)` rebuilds the node with the rows of each partition of
+  its `MockSourceExec` leaves split into one row per batch, into random
+  batches of up to 3 rows with empty batches, and into one batch per
+  partition. The leaves keep the same rows in the same order and partitions,
+  and the same `PlanProperties`, so the rebuilt node keeps its properties.
+
+Rows are compared with the functions in `oracle`: as multisets, in order, and
+as a prefix of a sorted sequence in which rows that tie on the sort key may
+appear in any order and may be exchanged for each other. Floating point
+values are equal when their relative difference is at most `1e-6`
+(`oracle::FLOAT_RELATIVE_TOLERANCE`), since changing batch sizes or batch
+boundaries can change the order in which an operator adds them. Sort keys are
+compared exactly.
+
 ### Terms
 
 - A **single-child** node has exactly one entry in `children()`.
@@ -108,7 +143,11 @@ failing and unbounded variants itself.
   partition**. Only nodes that combine partitions, such as
   `CoalescePartitionsExec` and `SortPreservingMergeExec`, or nodes with one
   output partition, apply a fetch to their whole output. This matches how the
-  `LimitPushdown` optimizer rule uses `with_fetch`.
+  `LimitPushdown` optimizer rule uses `with_fetch`. A fetch does not have to
+  keep `n` rows in every partition that has them: the partitions of a TopK
+  `SortExec` share a threshold and keep only rows that can be among the first
+  `n` of the whole output. Checks require at most `n` rows per partition and
+  at least `min(n, rows)` overall, which is what `LimitPushdown` relies on.
 
 ## A. Static checks
 
@@ -602,31 +641,96 @@ ordering is claimed. Rows that tie on the sort key may appear in any order.
 
 ### D1 `with_fetch_equivalent`
 
-- **Severity:** Invariant.
-- **What:** for `with_fetch(Some(n))`:
-  - `fetch()` returns `Some(n)` on the new plan.
-  - Each partition has at most `n` rows, and the whole output has at most `n`
-    rows for nodes that combine partitions or have one output partition.
-  - The output is a subset of the unfetched output, and a prefix of it when an
-    ordering is claimed.
-  - The schema, partitioning and orderings do not change.
-  - `with_fetch(None)` gives the full output again, and `with_fetch(Some(0))`
-    works.
-- **Why:** `LimitPushdown` replaces limit nodes with fetches and trusts the
-  result.
+- **Severity:** Invariant. Lint when the new plan does not report an ordering
+  the node reports.
+- **Requires execution** (the `WithoutFetch` and `WithFetch` variants).
+- **What:** for a node whose `with_fetch` returns a plan, and fetches `n` of
+  1, 7 and one more than the rows of the node's output:
+  - The plan returned by `with_fetch(Some(n))` reports `fetch() == Some(n)`,
+    the node's schema and the node's number of output partitions. Lint: it
+    does not report an ordering that the node reports.
+  - Each output partition has at most `n` rows, and the whole output has at
+    least `min(n, rows of the unfetched output)` rows. A partition does not
+    have to have `n` rows (see the terms above).
+  - Every row appears in the unfetched output, as a multiset.
+  - Where the node reports an ordering, the output keeps the first rows of
+    the unfetched output, apart from rows that tie on the ordering. With one
+    output partition, the output is a prefix of the unfetched output in this
+    sense. With several, each partition is sorted, and the partitions
+    together contain the first `min(n, rows)` rows of the whole unfetched
+    output in this sense, which is what a `SortPreservingMergeExec` with the
+    same fetch above them needs. Each partition does not have to be a prefix
+    of its own partition: the partitions of a TopK `SortExec` share a
+    threshold and reject rows that tie with it (`topk/mod.rs:606-615`), so a
+    partition can keep rows it saw before another partition set the threshold
+    instead of its own first rows.
+  - The plan returned by `with_fetch(None)` reports `fetch() == None`, the
+    node's schema and number of partitions. For a node without a fetch, it
+    produces the same rows as the node, as a multiset.
+  - For a node with a fetch, the node's own output satisfies the same as the
+    output of `with_fetch(Some(fetch))`.
+- **Unfetched output:** the output of `with_fetch(None)`. For a node with a
+  fetch whose `with_fetch(None)` returns `None`, which rows the unfetched
+  output has is unknown, so only the row counts are checked, with the
+  node's normal output as the lower bound for the number of rows available.
+- **Why:** `LimitPushdown` replaces limit nodes with fetches on the nodes below
+  them and trusts the result. `PushdownSort` moves the fetch of a sort it
+  removes to the input with `with_fetch`, as a per-partition fetch in place
+  of a `LocalLimitExec` (`pushdown_sort.rs:110-117`).
 - **Fix:** apply the fetch after all other work the node does, per output
   partition.
 
 ### D2 `limit_pushdown_equivalent`
 
 - **Severity:** Invariant.
-- **What:** if `supports_limit_pushdown()` is true, running the node with the
-  first `n` rows of every child gives at least `min(n, total)` rows, and those
-  rows are a valid limit of the normal output: a prefix when an ordering is
-  required, and a subset otherwise.
-- **Why:** `LimitPushdown` removes the limit above such a node and places it
-  on every child. If the node drops or reorders rows, the pushed-down limit
-  gives too few or the wrong rows.
+- **Requires execution** (the `WithoutFetch` and `LimitedInputs` variants).
+- **What:** for a node with children for which `supports_limit_pushdown()` is
+  true, the node is rebuilt with every child limited to its first `n` rows
+  per partition, a `GlobalLimitExec` above a child with one partition and a
+  `LocalLimitExec` above any other child, for `n` of 1, 7 and one more
+  than the rows of the node's output and of each child's output. Then:
+
+  - Each output partition has at most `n` rows.
+  - The whole output has at least `min(n, rows of the normal output)` rows.
+  - Every row appears in the normal output, or the unfetched output for a node
+    with a fetch, as a multiset.
+  - Where the node reports an ordering, the output keeps the first rows of
+    the normal output in sort order, as in D1.
+
+  For `CoalescePartitionsExec` and `SortPreservingMergeExec`, only the first
+  `n` rows of each output partition are checked. `GlobalLimitExec` and
+  `LocalLimitExec` are not checked.
+
+- **Why:** this is what `LimitPushdown` (`limit_pushdown.rs`) assumes:
+
+  - Above a node that supports limit pushdown, it removes the limit and
+    limits each child instead, with `with_fetch` on the child where
+    available, and otherwise with a `LocalLimitExec`, or a `GlobalLimitExec`
+    for a child with one partition (`add_limit`). The limit applies to every
+    child at once, so the node must produce a valid limit of its output from
+    limited inputs on all of them. Since the limit above the node is gone, the
+    node must also not produce more than `n` rows per partition: a node with
+    one output partition over several input partitions would produce up to
+    `n` rows from each of them.
+  - `CoalescePartitionsExec` and `SortPreservingMergeExec`
+    (`combines_input_partitions`) keep the limit: the rule gives them a fetch
+    with `with_fetch`, or keeps a limit above them, so only their first `n`
+    rows count. The rule does not limit their children, except for children
+    that support `with_fetch`, so the check limits the children as for any
+    other node.
+  - The rule merges `GlobalLimitExec` and `LocalLimitExec` into the limit it
+    pushes down (`extract_limit`) before it asks whether a node supports limit
+    pushdown, so it never uses their answer. They report true, but a
+    `GlobalLimitExec` with a skip would give wrong rows from limited inputs.
+
+  `sort_pushdown` and `limit_pushdown_past_window` also push a fetch through
+  nodes that support limit pushdown, when their cardinality effect is
+  `Equal`.
+
+- **Not checked:** `LimitPushdown` also pushes an offset: when the limit has a
+  skip, it places `GlobalLimitExec(skip, fetch)` on the children
+  (`add_limit`), so the node must produce rows `skip..skip + fetch` of its
+  output from the same rows of each child.
 - **Fix:** return false from `supports_limit_pushdown`.
 
 ### D3 `projection_swap_equivalent`
@@ -709,19 +813,55 @@ ordering is claimed. Rows that tie on the sort key may appear in any order.
 
 ## E. Results do not depend on configuration or input layout
 
-Each check runs the plan under several settings and requires the same
-results (as a multiset, and in order where an ordering is claimed).
+Each check runs the node under several settings and requires the same
+results: the same multiset of rows overall, and every ordering the node
+reports holding in each partition. Rows may move between partitions and
+change order where no ordering is reported. An ordering that does not hold
+in the normal output is reported by `orderings_hold` (B3) instead. Executing
+the node must not fail under any of the settings.
+
+Some differences are legitimate:
+
+- **Fetch:** which rows a node with a fetch keeps can depend on timing and on
+  batch boundaries, such as how the partitions below a
+  `CoalescePartitionsExec` interleave. For such a node, the output under each
+  setting must be a valid result of the fetch, as in D1: at most `fetch` rows
+  per partition, at least `min(fetch, rows)` overall (which fixes the number
+  of rows of a node with one output partition), rows from the unfetched
+  output, and the first rows in sort order where the node reports an
+  ordering. Without the unfetched output, only the row counts are compared.
+- **Floating point values** are compared with a relative tolerance (see
+  [Variant runs](#variant-runs)).
+- **Attribution:** batch sizes and leaf layouts apply to the whole subtree. A
+  node is only compared under a setting in which every child produced exactly
+  the same rows, in the same order and partitions, as it does normally.
+  Otherwise the node's input changed too: either the child is broken, which
+  is reported on the child, or the child legitimately produced its rows in
+  another order or partition, for example a sort that orders tied rows
+  differently or a repartition that interleaves its inputs differently. A
+  node whose output depends on the order of its input rows can then
+  legitimately differ as well.
+
+**Not checked:** a node above a child whose output changed under a setting is
+not compared under that setting. A node whose output is only defined up to a
+later step can legitimately differ, for example a partial aggregate that
+starts to pass rows through after a number of input rows; allow these checks
+for such a node.
 
 ### E1 `batch_size_invariance`
 
 - **Severity:** Invariant.
+- **Requires execution** (the `BatchSize` and `WithoutFetch` variants).
 - **What:** results are the same with `batch_size` set to 1, 2, 7 and 8192.
 
 ### E2 `batch_boundary_invariance`
 
 - **Severity:** Invariant.
-- **What:** results are the same when the same input rows are split into
-  batches differently, including empty batches.
+- **Requires execution** (the `BatchLayout` and `WithoutFetch` variants).
+- **What:** results are the same when the rows of each partition of the
+  `MockSourceExec` leaves are split into one row per batch, into random
+  batches of up to 3 rows with empty batches, and into one batch per
+  partition. Leaves that are not `MockSourceExec` are left as they are.
 
 ### E3 `partitioning_invariance`
 

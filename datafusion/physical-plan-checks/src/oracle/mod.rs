@@ -16,8 +16,9 @@
 // under the License.
 
 //! Reference implementations that compute the true properties of a set of
-//! batches: their statistics, whether they are sorted, and which hash partition
-//! each row belongs to.
+//! batches: their statistics, whether they are sorted, which hash partition
+//! each row belongs to, and how their rows compare with the rows of another
+//! set of batches.
 //!
 //! Both [`MockSourceExec`] (to validate what it reports) and the execution
 //! checks (to compare a plan's claims against its output) use these, so they
@@ -28,8 +29,13 @@
 
 mod ordering;
 mod partitioning;
+mod rows;
 mod statistics;
 
-pub use ordering::first_unsorted_row;
+pub use ordering::{first_unsorted_row, sort_rows};
 pub use partitioning::{hash_partition, rows_outside_hash_partition};
+pub use rows::{
+    FLOAT_RELATIVE_TOLERANCE, first_non_prefix_row, same_rows, same_rows_in_order,
+    unmatched_rows,
+};
 pub use statistics::exact_statistics;

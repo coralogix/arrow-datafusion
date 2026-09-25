@@ -19,7 +19,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use arrow::array::{RecordBatch, UInt32Array};
-use arrow::compute::take_record_batch;
+use arrow::compute::{concat_batches, take_record_batch};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{
@@ -36,8 +36,11 @@ use datafusion_physical_plan::{
 };
 use futures::stream::BoxStream;
 use futures::{StreamExt, stream};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
-use super::StreamProbe;
+use super::spec::split_rows;
+use super::{BatchLayout, StreamProbe};
 use crate::oracle;
 
 /// How precise the statistics reported by a [`MockSourceExec`] are.
@@ -241,6 +244,29 @@ impl MockSourceExec {
             );
         }
         Ok(self)
+    }
+
+    /// A copy of the source with the rows of each partition split into
+    /// batches according to `layout`, using `seed` for random layouts.
+    ///
+    /// Every partition keeps the same rows in the same order, so the copy
+    /// reports the same properties and statistics. It shares the same
+    /// `PlanProperties`, so plans rebuilt on it can reuse their own
+    /// properties.
+    pub fn with_batch_layout(&self, layout: BatchLayout, seed: u64) -> Result<Self> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let partitions = self
+            .partitions
+            .iter()
+            .map(|batches| {
+                let rows = concat_batches(&self.schema, batches)?;
+                Ok(split_rows(&rows, layout, &mut rng))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            partitions,
+            ..self.clone()
+        })
     }
 
     /// Record what happens to the streams of every partition in `probe`

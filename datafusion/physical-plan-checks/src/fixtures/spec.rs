@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::fmt;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions, UInt64Array};
-use arrow::compute::{SortColumn, concat_batches, lexsort_to_indices, take_record_batch};
+use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::{Result, plan_err};
 use datafusion_physical_expr::{LexOrdering, Partitioning, PhysicalExpr};
@@ -43,6 +44,73 @@ pub enum BatchLayout {
         max_rows: usize,
         empty_batches: bool,
     },
+    /// All rows of a partition in one batch. A partition without rows has no
+    /// batches.
+    Single,
+}
+
+impl fmt::Display for BatchLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BatchLayout::Fixed(1) => write!(f, "batches of 1 row"),
+            BatchLayout::Fixed(rows) => write!(f, "batches of {rows} rows"),
+            BatchLayout::Random {
+                max_rows,
+                empty_batches,
+            } => {
+                write!(f, "random batches of up to {max_rows} rows")?;
+                if *empty_batches {
+                    write!(f, " and empty batches")?;
+                }
+                Ok(())
+            }
+            BatchLayout::Single => write!(f, "one batch per partition"),
+        }
+    }
+}
+
+/// Split the rows of `batch` into batches according to `layout`
+pub(crate) fn split_rows(
+    batch: &RecordBatch,
+    layout: BatchLayout,
+    rng: &mut StdRng,
+) -> Vec<RecordBatch> {
+    let rows = batch.num_rows();
+    let mut batches = vec![];
+    let mut offset = 0;
+    match layout {
+        BatchLayout::Fixed(size) => {
+            let size = size.max(1);
+            while offset < rows {
+                let len = size.min(rows - offset);
+                batches.push(batch.slice(offset, len));
+                offset += len;
+            }
+        }
+        BatchLayout::Random {
+            max_rows,
+            empty_batches,
+        } => {
+            let maybe_empty = |batches: &mut Vec<RecordBatch>, rng: &mut StdRng| {
+                if empty_batches && rng.random_bool(0.2) {
+                    batches.push(batch.slice(0, 0));
+                }
+            };
+            while offset < rows {
+                maybe_empty(&mut batches, rng);
+                let len = rng.random_range(1..=max_rows.max(1)).min(rows - offset);
+                batches.push(batch.slice(offset, len));
+                offset += len;
+            }
+            maybe_empty(&mut batches, rng);
+        }
+        BatchLayout::Single => {
+            if rows > 0 {
+                batches.push(batch.clone());
+            }
+        }
+    }
+    batches
 }
 
 /// How rows are assigned to partitions
@@ -288,7 +356,7 @@ impl SourceSpec {
 
         let partitions = partitions
             .iter()
-            .map(|batch| self.split_batch(batch, &mut rng))
+            .map(|batch| split_rows(batch, self.batch_layout, &mut rng))
             .collect();
 
         let mut source = MockSourceExec::try_new(schema, partitions)?
@@ -326,57 +394,10 @@ impl SourceSpec {
             &options,
         )?)
     }
-
-    /// Split the rows of a partition into batches according to the layout
-    fn split_batch(&self, batch: &RecordBatch, rng: &mut StdRng) -> Vec<RecordBatch> {
-        let rows = batch.num_rows();
-        let mut batches = vec![];
-        let mut offset = 0;
-        match self.batch_layout {
-            BatchLayout::Fixed(size) => {
-                let size = size.max(1);
-                while offset < rows {
-                    let len = size.min(rows - offset);
-                    batches.push(batch.slice(offset, len));
-                    offset += len;
-                }
-            }
-            BatchLayout::Random {
-                max_rows,
-                empty_batches,
-            } => {
-                let maybe_empty = |batches: &mut Vec<RecordBatch>, rng: &mut StdRng| {
-                    if empty_batches && rng.random_bool(0.2) {
-                        batches.push(batch.slice(0, 0));
-                    }
-                };
-                while offset < rows {
-                    maybe_empty(&mut batches, rng);
-                    let len = rng.random_range(1..=max_rows.max(1)).min(rows - offset);
-                    batches.push(batch.slice(offset, len));
-                    offset += len;
-                }
-                maybe_empty(&mut batches, rng);
-            }
-        }
-        batches
-    }
 }
 
 /// Sort the rows of `batch` by `ordering`
 fn sort_batch(batch: &RecordBatch, ordering: &LexOrdering) -> Result<RecordBatch> {
-    let columns = ordering
-        .iter()
-        .map(|sort_expr| {
-            Ok(SortColumn {
-                values: sort_expr
-                    .expr
-                    .evaluate(batch)?
-                    .into_array(batch.num_rows())?,
-                options: Some(sort_expr.options),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let indices = lexsort_to_indices(&columns, None)?;
-    Ok(take_record_batch(batch, &indices)?)
+    let mut sorted = oracle::sort_rows(std::slice::from_ref(batch), ordering)?;
+    Ok(sorted.remove(0))
 }

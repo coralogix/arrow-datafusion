@@ -445,6 +445,27 @@ fn input_observations(
         .collect()
 }
 
+/// Replace each [`MockSourceExec`] leaf of `plan`, including `plan` itself,
+/// by the source `replace` returns for it, if any, and rebuild the nodes above
+/// the replaced leaves with `with_new_children`. A replacement that reports
+/// the same properties as the original lets the rebuilt nodes keep theirs.
+pub(crate) fn map_mock_leaves(
+    plan: &Arc<dyn ExecutionPlan>,
+    mut replace: impl FnMut(&MockSourceExec) -> Result<Option<MockSourceExec>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(Arc::clone(plan)
+        .transform_up(|plan| {
+            let Some(source) = plan.downcast_ref::<MockSourceExec>() else {
+                return Ok(Transformed::no(plan));
+            };
+            Ok(match replace(source)? {
+                Some(source) => Transformed::yes(Arc::new(source) as _),
+                None => Transformed::no(plan),
+            })
+        })?
+        .data)
+}
+
 /// Replace the [`MockSourceExec`] leaves of `plan` by copies with `behavior`.
 /// Leaves without rows are left unchanged for an unbounded behavior. Returns
 /// a probe observing each replaced leaf.
@@ -453,24 +474,18 @@ fn with_leaf_behavior(
     behavior: StreamBehavior,
 ) -> Result<(Arc<dyn ExecutionPlan>, Vec<StreamProbe>)> {
     let mut probes = vec![];
-    let plan = Arc::clone(plan)
-        .transform_up(|plan| {
-            let Some(source) = plan.downcast_ref::<MockSourceExec>() else {
-                return Ok(Transformed::no(plan));
-            };
-            if matches!(behavior, StreamBehavior::Unbounded { .. }) && !source.has_rows()
-            {
-                return Ok(Transformed::no(plan));
-            }
-            let probe = StreamProbe::new();
-            let source = source
-                .clone()
-                .try_with_stream_behavior(behavior)?
-                .with_probe(probe.clone());
-            probes.push(probe);
-            Ok(Transformed::yes(Arc::new(source) as Arc<dyn ExecutionPlan>))
-        })?
-        .data;
+    let plan = map_mock_leaves(plan, |source| {
+        if matches!(behavior, StreamBehavior::Unbounded { .. }) && !source.has_rows() {
+            return Ok(None);
+        }
+        let probe = StreamProbe::new();
+        let source = source
+            .clone()
+            .try_with_stream_behavior(behavior)?
+            .with_probe(probe.clone());
+        probes.push(probe);
+        Ok(Some(source))
+    })?;
     Ok((plan, probes))
 }
 
@@ -825,10 +840,23 @@ pub(crate) fn with_memory_pool(
 /// A copy of `task_context` whose batch size is at most
 /// [`EXPERIMENT_BATCH_SIZE`]
 pub(crate) fn experiment_task_context(task_context: &TaskContext) -> TaskContext {
-    let config = task_context.session_config();
-    let batch_size = config.batch_size().min(EXPERIMENT_BATCH_SIZE);
-    copy_task_context(task_context)
-        .with_session_config(config.clone().with_batch_size(batch_size))
+    let batch_size = task_context
+        .session_config()
+        .batch_size()
+        .min(EXPERIMENT_BATCH_SIZE);
+    with_batch_size(task_context, batch_size)
+}
+
+/// A copy of `task_context` whose batch size is `batch_size`
+pub(crate) fn with_batch_size(
+    task_context: &TaskContext,
+    batch_size: usize,
+) -> TaskContext {
+    let config = task_context
+        .session_config()
+        .clone()
+        .with_batch_size(batch_size);
+    copy_task_context(task_context).with_session_config(config)
 }
 
 fn copy_task_context(task_context: &TaskContext) -> TaskContext {
