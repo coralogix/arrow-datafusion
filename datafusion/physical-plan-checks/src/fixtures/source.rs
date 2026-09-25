@@ -18,19 +18,26 @@
 use std::fmt;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
+use arrow::array::{RecordBatch, UInt32Array};
+use arrow::compute::take_record_batch;
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion_common::tree_node::TreeNodeRecursion;
-use datafusion_common::{Result, Statistics, internal_err, not_impl_err, plan_err};
+use datafusion_common::{
+    Result, Statistics, exec_datafusion_err, internal_err, not_impl_err, plan_err,
+};
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion_physical_plan::coop::make_cooperative;
 use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs,
 };
+use futures::stream::BoxStream;
+use futures::{StreamExt, stream};
 
+use super::StreamProbe;
 use crate::oracle;
 
 /// How precise the statistics reported by a [`MockSourceExec`] are.
@@ -59,6 +66,61 @@ impl StatisticsPrecision {
     }
 }
 
+/// How the streams of a [`MockSourceExec`] behave.
+///
+/// Every behavior serves the same batches in the same order. They differ in
+/// what happens after the batches are served, which lets checks observe how
+/// a plan reacts to inputs that are slow, fail or never end. The source only
+/// reports properties that hold for the behavior; see each variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamBehavior {
+    /// Serve the batches, then end
+    #[default]
+    Finite,
+    /// Serve the first `batches` batches of each partition (all of them if it
+    /// has fewer), then stay pending forever instead of ending. Models a
+    /// bounded source that stops making progress, so the reported properties
+    /// and statistics do not change: they describe the data the stream would
+    /// produce if it finished.
+    PendingAfter(usize),
+    /// Serve the first `batches` batches of each partition (all of them if it
+    /// has fewer), then return an error instead of the next batch or the end,
+    /// and then end. The reported properties and statistics do not change,
+    /// since they describe the output of a successful execution.
+    ErrorAfter(usize),
+    /// Report `Boundedness::Unbounded` and never end. After its batches, a
+    /// partition keeps producing rows: it repeats its batches, or, when the
+    /// source declares an output ordering, repeats its last row so the
+    /// ordering still holds. Partitions without rows end at once. Statistics
+    /// are reported as unknown, since the row count is infinite. Row ids, if
+    /// any, repeat as well.
+    ///
+    /// After `max_rows` rows in a partition, if set, the stream stays pending
+    /// forever. It still never ends, but this bounds the memory that a plan
+    /// buffering the input can use. The stream consumes Tokio task budget, so
+    /// a plan that keeps polling it still yields to the runtime.
+    ///
+    /// A source with no rows at all cannot be unbounded.
+    Unbounded {
+        /// Stay pending after this many rows per partition
+        max_rows: Option<usize>,
+    },
+}
+
+impl fmt::Display for StreamBehavior {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StreamBehavior::Finite => write!(f, "Finite"),
+            StreamBehavior::PendingAfter(batches) => write!(f, "PendingAfter({batches})"),
+            StreamBehavior::ErrorAfter(batches) => write!(f, "ErrorAfter({batches})"),
+            StreamBehavior::Unbounded { max_rows: None } => write!(f, "Unbounded"),
+            StreamBehavior::Unbounded {
+                max_rows: Some(rows),
+            } => write!(f, "Unbounded(max_rows={rows})"),
+        }
+    }
+}
+
 /// A leaf [`ExecutionPlan`] that serves fixed batches and reports properties
 /// that are verified against them.
 ///
@@ -68,6 +130,12 @@ impl StatisticsPrecision {
 ///   rejected unless every partition is sorted by it.
 /// - Hash partitioning set with [`Self::try_with_partitioning`] is rejected
 ///   unless every row is in the partition `RepartitionExec` would send it to.
+/// - [`Self::try_with_stream_behavior`] makes the streams stall, fail or never
+///   end, and adjusts the reported boundedness and statistics to match.
+///
+/// A [`StreamProbe`] attached with [`Self::with_probe`] records what happens
+/// to the streams of every partition, such as how often they are polled and
+/// whether they are dropped. Clones of the source share the probe.
 ///
 /// Because of this, checks that compare a plan with its input can treat what
 /// a `MockSourceExec` reports as correct. Use [`SourceSpec`] to generate the
@@ -81,6 +149,8 @@ pub struct MockSourceExec {
     partitioning: Partitioning,
     output_ordering: Option<LexOrdering>,
     precision: StatisticsPrecision,
+    behavior: StreamBehavior,
+    probe: Option<StreamProbe>,
     /// Exact statistics of all partitions, before `precision` is applied
     exact_statistics: Statistics,
     /// Exact statistics of each partition, before `precision` is applied
@@ -116,7 +186,8 @@ impl MockSourceExec {
             .collect::<Result<Vec<_>>>()?;
         let partitioning = Partitioning::UnknownPartitioning(partitions.len());
         let precision = StatisticsPrecision::Exact;
-        let cache = Self::compute_properties(&schema, &partitioning, None);
+        let behavior = StreamBehavior::Finite;
+        let cache = Self::compute_properties(&schema, &partitioning, None, behavior);
 
         Ok(Self {
             statistics: precision.apply(&schema, &exact_statistics),
@@ -129,22 +200,86 @@ impl MockSourceExec {
             partitioning,
             output_ordering: None,
             precision,
+            behavior,
+            probe: None,
             exact_statistics,
             exact_partition_statistics,
             cache,
         })
     }
 
-    /// Set the precision of the reported statistics
+    /// Set the precision of the reported statistics. An unbounded source
+    /// always reports unknown statistics.
     pub fn with_statistics_precision(mut self, precision: StatisticsPrecision) -> Self {
         self.precision = precision;
+        self.update_statistics();
+        self
+    }
+
+    /// Set how the streams behave after serving their batches.
+    ///
+    /// Returns an error for [`StreamBehavior::Unbounded`] if the source has no
+    /// rows, since it could not produce infinite data.
+    pub fn try_with_stream_behavior(mut self, behavior: StreamBehavior) -> Result<Self> {
+        if matches!(behavior, StreamBehavior::Unbounded { .. })
+            && self.partitions.iter().flatten().all(|b| b.num_rows() == 0)
+        {
+            return plan_err!("an unbounded MockSourceExec needs at least one row");
+        }
+        let boundedness_changed =
+            self.is_unbounded() != matches!(behavior, StreamBehavior::Unbounded { .. });
+        self.behavior = behavior;
+        self.update_statistics();
+        // Keep the same properties when they do not change, so that plans
+        // rebuilt on this source can reuse their own properties
+        if boundedness_changed {
+            self.cache = Self::compute_properties(
+                &self.schema,
+                &self.partitioning,
+                self.output_ordering.as_ref(),
+                behavior,
+            );
+        }
+        Ok(self)
+    }
+
+    /// Record what happens to the streams of every partition in `probe`
+    pub fn with_probe(mut self, probe: StreamProbe) -> Self {
+        self.probe = Some(probe);
+        self
+    }
+
+    /// The probe attached with [`Self::with_probe`], if any
+    pub fn probe(&self) -> Option<&StreamProbe> {
+        self.probe.as_ref()
+    }
+
+    /// How the streams behave after serving their batches
+    pub fn stream_behavior(&self) -> StreamBehavior {
+        self.behavior
+    }
+
+    /// Returns true if the source has at least one row
+    pub fn has_rows(&self) -> bool {
+        self.partitions.iter().flatten().any(|b| b.num_rows() > 0)
+    }
+
+    fn is_unbounded(&self) -> bool {
+        matches!(self.behavior, StreamBehavior::Unbounded { .. })
+    }
+
+    fn update_statistics(&mut self) {
+        let precision = if self.is_unbounded() {
+            StatisticsPrecision::Absent
+        } else {
+            self.precision
+        };
         self.statistics = precision.apply(&self.schema, &self.exact_statistics);
         self.partition_statistics = self
             .exact_partition_statistics
             .iter()
             .map(|stats| precision.apply(&self.schema, stats))
             .collect();
-        self
     }
 
     /// Declare that every partition is sorted by `ordering`.
@@ -163,6 +298,7 @@ impl MockSourceExec {
             &self.schema,
             &self.partitioning,
             self.output_ordering.as_ref(),
+            self.behavior,
         );
         Ok(self)
     }
@@ -206,6 +342,7 @@ impl MockSourceExec {
             &self.schema,
             &partitioning,
             self.output_ordering.as_ref(),
+            self.behavior,
         );
         self.partitioning = partitioning;
         Ok(self)
@@ -220,6 +357,7 @@ impl MockSourceExec {
         schema: &SchemaRef,
         partitioning: &Partitioning,
         output_ordering: Option<&LexOrdering>,
+        behavior: StreamBehavior,
     ) -> Arc<PlanProperties> {
         let eq_properties = match output_ordering {
             Some(ordering) => EquivalenceProperties::new_with_orderings(
@@ -228,12 +366,75 @@ impl MockSourceExec {
             ),
             None => EquivalenceProperties::new(Arc::clone(schema)),
         };
+        let boundedness = match behavior {
+            StreamBehavior::Unbounded { .. } => Boundedness::Unbounded {
+                requires_infinite_memory: false,
+            },
+            _ => Boundedness::Bounded,
+        };
         Arc::new(PlanProperties::new(
             eq_properties,
             partitioning.clone(),
             EmissionType::Incremental,
-            Boundedness::Bounded,
+            boundedness,
         ))
+    }
+
+    /// The batches of `partition`, followed by what `self.behavior` adds
+    fn stream_items(
+        &self,
+        batches: &[RecordBatch],
+    ) -> BoxStream<'static, Result<RecordBatch>> {
+        let partition = batches.to_vec();
+        match self.behavior {
+            StreamBehavior::Finite => stream::iter(partition.into_iter().map(Ok)).boxed(),
+            StreamBehavior::PendingAfter(k) => {
+                stream::iter(partition.into_iter().take(k).map(Ok))
+                    .chain(stream::pending())
+                    .boxed()
+            }
+            StreamBehavior::ErrorAfter(k) => {
+                let served = k.min(partition.len());
+                stream::iter(partition.into_iter().take(k).map(Ok))
+                    .chain(stream::once(async move {
+                        Err(exec_datafusion_err!(
+                            "MockSourceExec injected error after {served} batches"
+                        ))
+                    }))
+                    .boxed()
+            }
+            StreamBehavior::Unbounded { max_rows } => {
+                let Some(last) = partition.iter().rev().find(|b| b.num_rows() > 0) else {
+                    return stream::empty().boxed();
+                };
+                let repeated: Box<dyn Iterator<Item = RecordBatch> + Send> =
+                    if self.output_ordering.is_some() {
+                        // Repeating the last row keeps every partition sorted
+                        let last_row = last.num_rows() as u32 - 1;
+                        let indices = UInt32Array::from(vec![last_row; last.num_rows()]);
+                        match take_record_batch(last, &indices) {
+                            Ok(batch) => Box::new(std::iter::repeat(batch)),
+                            Err(e) => {
+                                return stream::once(async move { Err(e.into()) })
+                                    .boxed();
+                            }
+                        }
+                    } else {
+                        Box::new(partition.clone().into_iter().cycle())
+                    };
+                let max_rows = max_rows.unwrap_or(usize::MAX);
+                let mut served = 0;
+                let batches =
+                    partition.into_iter().chain(repeated).take_while(move |b| {
+                        let more = served < max_rows;
+                        served = served.saturating_add(b.num_rows());
+                        more
+                    });
+                stream::iter(batches.map(Ok))
+                    .chain(stream::pending())
+                    .boxed()
+            }
+        }
     }
 }
 
@@ -254,6 +455,9 @@ impl DisplayAs for MockSourceExec {
                 )?;
                 if let Some(ordering) = &self.output_ordering {
                     write!(f, ", output_ordering=[{ordering}]")?;
+                }
+                if self.behavior != StreamBehavior::Finite {
+                    write!(f, ", stream={}", self.behavior)?;
                 }
                 Ok(())
             }
@@ -316,11 +520,19 @@ impl ExecutionPlan for MockSourceExec {
                 self.partitions.len()
             );
         };
-        let batches = batches.clone().into_iter().map(Ok);
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
+        let stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),
-            futures::stream::iter(batches),
-        )))
+            self.stream_items(batches),
+        ));
+        let stream = if self.is_unbounded() {
+            make_cooperative(stream)
+        } else {
+            stream
+        };
+        Ok(match &self.probe {
+            Some(probe) => probe.observe(partition, stream),
+            None => stream,
+        })
     }
 
     fn statistics_from_inputs(

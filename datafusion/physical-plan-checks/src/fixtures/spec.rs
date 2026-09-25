@@ -27,7 +27,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::values::{ValueOptions, random_array};
-use super::{MockSourceExec, StatisticsPrecision};
+use super::{MockSourceExec, StatisticsPrecision, StreamBehavior};
 use crate::oracle;
 
 /// How the rows of each partition are split into batches
@@ -105,6 +105,7 @@ pub struct SourceSpec {
     values: ValueOptions,
     ordering: Option<LexOrdering>,
     precision: StatisticsPrecision,
+    behavior: StreamBehavior,
     row_id: Option<RowIdColumn>,
     seed: u64,
 }
@@ -112,7 +113,7 @@ pub struct SourceSpec {
 impl SourceSpec {
     /// Create a spec with one partition of 100 rows, random batches of up to 32
     /// rows, 10% nulls in nullable fields, 16 distinct values per column, exact
-    /// statistics and seed 0.
+    /// statistics, finite streams and seed 0.
     pub fn new(schema: SchemaRef) -> Self {
         Self {
             schema,
@@ -127,6 +128,7 @@ impl SourceSpec {
             },
             ordering: None,
             precision: StatisticsPrecision::Exact,
+            behavior: StreamBehavior::Finite,
             row_id: None,
             seed: 0,
         }
@@ -187,13 +189,22 @@ impl SourceSpec {
         self
     }
 
+    /// Set how the streams of the source behave after serving their batches,
+    /// for example to generate an unbounded input. See [`StreamBehavior`].
+    pub fn with_stream_behavior(mut self, behavior: StreamBehavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
     /// Append a non-nullable `UInt64` column named `name` with a unique id for
     /// every row. Ids start at `first_id` and increase by one in the order rows
     /// are produced: through partition 0, then partition 1, and so on.
     ///
     /// Row ids let checks track where an output row came from. Use a different
     /// `first_id` for each input of a plan so that ids do not overlap. The
-    /// source does not declare an ordering on the row id column.
+    /// source does not declare an ordering on the row id column. An unbounded
+    /// source ([`StreamBehavior::Unbounded`]) repeats its rows, and with them
+    /// their ids.
     pub fn with_row_id_column(mut self, name: impl Into<String>, first_id: u64) -> Self {
         self.row_id = Some(RowIdColumn {
             name: name.into(),
@@ -292,7 +303,7 @@ impl SourceSpec {
             source = source
                 .try_with_partitioning(Partitioning::Hash(exprs.clone(), *partitions))?;
         }
-        Ok(source)
+        source.try_with_stream_behavior(self.behavior)
     }
 
     /// Generate the data and build the source as an `Arc<dyn ExecutionPlan>`

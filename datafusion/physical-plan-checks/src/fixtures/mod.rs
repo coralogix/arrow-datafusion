@@ -25,10 +25,17 @@
 //! split into partitions and batches, the value distribution, and the
 //! properties the data must satisfy. It is a plain value, so tests (and, later,
 //! the harness itself) can derive many variations of an input from one spec.
+//!
+//! [`StreamBehavior`] controls what a source's streams do after serving their
+//! batches: end, stall, fail or never end. [`StreamProbe`] records what
+//! happens to a set of streams, such as how often they are polled and when
+//! they are dropped, so that tests can observe how a plan drives its inputs.
 
+mod probe;
 mod source;
 mod spec;
 mod values;
 
-pub use source::{MockSourceExec, StatisticsPrecision};
+pub use probe::{PartitionObservation, StreamProbe};
+pub use source::{MockSourceExec, StatisticsPrecision, StreamBehavior};
 pub use spec::{BatchLayout, SourceSpec};

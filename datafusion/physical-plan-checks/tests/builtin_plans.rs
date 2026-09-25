@@ -93,6 +93,14 @@ fn single_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
     spec().with_partition_rows(&[600]).build_arc()
 }
 
+/// One partition with an exact row count, sorted on `a`
+fn sorted_single_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
+    spec()
+        .with_partition_rows(&[600])
+        .with_ordering(ordering_on_a()?)
+        .build_arc()
+}
+
 #[expect(deprecated)]
 fn coalesce_batches(
     input: Arc<dyn ExecutionPlan>,
@@ -173,6 +181,20 @@ fn builtin_plans() -> Result<Vec<(&'static str, Arc<dyn ExecutionPlan>)>> {
             )),
         ),
         (
+            "SortExec on sorted input",
+            Arc::new(SortExec::new(
+                ordering_on_a()?,
+                sorted_single_partition_source()?,
+            )),
+        ),
+        (
+            "SortExec with fetch on sorted input",
+            Arc::new(
+                SortExec::new(ordering_on_a()?, sorted_single_partition_source()?)
+                    .with_fetch(Some(FETCH)),
+            ),
+        ),
+        (
             "SortExec with preserve_partitioning",
             Arc::new(
                 SortExec::new(ordering_on_a()?, multi_partition_source()?)
@@ -225,6 +247,10 @@ fn builtin_plans() -> Result<Vec<(&'static str, Arc<dyn ExecutionPlan>)>> {
                 5,
                 Some(FETCH),
             )),
+        ),
+        (
+            "GlobalLimitExec without fetch",
+            Arc::new(GlobalLimitExec::new(single_partition_source()?, 5, None)),
         ),
         (
             "LocalLimitExec",

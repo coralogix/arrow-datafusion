@@ -43,20 +43,43 @@ above decide how and how often to execute a plan (for example once per
 configuration for the metamorphic checks in section E).
 
 **Context** (`CheckContext`). Facts about a plan that are gathered once,
-before any check runs. Today this is the output of executing each node. Each
-node runs on a fresh copy of its subtree made with `reset_plan_states`, so
-executions do not affect each other through runtime state such as dynamic
-filters, and the plan under test is never mutated. Later additions belong
-here too: stream traces for the emission and laziness checks, results of
-probing rewrite hooks, and outputs under other configurations.
+before any check runs. Each node runs on a fresh copy of its subtree made with
+`reset_plan_states`, so executions do not affect each other through runtime
+state such as dynamic filters, and the plan under test is never mutated. The
+context holds:
+
+- The output of executing each node to completion, and the memory the
+  execution left reserved (tracked by a pool that wraps the configured one).
+- Stream experiments (`Experiment`, `StreamRun`), for checks that need to see
+  how a node drives its inputs rather than what it outputs. An experiment
+  rebuilds the node with `replace_children_if_necessary`, after replacing the
+  `MockSourceExec` leaves below some children by copies with a different
+  `StreamBehavior` and wrapping each child in a pass-through probe. The probes
+  report the child's own properties, so the rebuilt node keeps the original
+  node's properties unless the leaves change theirs (unbounded leaves do).
+  Observing the direct inputs, rather than the leaves, attributes what is
+  observed to the node itself, so most of these checks need no "skip if a
+  child fails the same way" rule. Each run has a timeout, and experiments on
+  inputs that never end stop as soon as they have seen what the checks need.
+
+A check declares what it needs (`requires_execution`, `experiments`), and the
+checker only gathers the facts that an enabled check needs. Later additions
+belong here too: results of probing rewrite hooks, and outputs under other
+configurations.
 
 **Inputs** (`fixtures/`). `SourceSpec` is a plain, cloneable description of
 an input: schema, partition layout, batch layout, value distribution,
-ordering, statistics precision, row ids and seed. `MockSourceExec` is the
-leaf it builds. The source is the ground truth for every check that compares
-a node with its input, so it never reports anything it has not verified:
-statistics are computed from the data, and declared orderings and hash
-partitioning are checked against it when the source is built.
+ordering, statistics precision, stream behavior, row ids and seed.
+`MockSourceExec` is the leaf it builds. The source is the ground truth for
+every check that compares a node with its input, so it never reports anything
+it has not verified: statistics are computed from the data, and declared
+orderings and hash partitioning are checked against it when the source is
+built. The stream behavior (`StreamBehavior`) controls what the streams do
+after serving their batches: end, stall, fail, or never end. An unbounded
+source reports `Unbounded` and unknown statistics, and repeats its data in a
+way that keeps its declared ordering and partitioning true. A `StreamProbe`
+attached to a source, or wrapped around any stream, records what happens to
+the streams of each partition.
 
 **Oracles** (`oracle/`). Reference computations of the true properties of a
 set of batches: exact statistics, sortedness, hash partition placement. The
@@ -111,7 +134,11 @@ For each factory, the harness would:
      matching section D cases.
 3. **Vary the inputs**: seeds, partition counts including zero and one, batch
    layouts with empty batches, statistics precision, and row id columns with
-   disjoint ranges per input.
+   disjoint ranges per input. Stream behavior is part of the spec so that a
+   factory can also build its plan directly on an unbounded input. That
+   exercises constructors that depend on the boundedness of their inputs,
+   which the checker's experiments, which only rebuild an existing node with
+   `replace_children`, do not.
 4. **Rebuild the plan** for each case with `create` and run the `PlanChecker`.
 5. **Report** each violation with the case that produced it, which is a
    `SourceSpec` per input plus the probe choices, so it can be reproduced.

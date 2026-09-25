@@ -124,6 +124,7 @@ fn timeout_is_reported() {
     let plan = exec.build();
     let report = PlanChecker::with_checks(checks::execution_checks())
         .with_timeout(Duration::from_millis(100))
+        .with_stream_timeout(Duration::from_millis(100))
         .check(&plan)
         .unwrap();
     assert_eq!(

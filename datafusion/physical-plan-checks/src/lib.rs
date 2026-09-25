@@ -41,6 +41,11 @@
 //! whose data, statistics, partitioning and ordering are known to be
 //! consistent.
 //!
+//! Checks that need to see how a node drives its input streams, rather than
+//! what it outputs, read the results of stream [`Experiment`]s: runs of each
+//! node on copies of its inputs that stall, fail or never end, observed with
+//! [`fixtures::StreamProbe`]s.
+//!
 //! See `CHECKS.md` in this crate for the catalog of checks, why each one
 //! matters and how to fix a violation, and `IMPLEMENTATION_STATUS.md` for which
 //! checks are implemented.
@@ -52,10 +57,12 @@
 mod checker;
 pub mod checks;
 mod context;
+mod experiments;
 pub mod fixtures;
 pub mod oracle;
 mod report;
 
 pub use checker::{PlanCheck, PlanChecker};
 pub use context::{CheckContext, NodeOutput};
+pub use experiments::{Experiment, RunOutcome, StreamRun};
 pub use report::{Finding, Report, Severity, Violation};

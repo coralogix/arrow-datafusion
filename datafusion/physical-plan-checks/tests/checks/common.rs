@@ -19,7 +19,7 @@
 //! shared by the tests.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::{RecordBatch, UInt32Array, new_null_array};
 use arrow::compute::{concat_batches, take_record_batch};
@@ -28,9 +28,14 @@ use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{Result, Statistics, internal_err};
 use datafusion_execution::TaskContext;
+use datafusion_execution::memory_pool::MemoryConsumer;
 use datafusion_physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
-use datafusion_physical_plan::execution_plan::{CardinalityEffect, InvariantLevel};
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_physical_plan::execution_plan::{
+    Boundedness, CardinalityEffect, EmissionType, EvaluationType, InvariantLevel,
+};
+use datafusion_physical_plan::stream::{
+    RecordBatchReceiverStream, RecordBatchStreamAdapter,
+};
 use datafusion_physical_plan::{
     ChildStats, ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs,
@@ -102,6 +107,31 @@ impl Transform {
     }
 }
 
+/// What `ConfigurableExec` does when its input returns an error
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnInputError {
+    /// Return the error
+    Propagate,
+    /// Drop the error and continue with the next item
+    Swallow,
+    /// Stay pending forever
+    Hang,
+    /// Panic
+    Panic,
+}
+
+/// Where `ConfigurableExec` keeps its input streams when its output stream is
+/// dropped
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldInput {
+    /// Drop them with the output stream
+    No,
+    /// Keep them in the plan until the plan is dropped
+    InPlan,
+    /// Never drop them
+    Forever,
+}
+
 /// A single-child plan that passes its input through, with knobs to make it
 /// break individual parts of the `ExecutionPlan` contract.
 #[derive(Debug, Clone)]
@@ -131,6 +161,24 @@ pub struct ConfigurableExec {
     pub execute_error: bool,
     /// Return a stream that never produces a batch or ends
     pub hang: bool,
+    /// Overrides the reported boundedness
+    pub boundedness: Option<Boundedness>,
+    /// Overrides the reported emission type
+    pub emission_type: Option<EmissionType>,
+    /// Overrides the reported evaluation type
+    pub evaluation_type: Option<EvaluationType>,
+    /// Buffer all input and emit it when the input ends
+    pub buffer_all: bool,
+    /// Poll the input from a spawned task
+    pub eager: bool,
+    /// Stop after `fetch` rows per partition
+    pub enforce_fetch: bool,
+    /// What to do when the input returns an error
+    pub on_input_error: OnInputError,
+    /// Where to keep input streams when the output stream is dropped
+    pub hold_input: HoldInput,
+    /// Reserve memory in every partition and never release it
+    pub leak_memory: bool,
 }
 
 impl ConfigurableExec {
@@ -150,6 +198,15 @@ impl ConfigurableExec {
             transform: Transform::None,
             execute_error: false,
             hang: false,
+            boundedness: None,
+            emission_type: None,
+            evaluation_type: None,
+            buffer_all: false,
+            eager: false,
+            enforce_fetch: false,
+            on_input_error: OnInputError::Propagate,
+            hold_input: HoldInput::No,
+            leak_memory: false,
         }
     }
 
@@ -180,26 +237,39 @@ impl ConfigurableExec {
 
     pub fn build(self) -> Arc<dyn ExecutionPlan> {
         let cache = self.compute_properties();
-        Arc::new(Built { exec: self, cache })
+        Arc::new(Built {
+            exec: self,
+            cache,
+            held_inputs: HeldInputs::default(),
+        })
     }
 
     fn compute_properties(&self) -> Arc<PlanProperties> {
-        match &self.claimed_ordering {
-            None => Arc::clone(self.input.properties()),
-            Some(ordering) => {
-                let eq_properties = EquivalenceProperties::new_with_orderings(
+        let overridden = self.claimed_ordering.is_some()
+            || self.boundedness.is_some()
+            || self.emission_type.is_some()
+            || self.evaluation_type.is_some();
+        if !overridden {
+            return Arc::clone(self.input.properties());
+        }
+        let mut properties = self.input.properties().as_ref().clone();
+        if let Some(ordering) = &self.claimed_ordering {
+            properties =
+                properties.with_eq_properties(EquivalenceProperties::new_with_orderings(
                     self.input.schema(),
                     [ordering.clone()],
-                );
-                Arc::new(
-                    self.input
-                        .properties()
-                        .as_ref()
-                        .clone()
-                        .with_eq_properties(eq_properties),
-                )
-            }
+                ));
         }
+        if let Some(boundedness) = self.boundedness {
+            properties = properties.with_boundedness(boundedness);
+        }
+        if let Some(emission_type) = self.emission_type {
+            properties = properties.with_emission_type(emission_type);
+        }
+        if let Some(evaluation_type) = self.evaluation_type {
+            properties = properties.with_evaluation_type(evaluation_type);
+        }
+        Arc::new(properties)
     }
 }
 
@@ -208,6 +278,41 @@ impl ConfigurableExec {
 struct Built {
     exec: ConfigurableExec,
     cache: Arc<PlanProperties>,
+    /// Input streams kept for [`HoldInput::InPlan`]
+    held_inputs: HeldInputs,
+}
+
+/// Input streams kept alive by the plan
+#[derive(Clone, Default)]
+struct HeldInputs(Arc<Mutex<Vec<SendableRecordBatchStream>>>);
+
+impl fmt::Debug for HeldInputs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "HeldInputs")
+    }
+}
+
+/// Owns an input stream and keeps it according to a [`HoldInput`] when
+/// dropped
+struct HeldInput {
+    stream: Option<SendableRecordBatchStream>,
+    hold: HoldInput,
+    held_inputs: HeldInputs,
+}
+
+impl Drop for HeldInput {
+    fn drop(&mut self) {
+        let Some(stream) = self.stream.take() else {
+            return;
+        };
+        match self.hold {
+            HoldInput::No => {}
+            HoldInput::InPlan => self.held_inputs.0.lock().unwrap().push(stream),
+            HoldInput::Forever => {
+                Box::leak(Box::new(stream));
+            }
+        }
+    }
 }
 
 impl DisplayAs for Built {
@@ -281,12 +386,86 @@ impl ExecutionPlan for Built {
                 futures::stream::pending(),
             )));
         }
+        if self.exec.leak_memory {
+            let reservation =
+                MemoryConsumer::new(format!("ConfigurableExec[{partition}]"))
+                    .register(context.memory_pool());
+            reservation.grow(1024);
+            Box::leak(Box::new(reservation));
+        }
+        let mut input = self.exec.input.execute(partition, Arc::clone(&context))?;
+        if self.exec.eager {
+            let mut builder = RecordBatchReceiverStream::builder(self.schema(), 2);
+            let tx = builder.tx();
+            builder.spawn(async move {
+                while let Some(item) = input.next().await {
+                    if tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            });
+            input = builder.build();
+        }
+        let mut held = HeldInput {
+            stream: Some(input),
+            hold: self.exec.hold_input,
+            held_inputs: self.held_inputs.clone(),
+        };
+        let on_input_error = self.exec.on_input_error;
+        let mut hung = false;
+        let items = futures::stream::poll_fn(move |cx| {
+            let stream = held.stream.as_mut().expect("input is present until drop");
+            loop {
+                if hung {
+                    return std::task::Poll::Pending;
+                }
+                return match stream.poll_next_unpin(cx) {
+                    std::task::Poll::Ready(Some(Err(e))) => match on_input_error {
+                        OnInputError::Propagate => std::task::Poll::Ready(Some(Err(e))),
+                        OnInputError::Swallow => continue,
+                        OnInputError::Hang => {
+                            hung = true;
+                            continue;
+                        }
+                        OnInputError::Panic => panic!("ConfigurableExec got an error"),
+                    },
+                    poll => poll,
+                };
+            }
+        });
         let transform = self.exec.transform;
-        let stream = self
-            .exec
-            .input
-            .execute(partition, context)?
-            .map(move |batch| transform.apply(batch?));
+        let mut stream = items.map(move |batch| transform.apply(batch?)).boxed();
+        if self.exec.enforce_fetch
+            && let Some(fetch) = self.exec.fetch
+        {
+            // End after `fetch` rows, without polling the input again
+            let mut remaining = fetch;
+            let mut inner = stream;
+            stream = futures::stream::poll_fn(move |cx| {
+                if remaining == 0 {
+                    return std::task::Poll::Ready(None);
+                }
+                match inner.poll_next_unpin(cx) {
+                    std::task::Poll::Ready(Some(Ok(batch))) => {
+                        let rows = batch.num_rows().min(remaining);
+                        remaining -= rows;
+                        std::task::Poll::Ready(Some(Ok(batch.slice(0, rows))))
+                    }
+                    poll => poll,
+                }
+            })
+            .boxed();
+        }
+        if self.exec.buffer_all {
+            let schema = self.schema();
+            stream = futures::stream::once(async move {
+                let batches = stream.collect::<Vec<_>>().await;
+                let batches = batches.into_iter().collect::<Result<Vec<_>>>()?;
+                Ok(concat_batches(&schema, &batches)?)
+            })
+            .boxed();
+        }
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
             stream,
@@ -332,6 +511,12 @@ impl ExecutionPlan for Built {
 
     fn fetch(&self) -> Option<usize> {
         self.exec.fetch
+    }
+
+    fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        let mut exec = self.exec.clone();
+        exec.fetch = fetch;
+        Some(exec.build())
     }
 
     fn cardinality_effect(&self) -> CardinalityEffect {

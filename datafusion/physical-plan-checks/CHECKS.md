@@ -70,6 +70,35 @@ the plan on its own before running checks. Each execution uses a fresh copy of
 the node's subtree made with `reset_plan_states`, so state left behind by one
 execution, such as a dynamic filter, does not affect another.
 
+### Stream experiments
+
+Some checks need to see how a node drives its input streams, which its output
+alone does not show. They request **stream experiments** (`Experiment`), which
+the checker runs on every node with children before running checks:
+
+- The node is rebuilt from a `reset_plan_states` copy of its subtree. The
+  `MockSourceExec` leaves below some or all children are replaced by copies
+  with the same data and a different `StreamBehavior`: they stall after their
+  first batch, return an error after their first batch, or never end. Leaves
+  that are not `MockSourceExec` are left as they are.
+- Every child is wrapped in a pass-through probe that reports the child's own
+  properties, so the rebuilt node computes the same properties as the
+  original (unless the leaves report different properties, as unbounded
+  leaves do). The probe records what the node does with the child's streams:
+  when they are created, polled, finish and are dropped, and which polls
+  happen outside a poll of the node's own output. Because the probes sit
+  directly below the node, what they record is caused by the node, not by its
+  descendants.
+- Experiments use a batch size of at most 8, and every run has a timeout.
+  Runs on finite inputs use the execution timeout (`PlanChecker::with_timeout`,
+  30 seconds by default). Runs on inputs that never end, and waits for streams
+  and memory to be released, use the stream timeout
+  (`PlanChecker::with_stream_timeout`, 2 seconds by default). A violation that
+  shows up as a node never ending is reported after that long.
+
+Build plans under test on finite inputs. The checker derives the stalling,
+failing and unbounded variants itself.
+
 ### Terms
 
 - A **single-child** node has exactly one entry in `children()`.
@@ -409,35 +438,113 @@ what the plan reports.
 
 ### B10 `boundedness_holds`
 
-- **Severity:** Invariant.
-- **What:** a node that reports `Boundedness::Bounded` finishes within a
-  timeout on bounded input. On an unbounded mock input, a node may only
-  report `Bounded` if it has a fetch.
-- **Why:** the optimizer rejects plans that need to see all of an unbounded
-  input, and picks streaming operators based on boundedness.
+- **Severity:** Invariant. Lint when a fetch bounds the output but the node
+  reports `Unbounded`.
+- **Requires execution** (the `UnboundedInput` experiment).
+- **What:** the node is rebuilt with the leaves below one child unbounded, for
+  each child in turn, with the other children unchanged. The unbounded leaves
+  repeat their data without end.
+  - A rebuilt node that reports `Boundedness::Bounded` must end its output
+    within the stream timeout, while the unbounded child reports `Unbounded`
+    and keeps delivering rows. A child that reports `Bounded` is responsible
+    for its own claim, and a child that delivers no rows gives the node no
+    chance to end, so neither case is reported on the node. To bound memory,
+    each partition of an unbounded leaf stalls after 65536 rows. For a node
+    with a fetch, a run in which a leaf reached that limit is inconclusive and
+    not reported, since the node may need more rows to end, for example a
+    limit with a large fetch or offset. Within a finite number of rows, such
+    a node behaves the same as one with no limit at all. A node without a
+    fetch has no reason to need a particular number of rows before it ends,
+    so it is reported either way.
+  - Lint: a rebuilt node that reports `Unbounded`, but has a fetch, otherwise
+    passes every row through (`with_fetch(None)` returns a plan whose
+    cardinality effect is `Equal`), and whose output ended. Such a node ends
+    as soon as `fetch` rows reach it, which is the guarantee `GlobalLimitExec`
+    reports as `Bounded`. A node that can drop rows, such as `FilterExec` with
+    a fetch, is not reported: its output only ends if enough rows survive, so
+    `Unbounded` is the correct report.
+- **Why:** `SanityCheckPlan` rejects operators that need all of an unbounded
+  input, and `EnforceSorting` and `EnforceDistribution` pick streaming
+  operators, based on boundedness. A false `Bounded` lets a plan through that
+  never finishes. A missed `Bounded` rejects plans that would finish, and
+  `LimitPushdown`, which replaces a `GlobalLimitExec` with a fetch on the node
+  below it, can turn a bounded plan into an unbounded one.
 - **Fix:** derive boundedness from the inputs, for example with
-  `boundedness_from_children`.
+  `boundedness_from_children`, and report `Bounded` when a fetch bounds the
+  output of a node that does not drop rows.
+- **Not checked:** that a node finishes within a timeout on bounded input,
+  which `execution_succeeds` (B0) covers. An earlier version of this entry
+  said a node may only report `Bounded` on unbounded input if it has a fetch;
+  that is a heuristic, since a node can also be bounded because it ignores an
+  input, so the check tests the claim directly instead.
 
 ### B11 `emission_type_holds`
 
 - **Severity:** Invariant.
-- **What:** a node that reports `EmissionType::Incremental` or `Both` produces
-  output before its input ends. The check uses a small batch size and a
-  source that produces some batches and then stays pending forever.
+- **Requires execution** (the `UnboundedInput` experiment, and the normal
+  output).
+- **What:** the node is rebuilt with the leaves below one child unbounded, for
+  each child in turn, with the other children unchanged. A rebuilt node that
+  reports `EmissionType::Incremental` must produce at least one row within the
+  stream timeout, while that child keeps delivering rows. Skipped when:
+  - the child reports `Final` or delivered no rows, since the node then has
+    nothing to emit;
+  - the node produced no rows from the normal input, for example a filter that
+    removes every generated row;
+  - the rebuilt node reports `Final` or `Both`.
 - **Why:** streaming queries on unbounded input depend on incremental
-  operators actually emitting output.
+  operators actually emitting output, and optimizer rules such as
+  `SanityCheckPlan` and `JoinSelection` only accept or choose operators on
+  unbounded input when they are not `Final`.
 - **Fix:** report `Final` if the node waits for all input.
+- **Buffering:** an incremental node may buffer up to a batch before it emits
+  one. Experiments use a batch size of at most 8, and each unbounded partition
+  produces up to 65536 rows before it stalls, so a node that buffers up to the
+  session batch size, or up to its own target such as the `target_batch_size`
+  of `CoalesceBatchesExec`, has enough input to emit. A source that serves its
+  data once and then stalls is not enough: a node can legitimately buffer more
+  rows than the generated input has. A node that legitimately needs more than
+  65536 rows per input partition before it emits anything is reported; allow
+  this check for such a node. Runs where the unbounded leaves reached that
+  limit are not skipped, since a node that buffers all of its input always
+  reaches it.
+- **Ordering:** an unbounded source that declares an ordering repeats the last
+  row of each partition instead of its whole data, so the ordering still
+  holds and operators that require it, such as `SortPreservingMergeExec`, see
+  valid input. Partitions without rows end at once, so an operator that
+  combines partitions is not blocked by a partition that would never produce
+  a row.
+- **Several children:** each child is made unbounded on its own, because a
+  node can be incremental in one input only. A hash join emits incrementally
+  on its probe side once its build side has ended, and reports `Final` when
+  the build side is unbounded.
+- **Not checked:** `Both`, since it allows all of the output to come at the
+  end for some inputs (for example a left anti join).
 
 ### B12 `lazy_evaluation_holds`
 
 - **Severity:** Invariant.
-- **What:** with `EvaluationType::Lazy`, calling `execute()` without polling
-  the stream polls no input, and each output poll causes a bounded number of
-  input polls.
-- **Why:** optimizer rules use the evaluation type to reason about which
-  operators drive work ahead of demand.
-- **Fix:** report `EvaluationType::Eager` for nodes that spawn tasks or
-  buffer ahead.
+- **Requires execution** (the `Laziness` experiment).
+- **What:** a node that reports `EvaluationType::Lazy` only polls its input
+  streams from within a poll of its own output streams, on the same thread.
+  Polls from `execute`, from spawned tasks, or from any other task are
+  reported. The experiment polls every output partition to the end on the
+  normal inputs.
+- **Why:** `EnsureCooperative` treats an `Eager` node as the start of a new
+  task that polls its input independently of the consumer, and wraps the
+  leaves below it with `CooperativeExec` unless a cooperative ancestor already
+  covers them. A node that spawns tasks but reports `Lazy` can leave those
+  tasks polling non-cooperative inputs that never yield.
+- **Fix:** report `EvaluationType::Eager` for nodes that spawn tasks or buffer
+  ahead of demand.
+- **Not checked:**
+  - That each output poll causes a bounded number of input polls, as an
+    earlier version of this entry said. A lazy node may legitimately consume
+    all of its input in one poll, as `SortExec` does, so there is no bound to
+    check.
+  - A node that reports `Eager` but is lazy. The only cost is an extra
+    `CooperativeExec`, and some nodes report `Eager` because an input is
+    eager.
 
 ### B13 `cooperative_scheduling_holds`
 
@@ -647,18 +754,50 @@ the spill path.
 
 ### F1 `resources_released`
 
-- **Severity:** Invariant.
-- **What:** after a complete run, the memory pool has no reservations left.
-  Dropping the output stream partway through drops the input streams within
-  a timeout. Spill files are removed.
+- **Severity:** Invariant. Lint when input streams are only released when the
+  plan is dropped.
+- **Requires execution** (the normal execution, and the `Cancellation`
+  experiment).
+- **What:**
+  - After executing the node to completion and dropping its streams and its
+    copy of the plan, the memory reserved during the run is released within
+    the stream timeout. The checker tracks reservations with a memory pool
+    that wraps the configured one. A node whose child also leaves memory
+    reserved is not reported.
+  - The leaves stall after their first batch. The output is polled until each
+    partition produced a batch or ended, or for 20 milliseconds, and then
+    dropped. Every input stream the node created must be dropped within the
+    stream timeout. If they are only dropped once the rebuilt node is dropped
+    as well, that is a lint: the plan keeps the input streams, or the tasks
+    that poll them, alive, for example in shared execution state. If they are
+    still alive after that, it is an invariant violation.
+  - Planned: spill files are removed.
+- **Why:** a query that is cancelled, or whose consumer stops early (for
+  example a limit above the node), must stop reading its inputs and return
+  its memory. Holding them until the plan is dropped keeps sources open and
+  tasks running for as long as the plan is cached.
 - **Fix:** tie spawned tasks and reservations to the stream, for example with
-  `SpawnedTask`.
+  `SpawnedTask`, and do not keep handles to them in the plan.
 
 ### F2 `errors_propagate`
 
 - **Severity:** Invariant.
-- **What:** if an input returns an error at batch `k`, the output stream
-  returns an error. It does not end early without one, hang, or panic.
+- **Requires execution** (the `InputError` experiment).
+- **What:** every leaf returns an error after its first batch. If an error
+  reached the node from one of its inputs, at least one output partition
+  returns an error. The output ending without one, not ending within the
+  execution timeout, or panicking are reported. Skipped when:
+  - no error reached the node, for example because a child swallowed it
+    (reported on the child) or the node stopped reading its input early;
+  - the node has a fetch and an output partition produced `fetch` rows. An
+    eager node can read the error into a buffer while its output is still
+    serving earlier batches, and then correctly end once the fetch is met.
+- **Why:** an operator that drops an error returns partial results as if they
+  were complete.
+- **Fix:** return errors from the input as they arrive, including errors
+  received by spawned tasks.
+- **Not checked:** that every output partition that depends on the failing
+  input returns the error; only one partition has to.
 
 ### F3 `empty_input`
 

@@ -17,7 +17,7 @@
 
 //! [`PlanCheck`] trait and the [`PlanChecker`] that runs checks over a plan.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +27,8 @@ use datafusion_execution::TaskContext;
 use datafusion_physical_plan::ExecutionPlan;
 
 use crate::checks;
-use crate::context::CheckContext;
+use crate::context::{CheckContext, ContextOptions};
+use crate::experiments::Experiment;
 use crate::report::{Finding, Report, Violation};
 
 /// A single property that every [`ExecutionPlan`] node should satisfy.
@@ -40,7 +41,10 @@ use crate::report::{Finding, Report, Violation};
 /// Checks do not execute plans themselves. A check that needs a node's output
 /// returns true from [`Self::requires_execution`], and the [`PlanChecker`]
 /// executes every node of the plan before running checks and makes the output
-/// available through [`CheckContext::output`].
+/// available through [`CheckContext::output`]. A check that needs to observe
+/// how a node drives its input streams lists the [`Experiment`]s it needs in
+/// [`Self::experiments`], and reads their results with
+/// [`CheckContext::stream_runs`].
 ///
 /// See `CHECKS.md` in this crate for the catalog of checks.
 pub trait PlanCheck: Debug + Send + Sync {
@@ -55,6 +59,13 @@ pub trait PlanCheck: Debug + Send + Sync {
     /// [`CheckContext`]
     fn requires_execution(&self) -> bool {
         false
+    }
+
+    /// The stream experiments whose results the check reads from the
+    /// [`CheckContext`]. The [`PlanChecker`] runs each experiment requested by
+    /// an enabled check on every node with children.
+    fn experiments(&self) -> &'static [Experiment] {
+        &[]
     }
 
     /// Check a single node and return any problems found.
@@ -73,9 +84,11 @@ pub trait PlanCheck: Debug + Send + Sync {
 /// Runs a set of [`PlanCheck`]s over every node of an [`ExecutionPlan`] tree.
 ///
 /// If any enabled check requires execution, every node of the plan is executed
-/// first, each on its own, and its output is collected. Plans under test should
+/// first, each on its own, and its output is collected. Stream experiments
+/// requested by enabled checks run on every node too. Plans under test should
 /// therefore be built on inputs that can be executed repeatedly, such as
-/// [`MockSourceExec`].
+/// [`MockSourceExec`]. Experiments that control how inputs behave only change
+/// `MockSourceExec` leaves.
 ///
 /// # Example
 /// ```
@@ -102,6 +115,7 @@ pub struct PlanChecker {
     allowed: HashSet<String>,
     task_context: Arc<TaskContext>,
     timeout: Duration,
+    stream_timeout: Duration,
 }
 
 impl Default for PlanChecker {
@@ -133,6 +147,7 @@ impl PlanChecker {
             allowed: HashSet::new(),
             task_context: Arc::new(TaskContext::default()),
             timeout: Duration::from_secs(30),
+            stream_timeout: Duration::from_secs(2),
         }
     }
 
@@ -156,9 +171,20 @@ impl PlanChecker {
     }
 
     /// Set the time allowed for executing a single node. A node that takes
-    /// longer is reported as failing to execute. Defaults to 30 seconds.
+    /// longer is reported as failing to execute. Stream experiments on finite
+    /// inputs, which should end like a normal execution, use it too. Defaults
+    /// to 30 seconds.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set the time a stream experiment on inputs that never end may take, and
+    /// the time allowed for a node to release streams and memory it no longer
+    /// needs. A node that is expected to end or produce output on such inputs,
+    /// but does not, is reported after this long. Defaults to 2 seconds.
+    pub fn with_stream_timeout(mut self, timeout: Duration) -> Self {
+        self.stream_timeout = timeout;
         self
     }
 
@@ -207,15 +233,25 @@ impl PlanChecker {
     }
 
     fn requires_execution(&self) -> bool {
-        self.active_checks().any(|check| check.requires_execution())
+        self.active_checks()
+            .any(|check| check.requires_execution() || !check.experiments().is_empty())
     }
 
     async fn context(&self, plan: &Arc<dyn ExecutionPlan>) -> CheckContext {
-        if self.requires_execution() {
-            CheckContext::execute(plan, &self.task_context, self.timeout).await
-        } else {
-            CheckContext::default()
+        if !self.requires_execution() {
+            return CheckContext::default();
         }
+        let options = ContextOptions {
+            execute: self.active_checks().any(|check| check.requires_execution()),
+            experiments: self
+                .active_checks()
+                .flat_map(|check| check.experiments().iter().copied())
+                .collect::<BTreeSet<_>>(),
+            task_context: Arc::clone(&self.task_context),
+            timeout: self.timeout,
+            stream_timeout: self.stream_timeout,
+        };
+        CheckContext::gather(plan, &options).await
     }
 
     fn run_checks(

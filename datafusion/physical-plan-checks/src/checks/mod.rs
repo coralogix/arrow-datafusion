@@ -25,19 +25,23 @@ use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext}
 use crate::PlanCheck;
 
 mod cardinality;
+mod lifecycle;
 mod runtime;
 mod statistics;
+mod stream;
 mod structure;
 
 pub use cardinality::{
     CardinalityEffectBoundsNumRows, EqualCardinalityNumRows, FetchBoundsNumRows,
     FetchNotEqualCardinality,
 };
+pub use lifecycle::{ErrorsPropagate, ResourcesReleased};
 pub use runtime::{
     BatchSchema, CardinalityEffectHolds, ExactStatisticsHold, ExecutionSucceeds,
     OrderingsHold,
 };
 pub use statistics::{PartitionStatisticsSum, StatisticsIgnoreInputs, StatisticsShape};
+pub use stream::{BoundednessHolds, EmissionTypeHolds, LazyEvaluationHolds};
 pub use structure::{CheckInvariants, PerChildLengths};
 
 /// All built-in checks, in catalog order
@@ -55,6 +59,11 @@ pub fn execution_checks() -> Vec<Arc<dyn PlanCheck>> {
         Arc::new(ExactStatisticsHold),
         Arc::new(OrderingsHold),
         Arc::new(CardinalityEffectHolds),
+        Arc::new(BoundednessHolds),
+        Arc::new(EmissionTypeHolds),
+        Arc::new(LazyEvaluationHolds),
+        Arc::new(ResourcesReleased),
+        Arc::new(ErrorsPropagate),
     ]
 }
 
