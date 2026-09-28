@@ -28,7 +28,7 @@ use arrow::{array::ArrayRef, datatypes::DataType, datatypes::Field};
 use datafusion_common::ScalarValue;
 use datafusion_common::{Result, internal_err, not_impl_err};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::utils::format_state_name;
+use datafusion_expr::utils::{AggregateOrderSensitivity, format_state_name};
 use datafusion_expr::{
     Accumulator, AggregateUDFImpl, Documentation, GroupsAccumulator, Signature,
     Volatility,
@@ -137,6 +137,10 @@ impl AggregateUDFImpl for Stddev {
         Ok(Box::new(StddevGroupsAccumulator::new(StatsType::Sample)))
     }
 
+    fn order_sensitivity(&self) -> AggregateOrderSensitivity {
+        AggregateOrderSensitivity::Insensitive
+    }
+
     fn documentation(&self) -> Option<&Documentation> {
         self.doc()
     }
@@ -235,6 +239,10 @@ impl AggregateUDFImpl for StddevPop {
         Ok(Box::new(StddevGroupsAccumulator::new(
             StatsType::Population,
         )))
+    }
+
+    fn order_sensitivity(&self) -> AggregateOrderSensitivity {
+        AggregateOrderSensitivity::Insensitive
     }
 
     fn documentation(&self) -> Option<&Documentation> {

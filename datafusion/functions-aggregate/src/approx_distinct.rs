@@ -39,7 +39,7 @@ use datafusion_common::{
     not_impl_err,
 };
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::utils::format_state_name;
+use datafusion_expr::utils::{AggregateOrderSensitivity, format_state_name};
 use datafusion_expr::{
     Accumulator, AggregateUDFImpl, Documentation, EmitTo, GroupsAccumulator, Signature,
     Volatility,
@@ -869,6 +869,10 @@ impl AggregateUDFImpl for ApproxDistinct {
                 "GroupsAccumulator for 'approx_distinct' is not implemented for data type {data_type}"
             )
         }
+    }
+
+    fn order_sensitivity(&self) -> AggregateOrderSensitivity {
+        AggregateOrderSensitivity::Insensitive
     }
 
     fn documentation(&self) -> Option<&Documentation> {
