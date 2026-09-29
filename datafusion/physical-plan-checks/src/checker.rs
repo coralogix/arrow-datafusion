@@ -196,7 +196,9 @@ impl PlanChecker {
     /// Set the time a stream experiment on inputs that never end may take, and
     /// the time allowed for a node to release streams and memory it no longer
     /// needs. A node that is expected to end or produce output on such inputs,
-    /// but does not, is reported after this long. Defaults to 2 seconds.
+    /// but does not, is reported after this long. A wait for streams or memory
+    /// to be released ends early once no task is alive on the Tokio runtime,
+    /// since nothing is left that could release them. Defaults to 2 seconds.
     pub fn with_stream_timeout(mut self, timeout: Duration) -> Self {
         self.stream_timeout = timeout;
         self

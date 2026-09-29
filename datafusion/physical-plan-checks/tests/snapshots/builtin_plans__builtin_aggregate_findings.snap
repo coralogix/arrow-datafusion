@@ -1,0 +1,87 @@
+---
+source: datafusion/physical-plan-checks/tests/builtin_plans.rs
+expression: output
+---
+## AggregateExec Partial and Final without GROUP BY
+    AggregateExec: mode=Final, gby=[], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      CoalescePartitionsExec
+        AggregateExec: mode=Partial, gby=[], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
+no violations
+
+## AggregateExec Partial and Final without GROUP BY, min and max only
+    AggregateExec: mode=Final, gby=[], aggr=[min(v), max(v)]
+      CoalescePartitionsExec
+        AggregateExec: mode=Partial, gby=[], aggr=[min(v), max(v)]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
+no violations
+
+## AggregateExec Partial and Final
+    AggregateExec: mode=Final, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      CoalescePartitionsExec
+        AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
+no violations
+
+## AggregateExec Partial and FinalPartitioned
+    AggregateExec: mode=FinalPartitioned, gby=[g@0 as g, h@1 as h], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      RepartitionExec: partitioning=Hash([g@0, h@1], 3), input_partitions=3
+        AggregateExec: mode=Partial, gby=[g@0 as g, h@1 as h], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
+[lint] F1 resources_released at RepartitionExec (root/0): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+
+## AggregateExec Partial and FinalPartitioned on sorted input
+    AggregateExec: mode=FinalPartitioned, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
+      RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=3, preserve_order=true, sort_exprs=g@0 ASC
+        AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact, output_ordering=[g@0 ASC]
+[lint] F1 resources_released at RepartitionExec (root/0): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+
+## AggregateExec Single
+    AggregateExec: mode=Single, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+no violations
+
+## AggregateExec Single without GROUP BY
+    AggregateExec: mode=Single, gby=[], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+no violations
+
+## AggregateExec Single on sorted input
+    AggregateExec: mode=Single, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[g@0 ASC]
+no violations
+
+## AggregateExec Single on partially sorted input
+    AggregateExec: mode=Single, gby=[h@1 as h, g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=PartiallySorted([1])
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[g@0 ASC]
+no violations
+
+## AggregateExec SinglePartitioned
+    AggregateExec: mode=SinglePartitioned, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      MockSourceExec: partitioning=Hash([g@0], 3), partition_rows=[146, 236, 218], statistics=Exact
+no violations
+
+## AggregateExec Partial and FinalPartitioned with TopK limit
+    AggregateExec: mode=FinalPartitioned, gby=[g@0 as g], aggr=[max(v)], lim=[5]
+      RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=3
+        AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[max(v)], lim=[5]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
+[lint] F1 resources_released at RepartitionExec (root/0): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0): overall statistics report distinct_count Exact(443) for column 'g', but the output has Exact(30) (also 3 more false distinct_count statistics: 'g' in partitions 0-2)
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0): overall statistics report min_value Exact(Int32(2)) for column 'g', but the output has Exact(Int32(8)) (also 2 more false min_value statistics: 'g' in partitions 1, 2)
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0): overall statistics report max_value Exact(Int32(998)) for column 'g', but the output has Exact(Int32(977)) (also 3 more false max_value statistics: 'g' in partitions 0-2)
+
+## AggregateExec Single with DISTINCT limit
+    AggregateExec: mode=Single, gby=[g@0 as g], aggr=[], lim=[5]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+allowed: batch_boundary_invariance
+[invariant] B2 exact_statistics_hold at AggregateExec (root): overall statistics report distinct_count Exact(16) for column 'g', but the output has Exact(10) (also 1 more false distinct_count statistic: 'g' in partition 0)
+
+## AggregateExec Partial and FinalPartitioned with ROLLUP
+    AggregateExec: mode=FinalPartitioned, gby=[g@0 as g, h@1 as h, __grouping_id@2 as __grouping_id], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+      RepartitionExec: partitioning=Hash([g@0, h@1, __grouping_id@2], 3), input_partitions=3
+        AggregateExec: mode=Partial, gby=[(NULL as g, NULL as h), (g@0 as g, NULL as h), (g@0 as g, h@1 as h)], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
+          MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[20, 30, 40], statistics=Exact
+[lint] F1 resources_released at RepartitionExec (root/0): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+[invariant] B8 cardinality_effect_holds at AggregateExec (root/0/0): cardinality_effect() is LowerEqual, but the node produced 182 rows from 90 input rows

@@ -94,7 +94,11 @@ the checker runs on every node with children before running checks:
   30 seconds by default). Runs on inputs that never end, and waits for streams
   and memory to be released, use the stream timeout
   (`PlanChecker::with_stream_timeout`, 2 seconds by default). A violation that
-  shows up as a node never ending is reported after that long.
+  shows up as a node never ending is reported after that long. A wait for
+  streams or memory to be released also ends as soon as no task is alive on
+  the Tokio runtime, since nothing is left that could release them; cleanup
+  on threads outside the runtime, such as `spawn_blocking` tasks, is not
+  waited for then.
 
 Build plans under test on finite inputs. The checker derives the stalling,
 failing and unbounded variants itself.
@@ -396,6 +400,25 @@ what the plan reports.
   `total_byte_size` are not checked. The check should run once with input
   statistics marked exact and once with them marked inexact, to catch nodes
   that turn estimates into exact values.
+- **Attribution:** a node computes its statistics from its children's, so a
+  child with a false exact statistic can make the node's false too, even
+  when the node passes statistics through unchanged, as `RepartitionExec`
+  does. A node with such a child is not reported, since which of its
+  statistics depend on which of the child's is not known; the child is
+  reported instead. A node that makes false claims of its own over such a
+  child is only reported once the child is fixed.
+- **Reporting:** a node has at most one finding per statistic, in the order
+  `num_rows`, `null_count`, `distinct_count`, `min_value`, `max_value`, since
+  one cause, such as column statistics passed through unchanged, usually
+  makes the same statistic false in many columns and partitions. The finding
+  gives the claimed and actual values of the first false one, taking the
+  overall statistics before those of the partitions and columns in schema
+  order, and then counts the others and lists where they are, by column in
+  schema order and then by partition, for example
+  `(also 6 more false null_count statistics: 'l_k' in partitions 0-2; 'r_k' overall and in partitions 0, 2)`.
+  At most four columns, and four partitions or ranges of consecutive
+  partitions per column, are listed; the rest are counted, as in
+  `and 2 more` or `and 4 more in 2 other columns`.
 - **Why:** exact statistics are used to prove things, for example to remove a
   limit or to answer an aggregate without reading data.
 - **Fix:** report `Inexact` for anything that cannot be proven.
@@ -845,7 +868,9 @@ Some differences are legitimate:
 **Not checked:** a node above a child whose output changed under a setting is
 not compared under that setting. A node whose output is only defined up to a
 later step can legitimately differ, for example a partial aggregate that
-starts to pass rows through after a number of input rows; allow these checks
+starts to pass rows through after a number of input rows, or an aggregate
+with a soft `DISTINCT` limit, which stops after the input batch in which it
+has seen enough groups and relies on the `LIMIT` above it; allow these checks
 for such a node.
 
 ### E1 `batch_size_invariance`
@@ -901,13 +926,15 @@ the spill path.
 - **What:**
   - After executing the node to completion and dropping its streams and its
     copy of the plan, the memory reserved during the run is released within
-    the stream timeout. The checker tracks reservations with a memory pool
-    that wraps the configured one. A node whose child also leaves memory
-    reserved is not reported.
+    the stream timeout; the wait ends early once no task is alive on the
+    runtime (see [Stream experiments](#stream-experiments)). The checker tracks
+    reservations with a memory pool that wraps the configured one. A node
+    whose child also leaves memory reserved is not reported.
   - The leaves stall after their first batch. The output is polled until each
     partition produced a batch or ended, or for 20 milliseconds, and then
     dropped. Every input stream the node created must be dropped within the
-    stream timeout. If they are only dropped once the rebuilt node is dropped
+    stream timeout; the wait ends early once no task is alive on the
+    runtime. If they are only dropped once the rebuilt node is dropped
     as well, that is a lint: the plan keeps the input streams, or the tasks
     that poll them, alive, for example in shared execution state. If they are
     still alive after that, it is an invariant violation.

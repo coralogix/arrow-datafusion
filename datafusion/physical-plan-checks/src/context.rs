@@ -31,7 +31,7 @@ use futures::FutureExt;
 
 use crate::experiments::{
     self, Experiment, ExperimentOptions, StreamRun, TrackingPool,
-    experiment_task_context, wait_until, with_memory_pool,
+    experiment_task_context, wait_for_release, with_memory_pool,
 };
 use crate::variants::{self, Variant, VariantKind, VariantOptions, VariantRun};
 
@@ -335,7 +335,7 @@ async fn execute_node(
         Execution::Output(_) => {
             // Spawned tasks can release their reservations shortly after the
             // streams that own them are dropped
-            wait_until(|| pool.tracked() == 0, options.stream_timeout).await;
+            wait_for_release(|| pool.tracked() == 0, options.stream_timeout).await;
             Some(pool.tracked())
         }
         Execution::Failed(_) => None,

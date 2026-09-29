@@ -111,56 +111,86 @@ fn partition_count(plan: &dyn ExecutionPlan) -> usize {
     plan.properties().output_partitioning().partition_count()
 }
 
-/// Problems found in several runs of one node, such as the variant runs of
-/// one kind. Each kind of problem is reported once, for the first run that
-/// has it, naming the other runs that have it too, so that one cause does not
-/// produce a finding per run.
-#[derive(Debug, Default)]
-struct RunProblems {
-    problems: Vec<RunProblem>,
+/// Problems of one node found in several places, such as the variant runs of
+/// one kind, or the statistics of each partition. Each kind of problem is
+/// reported once, with the finding of the first place that has it, followed
+/// by a summary of the other places that have it too, so that one cause does
+/// not produce a finding per place. Kinds are reported in the order they are
+/// first added, and places in the order they are added.
+#[derive(Debug)]
+struct Problems<P> {
+    problems: Vec<Problem<P>>,
 }
 
 #[derive(Debug)]
-struct RunProblem {
+struct Problem<P> {
     kind: &'static str,
-    run: String,
+    place: P,
     finding: Finding,
-    other_runs: Vec<String>,
+    other_places: Vec<P>,
 }
 
-impl RunProblems {
-    /// Record a problem of `kind`, described by `finding`, in the run
-    /// described by `run`
-    fn add(&mut self, kind: &'static str, run: impl Into<String>, finding: Finding) {
-        let run = run.into();
+impl<P> Default for Problems<P> {
+    fn default() -> Self {
+        Self { problems: vec![] }
+    }
+}
+
+impl<P> Problems<P> {
+    /// Record a problem of `kind`, described by `finding`, at `place`. The
+    /// finding is only kept for the first place with a problem of `kind`.
+    fn add(&mut self, kind: &'static str, place: impl Into<P>, finding: Finding) {
+        let place = place.into();
         match self
             .problems
             .iter_mut()
             .find(|problem| problem.kind == kind)
         {
-            Some(problem) => problem.other_runs.push(run),
-            None => self.problems.push(RunProblem {
+            Some(problem) => problem.other_places.push(place),
+            None => self.problems.push(Problem {
                 kind,
-                run,
+                place,
                 finding,
-                other_runs: vec![],
+                other_places: vec![],
             }),
         }
     }
 
-    fn into_findings(self) -> Vec<Finding> {
+    /// One finding per kind of problem, made by `describe` from the finding
+    /// of the first place, that place, and the other places
+    fn into_findings_with(
+        self,
+        mut describe: impl FnMut(&'static str, Finding, P, Vec<P>) -> Finding,
+    ) -> Vec<Finding> {
         self.problems
             .into_iter()
             .map(|problem| {
-                let mut finding = problem.finding;
-                let also = if problem.other_runs.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (also {})", problem.other_runs.join(", "))
-                };
-                finding.message = format!("{}: {}{also}", problem.run, finding.message);
-                finding
+                describe(
+                    problem.kind,
+                    problem.finding,
+                    problem.place,
+                    problem.other_places,
+                )
             })
             .collect()
+    }
+}
+
+/// Problems found in several runs of one node, each described by a label
+type RunProblems = Problems<String>;
+
+impl RunProblems {
+    /// Prefix each finding with its run and name the other runs, as in
+    /// `<first run>: <message> (also <run>, <run>)`
+    fn into_findings(self) -> Vec<Finding> {
+        self.into_findings_with(|_, mut finding, run, other_runs| {
+            let also = if other_runs.is_empty() {
+                String::new()
+            } else {
+                format!(" (also {})", other_runs.join(", "))
+            };
+            finding.message = format!("{run}: {}{also}", finding.message);
+            finding
+        })
     }
 }

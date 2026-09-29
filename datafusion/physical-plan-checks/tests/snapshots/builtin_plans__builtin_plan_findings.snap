@@ -90,8 +90,7 @@ no violations
     SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[100, 200, 300], statistics=Exact
 [invariant] A8 partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10, 10] sum to 30
-[invariant] B2 exact_statistics_hold at SortExec(TopK) (root): overall statistics report num_rows Exact(10), but the output has Exact(20) rows
-[invariant] B2 exact_statistics_hold at SortExec(TopK) (root): partition 2 statistics report num_rows Exact(10), but the output has Exact(0) rows
+[invariant] B2 exact_statistics_hold at SortExec(TopK) (root): overall statistics report num_rows Exact(10), but the output has Exact(20) rows (also 1 more false num_rows statistic: in partition 2)
 
 ## SortPreservingMergeExec
     SortPreservingMergeExec: [a@0 ASC]

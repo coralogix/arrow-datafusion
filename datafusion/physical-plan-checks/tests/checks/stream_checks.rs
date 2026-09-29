@@ -238,6 +238,16 @@ fn input_streams_that_are_never_dropped() {
 }
 
 #[test]
+fn input_streams_released_later_by_a_task_are_clean() {
+    // A spawned task drops the input streams some time after the output
+    // streams are dropped. The checker keeps waiting while a task is alive.
+    let mut exec = ConfigurableExec::new(multi_partition_source());
+    exec.hold_input = HoldInput::InTask;
+    let plan = exec.build();
+    check_with(Arc::new(checks::ResourcesReleased), &plan).assert_clean();
+}
+
+#[test]
 fn memory_that_is_never_released() {
     let mut exec = ConfigurableExec::new(exact_source(10));
     exec.leak_memory = true;

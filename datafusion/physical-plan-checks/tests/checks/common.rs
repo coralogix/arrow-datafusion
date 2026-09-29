@@ -152,6 +152,9 @@ pub enum HoldInput {
     InPlan,
     /// Never drop them
     Forever,
+    /// Drop them from a spawned task, some time after the output stream is
+    /// dropped
+    InTask,
 }
 
 /// A single-child plan that passes its input through, with knobs to make it
@@ -370,6 +373,14 @@ impl Drop for HeldInput {
             HoldInput::InPlan => self.held_inputs.0.lock().unwrap().push(stream),
             HoldInput::Forever => {
                 Box::leak(Box::new(stream));
+            }
+            HoldInput::InTask => {
+                // A detached task, which must outlive the stream that spawns it
+                #[expect(clippy::disallowed_methods)]
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    drop(stream);
+                });
             }
         }
     }

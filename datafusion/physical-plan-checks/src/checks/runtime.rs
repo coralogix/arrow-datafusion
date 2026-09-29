@@ -18,6 +18,7 @@
 //! Checks that compare what a node reports with the output it produces.
 
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -26,7 +27,7 @@ use datafusion_common::{ColumnStatistics, Result, Statistics};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 
-use super::{overall_statistics, partition_statistics};
+use super::{Problems, overall_statistics, partition_statistics};
 use crate::context::NodeOutput;
 use crate::{CheckContext, Finding, PlanCheck, oracle};
 
@@ -201,13 +202,46 @@ impl PlanCheck for BatchSchema {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ExactStatisticsHold;
 
+/// The statistics B2 checks, in the order they are reported
+const STATISTICS: [&str; 5] = [
+    "num_rows",
+    "null_count",
+    "distinct_count",
+    "min_value",
+    "max_value",
+];
+
+/// Most columns named in the summary of a B2 finding
+const MAX_LISTED_COLUMNS: usize = 4;
+
+/// Most partitions, or ranges of consecutive partitions, named for one
+/// column in the summary of a B2 finding
+const MAX_LISTED_PARTITION_RANGES: usize = 4;
+
+/// Where a statistic is reported: for a column, or for the whole row
+/// (`num_rows`), and in the statistics of the whole output or of a partition.
+/// Ordered by column and then partition, with the overall statistics first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StatisticPlace {
+    column: Option<usize>,
+    partition: Option<usize>,
+}
+
+/// An exact statistic that the output contradicts
+#[derive(Debug)]
+struct FalseClaim {
+    statistic: &'static str,
+    place: StatisticPlace,
+    message: String,
+}
+
 impl ExactStatisticsHold {
     fn compare(
-        target: &str,
+        partition: Option<usize>,
         node: &Arc<dyn ExecutionPlan>,
         claimed: &Statistics,
         batches: &[RecordBatch],
-        findings: &mut Vec<Finding>,
+        claims: &mut Vec<FalseClaim>,
     ) -> Result<()> {
         let schema = node.schema();
         // Output that does not match the schema is reported by `batch_schema`
@@ -218,56 +252,100 @@ impl ExactStatisticsHold {
             return Ok(());
         }
         let actual = oracle::exact_statistics(&schema, batches)?;
+        let target = match partition {
+            None => "overall".to_string(),
+            Some(p) => format!("partition {p}"),
+        };
 
         if let Precision::Exact(n) = claimed.num_rows
             && Precision::Exact(n) != actual.num_rows
         {
-            findings.push(Finding::invariant(format!(
-                "{target} statistics report num_rows Exact({n}), but the output has {} \
-                 rows",
-                actual.num_rows
-            )));
+            claims.push(FalseClaim {
+                statistic: "num_rows",
+                place: StatisticPlace {
+                    column: None,
+                    partition,
+                },
+                message: format!(
+                    "{target} statistics report num_rows Exact({n}), but the output \
+                     has {} rows",
+                    actual.num_rows
+                ),
+            });
         }
-        for ((field, claimed), actual) in schema
+        for (i, ((field, claimed), actual)) in schema
             .fields()
             .iter()
             .zip(&claimed.column_statistics)
             .zip(&actual.column_statistics)
+            .enumerate()
         {
-            Self::compare_column(target, field.name(), claimed, actual, findings);
+            let place = StatisticPlace {
+                column: Some(i),
+                partition,
+            };
+            let column = field.name();
+            for (statistic, claimed, actual) in Self::compare_column(claimed, actual) {
+                claims.push(FalseClaim {
+                    statistic,
+                    place,
+                    message: format!(
+                        "{target} statistics report {statistic} {claimed} for column \
+                         '{column}', but the output has {actual}"
+                    ),
+                });
+            }
         }
         Ok(())
     }
 
+    /// Every exact statistic of `node`, overall and for each partition, that
+    /// its output contradicts, in the order: overall and then each
+    /// partition, `num_rows` and then each column. `None` if the node was not
+    /// executed or failed.
+    fn false_claims(
+        node: &Arc<dyn ExecutionPlan>,
+        context: &CheckContext,
+    ) -> Result<Option<Vec<FalseClaim>>> {
+        let Some(output) = context.output(node) else {
+            return Ok(None);
+        };
+        let mut claims = vec![];
+        // Errors computing statistics are reported by `statistics_shape`
+        if let Ok(claimed) = overall_statistics(node.as_ref()) {
+            let batches: Vec<RecordBatch> = output.batches().cloned().collect();
+            Self::compare(None, node, &claimed, &batches, &mut claims)?;
+        }
+        for (p, batches) in output.partitions().iter().enumerate() {
+            if let Ok(claimed) = partition_statistics(node.as_ref(), p) {
+                Self::compare(Some(p), node, &claimed, batches, &mut claims)?;
+            }
+        }
+        Ok(Some(claims))
+    }
+
+    /// The name, claimed value and actual value of each exact column
+    /// statistic in `claimed` that `actual` contradicts
     fn compare_column(
-        target: &str,
-        column: &str,
         claimed: &ColumnStatistics,
         actual: &ColumnStatistics,
-        findings: &mut Vec<Finding>,
-    ) {
-        let mut mismatch = |statistic: &str, claimed: String, actual: String| {
-            findings.push(Finding::invariant(format!(
-                "{target} statistics report {statistic} {claimed} for column '{column}', \
-                 but the output has {actual}"
-            )));
+    ) -> Vec<(&'static str, String, String)> {
+        let mut mismatches = vec![];
+        let mut mismatch = |statistic, claimed: &dyn Display, actual: &dyn Display| {
+            mismatches.push((statistic, claimed.to_string(), actual.to_string()));
         };
         if claimed.null_count.is_exact() == Some(true)
             && claimed.null_count != actual.null_count
         {
-            mismatch(
-                "null_count",
-                format!("{}", claimed.null_count),
-                format!("{}", actual.null_count),
-            );
+            mismatch("null_count", &claimed.null_count, &actual.null_count);
         }
         if claimed.distinct_count.is_exact() == Some(true)
             && claimed.distinct_count != actual.distinct_count
         {
             mismatch(
                 "distinct_count",
-                format!("{}", claimed.distinct_count),
-                format!("{}", actual.distinct_count),
+                &claimed.distinct_count,
+                &actual.distinct_count,
             );
         }
         // The output has no minimum or maximum when it has no non-null values,
@@ -276,23 +354,143 @@ impl ExactStatisticsHold {
             && actual.min_value.is_exact() == Some(true)
             && claimed.min_value != actual.min_value
         {
-            mismatch(
-                "min_value",
-                format!("{}", claimed.min_value),
-                format!("{}", actual.min_value),
-            );
+            mismatch("min_value", &claimed.min_value, &actual.min_value);
         }
         if claimed.max_value.is_exact() == Some(true)
             && actual.max_value.is_exact() == Some(true)
             && claimed.max_value != actual.max_value
         {
-            mismatch(
-                "max_value",
-                format!("{}", claimed.max_value),
-                format!("{}", actual.max_value),
+            mismatch("max_value", &claimed.max_value, &actual.max_value);
+        }
+        mismatches
+    }
+
+    /// One finding per statistic, in the order of [`STATISTICS`]. Each keeps
+    /// the message of the first false claim, overall before the partitions
+    /// and in column order, and summarizes the others.
+    fn group(node: &Arc<dyn ExecutionPlan>, mut claims: Vec<FalseClaim>) -> Vec<Finding> {
+        // A stable sort keeps the order of places within each statistic
+        claims.sort_by_key(|claim| {
+            STATISTICS
+                .iter()
+                .position(|statistic| *statistic == claim.statistic)
+        });
+        let mut problems = Problems::<StatisticPlace>::default();
+        for claim in claims {
+            problems.add(
+                claim.statistic,
+                claim.place,
+                Finding::invariant(claim.message),
             );
         }
+        let schema = node.schema();
+        problems.into_findings_with(|statistic, mut finding, _, others| {
+            if !others.is_empty() {
+                let column_name = |i: usize| schema.field(i).name().as_str();
+                finding.message = format!(
+                    "{} (also {} more false {statistic} {}: {})",
+                    finding.message,
+                    others.len(),
+                    plural(others.len(), "statistic", "statistics"),
+                    summarize_places(others, column_name)
+                );
+            }
+            finding
+        })
     }
+}
+
+/// Summarize `places` by column, in column order, and then by partition, as
+/// in `'a' in partitions 0-2; 'b' overall and in partition 1`. At most
+/// [`MAX_LISTED_COLUMNS`] columns are named, followed by how many places are
+/// in the other columns.
+fn summarize_places<'a>(
+    mut places: Vec<StatisticPlace>,
+    column_name: impl Fn(usize) -> &'a str,
+) -> String {
+    places.sort();
+    let mut by_column: Vec<(Option<usize>, Vec<Option<usize>>)> = vec![];
+    for place in places {
+        match by_column.last_mut() {
+            Some((column, partitions)) if *column == place.column => {
+                partitions.push(place.partition)
+            }
+            _ => by_column.push((place.column, vec![place.partition])),
+        }
+    }
+    let mut parts: Vec<String> = by_column
+        .iter()
+        .take(MAX_LISTED_COLUMNS)
+        .map(|(column, partitions)| {
+            let targets = summarize_targets(partitions);
+            match column {
+                Some(i) => format!("'{}' {targets}", column_name(*i)),
+                None => targets,
+            }
+        })
+        .collect();
+    let unlisted = &by_column[by_column.len().min(MAX_LISTED_COLUMNS)..];
+    if !unlisted.is_empty() {
+        let count: usize = unlisted
+            .iter()
+            .map(|(_, partitions)| partitions.len())
+            .sum();
+        parts.push(format!(
+            "and {count} more in {} other {}",
+            unlisted.len(),
+            plural(unlisted.len(), "column", "columns")
+        ));
+    }
+    parts.join("; ")
+}
+
+/// Describe sorted targets, `None` for the overall statistics, as in
+/// `overall and in partitions 0-2, 5`. At most
+/// [`MAX_LISTED_PARTITION_RANGES`] partitions or ranges of consecutive
+/// partitions are named, followed by how many other partitions there are.
+fn summarize_targets(targets: &[Option<usize>]) -> String {
+    let overall = targets.contains(&None);
+    let partitions: Vec<usize> = targets.iter().flatten().copied().collect();
+    if partitions.is_empty() {
+        return "overall".to_string();
+    }
+    let mut ranges: Vec<(usize, usize)> = vec![];
+    for &p in &partitions {
+        match ranges.last_mut() {
+            Some((_, end)) if *end + 1 == p => *end = p,
+            _ => ranges.push((p, p)),
+        }
+    }
+    let listed: Vec<String> = ranges
+        .iter()
+        .take(MAX_LISTED_PARTITION_RANGES)
+        .map(|&(start, end)| match end - start {
+            0 => format!("{start}"),
+            1 => format!("{start}, {end}"),
+            _ => format!("{start}-{end}"),
+        })
+        .collect();
+    let unlisted: usize = ranges
+        .iter()
+        .skip(MAX_LISTED_PARTITION_RANGES)
+        .map(|(start, end)| end - start + 1)
+        .sum();
+    let overall = if overall { "overall and " } else { "" };
+    let more = if unlisted > 0 {
+        format!(" and {unlisted} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "{overall}in {} {}{more}",
+        plural(partitions.len(), "partition", "partitions"),
+        listed.join(", ")
+    )
+}
+
+/// `one` if `n` is 1, `many` otherwise
+fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
 }
 
 impl PlanCheck for ExactStatisticsHold {
@@ -313,22 +511,25 @@ impl PlanCheck for ExactStatisticsHold {
         node: &Arc<dyn ExecutionPlan>,
         context: &CheckContext,
     ) -> Result<Vec<Finding>> {
-        let Some(output) = context.output(node) else {
+        let Some(claims) = Self::false_claims(node, context)? else {
             return Ok(vec![]);
         };
-        let mut findings = vec![];
-        // Errors computing statistics are reported by `statistics_shape`
-        if let Ok(claimed) = overall_statistics(node.as_ref()) {
-            let batches: Vec<RecordBatch> = output.batches().cloned().collect();
-            Self::compare("overall", node, &claimed, &batches, &mut findings)?;
+        if claims.is_empty() {
+            return Ok(vec![]);
         }
-        for (p, batches) in output.partitions().iter().enumerate() {
-            if let Ok(claimed) = partition_statistics(node.as_ref(), p) {
-                let target = format!("partition {p}");
-                Self::compare(&target, node, &claimed, batches, &mut findings)?;
+        // A node computes its statistics from its children's, so a child
+        // with a false exact statistic can make the node's false too, even
+        // for a node that passes statistics through unchanged, such as a
+        // repartition. Report it on the child. Which of the node's
+        // statistics depend on which of the child's is not known, so the
+        // node is not reported at all.
+        for child in node.children() {
+            if Self::false_claims(child, context)?.is_some_and(|child| !child.is_empty())
+            {
+                return Ok(vec![]);
             }
         }
-        Ok(findings)
+        Ok(Self::group(node, claims))
     }
 }
 

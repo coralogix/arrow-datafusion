@@ -18,17 +18,22 @@
 //! Tests that each execution check reports deliberately broken plans and
 //! stays quiet for correct ones.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_common::stats::Precision;
+use datafusion_execution::TaskContext;
 use datafusion_physical_expr::expressions::col;
 use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::{
+    ExecutionPlan, StatisticsArgs, StatisticsContext, collect_partitioned,
+};
 use datafusion_physical_plan_checks::fixtures::{
     BatchLayout, SourceSpec, StatisticsPrecision,
 };
-use datafusion_physical_plan_checks::{PlanChecker, Report, Severity, checks};
+use datafusion_physical_plan_checks::{PlanChecker, Report, Severity, checks, oracle};
 
 use crate::common::{
     ConfigurableExec, Effect, Transform, exact_source, inexact_source, schema, source,
@@ -180,13 +185,16 @@ fn exact_num_rows_that_is_false() {
     let plan = ConfigurableExec::new(exact_source(100))
         .num_rows(Precision::Exact(50))
         .build();
-    // Overall and partition 0
+    // One finding for the overall statistics and partition 0
+    let report = check(&plan);
     assert_eq!(
-        summary(&check(&plan)),
-        vec![
-            (Severity::Invariant, "exact_statistics_hold"),
-            (Severity::Invariant, "exact_statistics_hold"),
-        ]
+        summary(&report),
+        vec![(Severity::Invariant, "exact_statistics_hold")]
+    );
+    assert_eq!(
+        report.violations()[0].message,
+        "overall statistics report num_rows Exact(50), but the output has Exact(100) \
+         rows (also 1 more false num_rows statistic: in partition 0)"
     );
 }
 
@@ -212,6 +220,195 @@ fn exact_column_statistics_that_are_false() {
             .violations()
             .iter()
             .any(|v| v.message.contains("num_rows Exact(100)")),
+        "{report}"
+    );
+}
+
+/// The number of false exact statistics of `plan` of each kind, overall and
+/// for each partition, counted independently of `exact_statistics_hold`
+async fn count_false_statistics(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> BTreeMap<&'static str, usize> {
+    let outputs = collect_partitioned(Arc::clone(plan), Arc::new(TaskContext::default()))
+        .await
+        .unwrap();
+    let mut targets = vec![(None, outputs.concat())];
+    targets.extend(outputs.into_iter().enumerate().map(|(p, b)| (Some(p), b)));
+    let mut counts = BTreeMap::new();
+    for (partition, batches) in targets {
+        let args = StatisticsArgs::new().with_partition(partition);
+        let claimed = StatisticsContext::new()
+            .compute(plan.as_ref(), &args)
+            .unwrap();
+        let actual = oracle::exact_statistics(&plan.schema(), &batches).unwrap();
+        let mut count = |statistic, claimed_exact, contradicted| {
+            if claimed_exact && contradicted {
+                *counts.entry(statistic).or_insert(0) += 1;
+            }
+        };
+        count(
+            "num_rows",
+            claimed.num_rows.is_exact() == Some(true),
+            claimed.num_rows != actual.num_rows,
+        );
+        for (claimed, actual) in claimed
+            .column_statistics
+            .iter()
+            .zip(&actual.column_statistics)
+        {
+            count(
+                "null_count",
+                claimed.null_count.is_exact() == Some(true),
+                claimed.null_count != actual.null_count,
+            );
+            count(
+                "distinct_count",
+                claimed.distinct_count.is_exact() == Some(true),
+                claimed.distinct_count != actual.distinct_count,
+            );
+            count(
+                "min_value",
+                claimed.min_value.is_exact() == Some(true),
+                actual.min_value.is_exact() == Some(true)
+                    && claimed.min_value != actual.min_value,
+            );
+            count(
+                "max_value",
+                claimed.max_value.is_exact() == Some(true),
+                actual.max_value.is_exact() == Some(true)
+                    && claimed.max_value != actual.max_value,
+            );
+        }
+    }
+    counts
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn false_exact_statistics_are_grouped_by_statistic() {
+    // Several columns and partitions, every other one empty, whose statistics
+    // are passed through while half of the rows are dropped. Most statistics
+    // become false in most columns and non-empty partitions.
+    let schema = Arc::new(Schema::new(
+        ["a", "b", "c", "d", "e", "f"]
+            .map(|name| Field::new(name, DataType::Int32, true))
+            .to_vec(),
+    ));
+    let input = SourceSpec::new(schema)
+        .with_partition_rows(&[40, 0, 40, 0, 40, 0, 40, 0, 40, 0, 40])
+        .with_distinct_values(30)
+        .with_row_id_column("id", 0)
+        .build_arc()
+        .unwrap();
+    let plan = ConfigurableExec::new(input)
+        .effect(Effect::LowerEqual)
+        .transform(Transform::DropHalf)
+        .build();
+    let report = PlanChecker::with_checks(vec![Arc::new(checks::ExactStatisticsHold)])
+        .check_async(&plan)
+        .await
+        .unwrap();
+
+    // One finding per kind of false statistic, in catalog order, that keeps
+    // the first false statistic and summarizes the others by column and
+    // partition
+    let messages: Vec<&str> = report
+        .violations()
+        .iter()
+        .map(|v| {
+            assert_eq!(v.severity, Severity::Invariant);
+            assert!(v.path.is_empty());
+            v.message.as_str()
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "overall statistics report num_rows Exact(240), but the output has \
+             Exact(116) rows (also 6 more false num_rows statistics: in partitions 0, \
+             2, 4, 6 and 2 more)",
+            "overall statistics report null_count Exact(23) for column 'a', but the \
+             output has Exact(12) (also 37 more false null_count statistics: 'a' in \
+             partitions 0, 2, 6, 8 and 1 more; 'b' overall and in partitions 0, 2, 4, \
+             6 and 2 more; 'c' overall and in partitions 0, 2, 4, 6 and 1 more; 'd' \
+             overall and in partitions 0, 2, 6, 8 and 1 more; and 13 more in 2 other \
+             columns)",
+            "overall statistics report distinct_count Exact(30) for column 'a', but \
+             the output has Exact(29) (also 45 more false distinct_count statistics: \
+             'a' in partitions 0, 2, 4, 6 and 2 more; 'b' overall and in partitions \
+             0, 2, 4, 6 and 2 more; 'c' in partitions 0, 2, 4, 6 and 2 more; 'd' \
+             overall and in partitions 0, 2, 4, 6 and 2 more; and 19 more in 3 other \
+             columns)",
+            "partition 0 statistics report min_value Exact(Int32(0)) for column 'a', \
+             but the output has Exact(Int32(1)) (also 19 more false min_value \
+             statistics: 'a' in partitions 2, 4, 6; 'b' in partitions 0, 2; 'c' in \
+             partitions 2, 4; 'd' in partitions 0, 4, 8; and 9 more in 3 other \
+             columns)",
+            "overall statistics report max_value Exact(UInt64(239)) for column 'id', \
+             but the output has Exact(UInt64(237)) (also 19 more false max_value \
+             statistics: 'a' in partitions 2, 4; 'b' in partition 8; 'c' in partition \
+             10; 'd' in partitions 2, 4, 6; and 12 more in 3 other columns)",
+        ],
+        "{report}"
+    );
+
+    // Every false statistic is represented: the example and the others that
+    // the summary counts add up to the number of false statistics of each
+    // kind
+    let expected = count_false_statistics(&plan).await;
+    let mut reported = BTreeMap::new();
+    for message in messages {
+        let statistic = [
+            "num_rows",
+            "null_count",
+            "distinct_count",
+            "min_value",
+            "max_value",
+        ]
+        .into_iter()
+        .find(|statistic| message.contains(&format!("report {statistic} ")))
+        .unwrap();
+        let others = message.split_once(" (also ").map_or(0, |(_, also)| {
+            also.split_once(' ').unwrap().0.parse::<usize>().unwrap()
+        });
+        assert!(
+            reported.insert(statistic, 1 + others).is_none(),
+            "{message}"
+        );
+    }
+    assert_eq!(reported, expected);
+}
+
+#[test]
+fn false_exact_statistics_are_reported_on_the_node_that_makes_them() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        PlanChecker::with_checks(vec![Arc::new(checks::ExactStatisticsHold)])
+            .check(plan)
+            .unwrap()
+    };
+    // A parent that passes statistics through unchanged, as a repartition
+    // does, inherits the false row count of its child. It is only reported
+    // on the child, in one finding for the overall statistics and partition 0.
+    let lying = ConfigurableExec::new(exact_source(100))
+        .num_rows(Precision::Exact(50))
+        .build();
+    let parent = ConfigurableExec::new(lying).build();
+    let report = check(&parent);
+    assert_eq!(report.violations().len(), 1, "{report}");
+    assert!(
+        report.violations().iter().all(|v| v.path == vec![0]),
+        "{report}"
+    );
+
+    // A node that makes a false claim over a child whose statistics hold is
+    // reported, also when the child is not a source
+    let correct = ConfigurableExec::new(exact_source(100)).build();
+    let lying = ConfigurableExec::new(correct)
+        .num_rows(Precision::Exact(50))
+        .build();
+    let report = check(&lying);
+    assert_eq!(report.violations().len(), 1, "{report}");
+    assert!(
+        report.violations().iter().all(|v| v.path.is_empty()),
         "{report}"
     );
 }

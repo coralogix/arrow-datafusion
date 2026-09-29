@@ -547,14 +547,14 @@ async fn cancellation(
     drop(streams);
 
     let alive = |probes: &[StreamProbe]| probes.iter().any(|p| p.streams_alive() > 0);
-    wait_until(|| !alive(&instrumented.inputs), options.stream_timeout).await;
+    wait_for_release(|| !alive(&instrumented.inputs), options.stream_timeout).await;
     let mut run = instrumented.run(None, outcome);
     if alive(&instrumented.inputs) {
         let Instrumented { plan, inputs, .. } = instrumented;
         let children: Vec<Arc<dyn ExecutionPlan>> =
             plan.children().into_iter().cloned().collect();
         drop(plan);
-        wait_until(|| !alive(&inputs), options.stream_timeout).await;
+        wait_for_release(|| !alive(&inputs), options.stream_timeout).await;
         run.inputs_after_plan_dropped = Some(
             children
                 .iter()
@@ -570,10 +570,25 @@ async fn cancellation(
     Some(run)
 }
 
-/// Wait until `done` returns true, or `timeout` elapses
-pub(crate) async fn wait_until(done: impl Fn() -> bool, timeout: Duration) {
+/// Wait until `released` returns true, for example once streams or memory a
+/// node no longer needs are released, or until `timeout` elapses.
+///
+/// Such resources are released either synchronously, when what owns them is
+/// dropped, or later by code running in a task, such as a spawned task that
+/// notices that its receiver was dropped, or an aborted task that the runtime
+/// drops. Once no task is alive on the current Tokio runtime, nothing is left
+/// that could release them, so the wait ends early instead of taking the
+/// whole timeout. Tokio drops a task's future before it stops counting the
+/// task as alive. Work on threads outside the runtime, including
+/// `spawn_blocking` tasks, which Tokio does not count, is not waited for once
+/// no task is alive.
+pub(crate) async fn wait_for_release(released: impl Fn() -> bool, timeout: Duration) {
+    let runtime = tokio::runtime::Handle::current();
     let start = Instant::now();
-    while !done() && start.elapsed() < timeout {
+    while !released()
+        && start.elapsed() < timeout
+        && runtime.metrics().num_alive_tasks() > 0
+    {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }

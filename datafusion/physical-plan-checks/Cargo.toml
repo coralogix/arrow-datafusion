@@ -47,5 +47,7 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
+datafusion-expr = { workspace = true }
+datafusion-functions-aggregate = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
