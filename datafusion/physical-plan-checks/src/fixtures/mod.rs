@@ -23,8 +23,10 @@
 //!
 //! [`SourceSpec`] describes a source to generate: its schema, how its rows are
 //! split into partitions and batches, the value distribution, and the
-//! properties the data must satisfy. It is a plain value, so tests (and, later,
-//! the harness itself) can derive many variations of an input from one spec.
+//! properties the data must satisfy. It is a plain value, so tests and the
+//! [`harness`] can derive many variations of an input from one spec.
+//!
+//! [`harness`]: crate::harness
 //!
 //! [`StreamBehavior`] controls what a source's streams do after serving their
 //! batches: end, stall, fail or never end. [`StreamProbe`] records what

@@ -29,6 +29,36 @@ that reports something false can lead to wrong results or missed
 optimizations. The checks run against the plans defined in DataFusion and can
 be used to test your own plans.
 
+Describe how to build your plan from its inputs, and let the harness do the
+rest:
+
+```rust
+use datafusion_physical_plan_checks::fixtures::SourceSpec;
+use datafusion_physical_plan_checks::harness::{PlanFactory, PlanHarness};
+
+// One base spec per input: its schema, value distribution and size
+let factory = PlanFactory::new("MyExec", vec![SourceSpec::new(schema)], |inputs| {
+    let input = Arc::clone(&inputs[0]);
+    // Bind expressions to the input's schema by name: the harness adds a
+    // row id column to every input
+    let key = col("a", &input.schema())?;
+    Ok(Arc::new(MyExec::try_new(key, input)?) as Arc<dyn ExecutionPlan>)
+});
+
+let report = PlanHarness::new().check(&factory)?;
+report.assert_no_invariant_violations();
+```
+
+The harness generates the inputs, sorts, hash partitions or merges them into
+one partition as the plan requires, and checks the plan on several cases:
+several partitions with an empty one, a single partition, inexact and absent
+statistics, and empty input. The report groups the findings of all cases and
+names the cases each one occurred in, and any case can be rerun on its own
+with `PlanHarness::run_case`.
+
+To check a plan built by hand, use `PlanChecker` on inputs generated with
+`SourceSpec`:
+
 ```rust
 use datafusion_physical_plan_checks::PlanChecker;
 use datafusion_physical_plan_checks::fixtures::SourceSpec;
@@ -47,8 +77,8 @@ report.assert_no_invariant_violations();
   violation.
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) tracks which checks are
   implemented, and the violations currently found in DataFusion's own plans.
-- [DESIGN.md](DESIGN.md) describes how the crate is structured and where it is
-  heading.
+- [DESIGN.md](DESIGN.md) describes how the crate is structured, including the
+  harness, and where it is heading.
 
 [apache arrow]: https://arrow.apache.org/
 [apache datafusion]: https://datafusion.apache.org/

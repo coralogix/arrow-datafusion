@@ -36,6 +36,10 @@ workspace = true
 [lib]
 name = "datafusion_physical_plan_checks"
 
+[features]
+# Run the built-in audit on `Profile::extended`, with its own snapshots
+extended_tests = []
+
 [dependencies]
 arrow = { workspace = true }
 datafusion-common = { workspace = true, default-features = true }

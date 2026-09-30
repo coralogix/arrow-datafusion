@@ -8,6 +8,11 @@ expression: output
   case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Final, gby=[], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       CoalescePartitionsExec
@@ -22,6 +27,11 @@ expression: output
   case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Final, gby=[], aggr=[min(v), max(v)]
       CoalescePartitionsExec
@@ -36,6 +46,11 @@ expression: output
   case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Final, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       CoalescePartitionsExec
@@ -49,6 +64,11 @@ no findings
   case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=FinalPartitioned, gby=[g@0 as g, h@1 as h], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       RepartitionExec: partitioning=Hash([g@0, h@1], 3), input_partitions=3
@@ -62,6 +82,11 @@ no findings
   case 2 inexact statistics: input 0 rows [200, 0, 400], sorted by [g@0 ASC]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400], sorted by [g@0 ASC]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0], sorted by [g@0 ASC]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400], sorted by [g@0 ASC]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400], sorted by [g@0 ASC]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300], sorted by [g@0 ASC]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87], sorted by [g@0 ASC]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200], sorted by [g@0 ASC]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=FinalPartitioned, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
       RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=3, preserve_order=true, sort_exprs=g@0 ASC
@@ -74,6 +99,9 @@ no findings
   case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
   case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
   case 3 empty input: input 0 rows [0]; exact statistics; seed 0
+  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
+  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
+  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Single, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
@@ -84,6 +112,9 @@ no findings
   case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
   case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
   case 3 empty input: input 0 rows [0]; exact statistics; seed 0
+  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
+  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
+  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Single, gby=[], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
@@ -95,6 +126,9 @@ no findings
   case 1 inexact statistics: input 0 rows [600], sorted by [g@0 ASC]; inexact statistics; seed 0
   case 2 absent statistics: input 0 rows [600], sorted by [g@0 ASC]; absent statistics; seed 0
   case 3 empty input: input 0 rows [0], sorted by [g@0 ASC]; exact statistics; seed 0
+  case 4 seed 1: input 0 rows [600], sorted by [g@0 ASC]; exact statistics; seed 1000
+  case 5 seed 2: input 0 rows [600], sorted by [g@0 ASC]; exact statistics; seed 2000
+  case 6 large input: input 0 rows [4800], sorted by [g@0 ASC]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Single, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[g@0 ASC]
@@ -105,6 +139,9 @@ no findings
   case 1 inexact statistics: input 0 rows [600], sorted by [g@0 ASC]; inexact statistics; seed 0
   case 2 absent statistics: input 0 rows [600], sorted by [g@0 ASC]; absent statistics; seed 0
   case 3 empty input: input 0 rows [0], sorted by [g@0 ASC]; exact statistics; seed 0
+  case 4 seed 1: input 0 rows [600], sorted by [g@0 ASC]; exact statistics; seed 1000
+  case 5 seed 2: input 0 rows [600], sorted by [g@0 ASC]; exact statistics; seed 2000
+  case 6 large input: input 0 rows [4800], sorted by [g@0 ASC]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Single, gby=[h@1 as h, g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=PartiallySorted([1])
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[g@0 ASC]
@@ -116,6 +153,11 @@ no findings
   case 2 inexact statistics: input 0 hash [g@0] into 3 partitions, 600 rows; inexact statistics; seed 0
   case 3 absent statistics: input 0 hash [g@0] into 3 partitions, 600 rows; absent statistics; seed 0
   case 4 empty input: input 0 hash [g@0] into 3 partitions, 0 rows; exact statistics; seed 0
+  case 5 seed 1: input 0 hash [g@0] into 3 partitions, 600 rows; exact statistics; seed 1000
+  case 6 seed 2: input 0 hash [g@0] into 3 partitions, 600 rows; exact statistics; seed 2000
+  case 7 2 partitions: input 0 hash [g@0] into 2 partitions, 600 rows; exact statistics; seed 0
+  case 8 5 partitions: input 0 hash [g@0] into 5 partitions, 600 rows; exact statistics; seed 0
+  case 9 large input: input 0 hash [g@0] into 3 partitions, 4800 rows; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=SinglePartitioned, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       MockSourceExec: partitioning=Hash([g@0], 3), partition_rows=[146, 236, 218], statistics=Exact
@@ -127,26 +169,36 @@ no findings
   case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
+  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=FinalPartitioned, gby=[g@0 as g], aggr=[max(v)], lim=[5]
       RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=3
         AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[max(v)], lim=[5]
           MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
 [lint] F1 resources_released at RepartitionExec (root/0) [cases: default]: after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
-[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition]: overall statistics report distinct_count Exact(450) for column 'g', but the output has Exact(20) (also 2 more false distinct_count statistics: 'g' in partitions 0, 2)
-[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition]: overall statistics report min_value Exact(Int32(1)) for column 'g', but the output has Exact(Int32(38)) (also 2 more false min_value statistics: 'g' in partitions 0, 2)
-[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition]: overall statistics report max_value Exact(Int32(996)) for column 'g', but the output has Exact(Int32(935)) (also 2 more false max_value statistics: 'g' in partitions 0, 2)
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall statistics report distinct_count Exact(450) for column 'g', but the output has Exact(20) (also 2 more false distinct_count statistics: 'g' in partitions 0, 2)
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall statistics report min_value Exact(Int32(1)) for column 'g', but the output has Exact(Int32(38)) (also 2 more false min_value statistics: 'g' in partitions 0, 2)
+[invariant] B2 exact_statistics_hold at AggregateExec (root/0/0) [cases: default, single partition, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall statistics report max_value Exact(Int32(996)) for column 'g', but the output has Exact(Int32(935)) (also 2 more false max_value statistics: 'g' in partitions 0, 2)
 
 ## AggregateExec Single with DISTINCT limit
   case 0 default: input 0 rows [600]; exact statistics; seed 0
   case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
   case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
   case 3 empty input: input 0 rows [0]; exact statistics; seed 0
+  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
+  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
+  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=Single, gby=[g@0 as g], aggr=[], lim=[5]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
   allowed batch_boundary_invariance: the limit is a soft limit: the aggregate stops after the input batch in which it has seen 5 groups, so how many and which groups it emits depends on batch boundaries, and only the LIMIT above it makes the result well defined (aggregates/mod.rs:859-864); it reports no fetch, so the check cannot know that
-[invariant] B2 exact_statistics_hold at AggregateExec (root) [cases: default]: overall statistics report distinct_count Exact(16) for column 'g', but the output has Exact(10) (also 1 more false distinct_count statistic: 'g' in partition 0)
+[invariant] B2 exact_statistics_hold at AggregateExec (root) [cases: default, seed 1, seed 2, large input]: overall statistics report distinct_count Exact(16) for column 'g', but the output has Exact(10) (also 1 more false distinct_count statistic: 'g' in partition 0)
+[invariant] B2 exact_statistics_hold at AggregateExec (root) [cases: seed 1, seed 2]: overall statistics report min_value Exact(Int32(0)) for column 'g', but the output has Exact(Int32(2)) (also 1 more false min_value statistic: 'g' in partition 0)
+[invariant] B2 exact_statistics_hold at AggregateExec (root) [cases: seed 1, large input]: overall statistics report max_value Exact(Int32(15)) for column 'g', but the output has Exact(Int32(12)) (also 1 more false max_value statistic: 'g' in partition 0)
 
 ## AggregateExec Partial and FinalPartitioned with ROLLUP
   case 0 default: input 0 rows [30, 0, 60]; exact statistics; seed 0
@@ -154,6 +206,11 @@ no findings
   case 2 inexact statistics: input 0 rows [30, 0, 60]; inexact statistics; seed 0
   case 3 absent statistics: input 0 rows [30, 0, 60]; absent statistics; seed 0
   case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
+  case 5 seed 1: input 0 rows [30, 0, 60]; exact statistics; seed 1000
+  case 6 seed 2: input 0 rows [30, 0, 60]; exact statistics; seed 2000
+  case 7 2 partitions: input 0 rows [45, 45]; exact statistics; seed 0
+  case 8 5 partitions: input 0 rows [25, 12, 0, 38, 15]; exact statistics; seed 0
+  case 9 large input: input 0 rows [240, 0, 480]; exact statistics; seed 0
   plan of case 0:
     AggregateExec: mode=FinalPartitioned, gby=[g@0 as g, h@1 as h, __grouping_id@2 as __grouping_id], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
       RepartitionExec: partitioning=Hash([g@0, h@1, __grouping_id@2], 3), input_partitions=3

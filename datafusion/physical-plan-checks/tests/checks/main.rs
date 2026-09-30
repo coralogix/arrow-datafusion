@@ -21,6 +21,7 @@
 mod common;
 mod execution_checks;
 mod fixtures;
+mod harness;
 mod static_checks;
 mod stream_checks;
 mod variant_checks;

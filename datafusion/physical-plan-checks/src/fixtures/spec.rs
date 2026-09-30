@@ -209,6 +209,16 @@ impl SourceSpec {
         self
     }
 
+    /// Generate one partition with `rows` rows. The same as
+    /// `with_partition_rows(&[rows])`, and the usual way to set the size of
+    /// the input of a [`PlanFactory`], which lays the rows out into
+    /// partitions itself.
+    ///
+    /// [`PlanFactory`]: crate::harness::PlanFactory
+    pub fn with_num_rows(self, rows: usize) -> Self {
+        self.with_partition_rows(&[rows])
+    }
+
     /// Generate `num_rows` rows, split them into `partitions` partitions by the
     /// hash of `exprs` the same way `RepartitionExec` does, and declare
     /// `Partitioning::Hash(exprs, partitions)`
@@ -285,6 +295,74 @@ impl SourceSpec {
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
+    }
+
+    /// The total number of rows of all partitions
+    pub fn num_rows(&self) -> usize {
+        match &self.layout {
+            PartitionLayout::Rows(rows) => rows.iter().sum(),
+            PartitionLayout::Hash { num_rows, .. } => *num_rows,
+        }
+    }
+
+    /// The number of partitions
+    pub fn partition_count(&self) -> usize {
+        match &self.layout {
+            PartitionLayout::Rows(rows) => rows.len(),
+            PartitionLayout::Hash { partitions, .. } => *partitions,
+        }
+    }
+
+    /// The rows of each partition, if set with [`Self::with_partition_rows`].
+    /// `None` for hash partitioning, where they depend on the data.
+    pub fn partition_rows(&self) -> Option<&[usize]> {
+        match &self.layout {
+            PartitionLayout::Rows(rows) => Some(rows),
+            PartitionLayout::Hash { .. } => None,
+        }
+    }
+
+    /// The expressions and partition count set with
+    /// [`Self::with_hash_partitioning`], if any
+    pub fn hash_partitioning(&self) -> Option<(&[Arc<dyn PhysicalExpr>], usize)> {
+        match &self.layout {
+            PartitionLayout::Rows(_) => None,
+            PartitionLayout::Hash {
+                exprs, partitions, ..
+            } => Some((exprs, *partitions)),
+        }
+    }
+
+    /// How the rows of each partition are split into batches
+    pub fn batch_layout(&self) -> BatchLayout {
+        self.batch_layout
+    }
+
+    /// The ordering every partition is sorted by, if any
+    pub fn ordering(&self) -> Option<&LexOrdering> {
+        self.ordering.as_ref()
+    }
+
+    /// The precision of the statistics the source reports
+    pub fn statistics_precision(&self) -> StatisticsPrecision {
+        self.precision
+    }
+
+    /// How the streams of the source behave after serving their batches
+    pub fn stream_behavior(&self) -> StreamBehavior {
+        self.behavior
+    }
+
+    /// The name and first id of the row id column, if one was requested
+    pub fn row_id_column(&self) -> Option<(&str, u64)> {
+        self.row_id
+            .as_ref()
+            .map(|row_id| (row_id.name.as_str(), row_id.first_id))
+    }
+
+    /// The random seed
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// The schema of the generated source, including the row id column if one

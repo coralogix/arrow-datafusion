@@ -25,13 +25,13 @@ This describes how the crate is put together and where it is heading. See
 
 ## Goal
 
-Testing an `ExecutionPlan` should need as little test code as possible. The
-end state is that a user describes how to build their plan from its inputs,
-and the crate generates the inputs, decides which cases are worth testing by
+Testing an `ExecutionPlan` should need as little test code as possible. A
+user describes how to build their plan from its inputs (a `PlanFactory`), and
+the crate generates the inputs, decides which cases are worth testing by
 probing the plan, runs every check on every case, and reports violations in a
-way that can be reproduced. Today, tests still build each plan and its inputs
-by hand (see `tests/builtin_plans.rs`), but each layer below is designed so
-that it can be driven by that future harness without changes.
+way that can be reproduced (the `PlanHarness`, see [Harness](#harness)). The
+built-in audit in `tests/builtin_plans.rs` is written this way. The layers
+below the harness can also be used on their own, for a plan built by hand.
 
 ## Layers
 
@@ -124,6 +124,10 @@ agreement with the hash that DataFusion operators assume.
 **Checker** (`PlanChecker`). Selects checks, gathers the context if any check
 needs execution, visits every node, and attributes findings to nodes by path.
 
+**Harness** (`harness/`). Builds a plan from a `PlanFactory` for every case
+derived from a list of `Profile`s, runs a `PlanChecker` on each, and groups
+the findings of all cases in a `FactoryReport`. See [Harness](#harness).
+
 ## Principles
 
 - **Inputs are the truth.** If a check needs to trust something about an
@@ -138,53 +142,122 @@ needs execution, visits every node, and attributes findings to nodes by path.
   can produce wrong results or errors by trusting the plan. A lint means a
   missed optimization.
 
-## Toward plan factories
-
-The harness this is heading toward looks roughly like this. The names are
-placeholders and the API is deliberately not fixed yet.
+## Harness
 
 ```rust
-trait PlanFactory {
-    /// Schemas of the inputs the plan is built from
-    fn input_schemas(&self) -> Vec<SchemaRef>;
-    /// Build the plan under test on top of `inputs`
-    fn create(&self, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>>;
-}
+let factory = PlanFactory::new("FilterExec", vec![SourceSpec::new(schema)], |inputs| {
+    let input = Arc::clone(&inputs[0]);
+    let predicate = col("b", &input.schema())?;
+    Ok(Arc::new(FilterExec::try_new(predicate, input)?) as Arc<dyn ExecutionPlan>)
+});
+let report = PlanHarness::new().check(&factory)?;
+report.assert_no_invariant_violations();
 ```
 
-For each factory, the harness would:
+**Factories.** A `PlanFactory` is a name, one base `SourceSpec` per input,
+and a closure that builds the plan from input plans. A plan without inputs,
+such as `EmptyExec`, has no base specs. A closure is enough for every plan
+in the audit, so there is no trait to implement. The base spec carries what
+only the author of the plan knows: the schema, the value distribution (few
+distinct values on join keys so that inputs match), the number of rows, and
+optionally an ordering the plan should see, for example to exercise
+`InputOrderMode::Sorted`. The harness sets everything else for each case:
+partition layout, hash partitioning, batch layout, statistics precision,
+seed and row ids. The number of rows stays with the base spec, rather than
+with the harness, because a sensible size depends on the plan: a cross join
+produces the product of its input sizes. `create` is called several times
+per case, so it must be a pure function of its inputs; it must bind
+expressions to the schemas of the inputs it receives, by name, since the
+harness appends a row id column; and it must use the input plans as given,
+since the harness recognizes them by identity. Factory configuration is
+small: `allow(check, reason)` skips a check in every case and shows the
+reason in the report, `with_profiles` replaces the harness's profiles for
+one factory, and `with_shared_row_id_name` gives every input the same row id
+column name for plans that need inputs with the same schema.
 
-1. **Build a probe plan** on default `SourceSpec`s for the input schemas.
-2. **Probe it** to decide which cases to generate:
-   - `required_input_ordering` gives orderings to pass to
-     `SourceSpec::with_ordering`.
-   - `input_distribution_requirements` gives hash expressions for
-     `SourceSpec::with_hash_partitioning`, or a single partition.
-   - `with_fetch(Some(n))` returning a plan adds fetch cases for D1.
-   - `supports_limit_pushdown`, `try_swapping_with_projection`,
-     `try_pushdown_sort` and `repartitioned` returning something add the
-     matching section D cases.
-3. **Vary the inputs**: seeds, partition counts including zero and one, batch
-   layouts with empty batches, statistics precision, and row id columns with
-   disjoint ranges per input. Stream behavior is part of the spec so that a
-   factory can also build its plan directly on an unbounded input. That
-   exercises constructors that depend on the boundedness of their inputs,
-   which the checker's experiments, which only rebuild an existing node with
-   `replace_children`, do not.
-4. **Rebuild the plan** for each case with `create` and run the `PlanChecker`.
-5. **Report** each violation with the case that produced it, which is a
-   `SourceSpec` per input plus the probe choices, so it can be reproduced.
+**Profiles and cases.** A `Profile` is a named, deterministic way to lay out
+inputs: partition weights, a row multiplier, a batch layout, a statistics
+precision, a seed, and whether the checks that need stream experiments run.
+`Profile::defaults()` is a short curated list rather than a cross product:
+`default` (three partitions with weights 1, 0 and 2, random batches of up to
+16 rows with empty batches, exact statistics, every check), `single partition`, `inexact statistics`, `absent statistics` and `empty input`.
+`Profile::extended()` adds two more seeds, 2 and 5 partitions and 8 times the
+rows; the audit uses it with the `extended_tests` feature, as the rest of the
+workspace gates slow tests, with its own snapshots. A case is the fully
+specified input specs derived from one profile, after the plan's
+requirements are applied. Its description is derived from the specs (for
+example `default: input 0 rows [20, 0, 40]; input 1 hash [r_k@0] into 3 partitions, 90 rows; exact statistics; seeds 0, 1`), and it can be
+rerun alone with `PlanHarness::run_case`, or rebuilt by hand from
+`Case::inputs` and checked with `PlanHarness::checker_for`. A factory without
+inputs has one case. A profile that yields the same specs as an earlier one,
+for example `single partition` for a plan that requires one partition, adds
+no case unless it runs checks the earlier one does not.
 
-The pieces already fit this: `SourceSpec` is a value that can be cloned and
-varied; the row id column is appended after all other columns, so
-expressions that a plan binds against its input schema (orderings,
-distribution requirements) stay valid; and checks work on any node without
-knowing how it was built.
+**Requirements.** For each profile, the harness lays out the inputs, builds
+the plan, and reads what each node directly above an input requires of it:
 
-Open questions to settle when the harness is built:
+- a hard `required_input_ordering` becomes `SourceSpec::with_ordering`, with
+  default sort options where the requirement has none, replacing a base
+  ordering that does not meet it (a base ordering that does is kept);
+- `KeyPartitioned` becomes `with_hash_partitioning` into the profile's
+  partition count, which is the same for every input, so children that must
+  be co-partitioned get the same count;
+- `SinglePartition` becomes one partition.
 
-- How a factory states which inputs are valid, such as value ranges or
-  schemas that depend on each other (join keys with matching types).
-- How users mark findings as expected for their plan, per case rather than
-  per check.
-- How to name cases so snapshots stay stable when case generation changes.
+Requirements are bound to the probe input's schema, and the generated inputs
+have the same schema, so they stay valid. They can depend on the inputs (an
+aggregate chooses its input order mode, a join over sorted inputs can ask
+for more), so the harness builds the plan again and repeats until every
+requirement is met, at most `MAX_PROBES` (5) times. Soft ordering
+requirements are not imposed, since the node works without them. A
+requirement that cannot be met (the requirements keep changing, the inputs
+already have what is asked for, or the child is a node the factory built
+rather than an input) is reported as harness problem `H2` for the case, and
+the case is not checked. `create` failing or panicking is `H1`, an input
+that cannot be generated is `H3`, and allowing a check that does not exist
+is `H4`.
+
+**Which checks run.** Checks that need stream experiments (B10 to B12, F1,
+F2) depend on how a plan drives its streams rather than on the shape of its
+data, and several of them wait for the stream timeout, so only profiles
+that enable them run them: the `default` profile. Every other case runs the
+static, execution and variant checks. This is a property of the profile, and
+the harness only filters the checker's checks by it.
+
+**Reports.** `PlanHarness::check` returns a `FactoryReport` that groups
+findings across cases. Two findings are the same if they have the same
+severity, check, node path and node name, and the same message once numbers
+are replaced, lists and ranges of numbers are collapsed and a trailing
+`(also ...)` summary is removed; when a case has several such findings (one
+per partition, say), they pair up in order with those of other cases. The
+group keeps the first case's message and lists the cases it occurred in,
+or `all cases`. Groups are ordered by node in plan traversal order and then by
+first appearance, with harness problems first. `PlanChecker` is unchanged
+and still checks a plan built by hand; the harness runs it once per case.
+
+**Runtime.** Cases run one after another on a current-thread runtime, so
+the reports are deterministic. The default audit takes about 10 to 13
+seconds per snapshot test, 13 seconds for the three together (10 seconds
+before the harness); the extended audit takes 20 to 55 seconds per test.
+Running factories in parallel was not needed.
+
+Open questions:
+
+- How a factory states which inputs are valid beyond the schema and the
+  value distribution, such as value ranges, or schemas that depend on each
+  other (join keys with matching types).
+- How users mark findings as expected per case rather than per check.
+  `allow` is per factory.
+- Grouping findings by their normalized message is a heuristic. Findings
+  with a structured kind (as `Problems` has inside some checks) would make
+  grouping exact.
+- Inputs with zero partitions, other stream behaviors as base specs (an
+  unbounded input given to `create`, which exercises constructors that
+  depend on the boundedness of their inputs), and probing other hooks
+  (`with_fetch`, `repartitioned`, `try_pushdown_sort`) to add cases for
+  section D are not generated yet.
+- D8 `replace_children_consistent` can build the same node on different
+  valid inputs by calling `create` on the inputs of two cases; C1
+  `maintains_input_order_holds` can follow the row id columns, which have a
+  distinct name (`__row_id_<input>`) and range (`input * ROW_ID_RANGE`) per
+  input.

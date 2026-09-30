@@ -32,8 +32,8 @@ implemented.
 Each check has a **code** (such as `A1`) that places it in this catalog, and
 a **name** (such as `equal_cardinality_num_rows`) that is stable and appears
 in reports. A catalog entry can contain more than one named check when they
-verify closely related properties. Use the name with `PlanChecker::allow` to
-skip a check.
+verify closely related properties. Use the name with `PlanFactory::allow` or
+`PlanChecker::allow` to skip a check.
 
 Every violation has a severity:
 
@@ -63,7 +63,9 @@ plan. Tests should build the plan under test on inputs generated with
 `fixtures::SourceSpec`. It produces a `fixtures::MockSourceExec` whose
 statistics are computed from its data and whose declared ordering and
 partitioning are verified against it, so checks treat what it reports as the
-truth.
+truth. The usual way is to describe the plan with a `harness::PlanFactory`
+and check it with a `harness::PlanHarness`, which generates the inputs and
+runs the checks on several cases (see [Cases](#cases)).
 
 When any enabled check needs execution, the checker executes every node of
 the plan on its own before running checks. Each execution uses a fresh copy of
@@ -101,7 +103,8 @@ the checker runs on every node with children before running checks:
   waited for then.
 
 Build plans under test on finite inputs. The checker derives the stalling,
-failing and unbounded variants itself.
+failing and unbounded variants itself. The harness runs the checks that need
+stream experiments only in the `default` case (see [Cases](#cases)).
 
 ### Variant runs
 
@@ -137,6 +140,32 @@ values are equal when their relative difference is at most `1e-6`
 (`oracle::FLOAT_RELATIVE_TOLERANCE`), since changing batch sizes or batch
 boundaries can change the order in which an operator adds them. Sort keys are
 compared exactly.
+
+### Cases
+
+The `PlanHarness` checks a plan on several **cases**, one per `Profile`,
+each a fully specified set of inputs. `Profile::defaults()` gives:
+
+- `default`: three partitions, the second of them empty, random batches of
+  up to 16 rows including empty batches, and exact statistics;
+- `single partition`;
+- `inexact statistics` and `absent statistics`, with the default layout;
+- `empty input`: every partition empty.
+
+Inputs are then adapted to the plan's requirements: an input that must be
+sorted is sorted, one that must be hash partitioned is hash partitioned into
+the profile's number of partitions (the same for every input, so
+co-partitioned inputs match), and one that must be a single partition gets
+one. Every input has a row id column, `__row_id_0` for the first input and
+so on, with ids in a separate range per input.
+
+Checks that need stream experiments (`boundedness_holds`,
+`emission_type_holds`, `lazy_evaluation_holds`, `resources_released` and
+`errors_propagate`) only run in the `default` case: they depend on how the
+plan drives its streams rather than on the shape of its data, and several
+of them wait for the stream timeout. Every other check runs in every case.
+The report groups a finding that occurs in several cases and names the
+cases, so a finding that only appears with, say, empty input stands out.
 
 ### Terms
 
@@ -397,9 +426,9 @@ what the plan reports.
   `max_value`, `null_count` and `distinct_count`. An exact minimum or maximum
   is not checked when the output has no non-null values in that column, since
   there is nothing to contradict it. `sum_value`, byte sizes and
-  `total_byte_size` are not checked. The check should run once with input
-  statistics marked exact and once with them marked inexact, to catch nodes
-  that turn estimates into exact values.
+  `total_byte_size` are not checked. The harness runs it with input
+  statistics marked exact, marked inexact and absent, to catch nodes that
+  turn estimates into exact values.
 - **Attribution:** a node computes its statistics from its children's, so a
   child with a false exact statistic can make the node's false too, even
   when the node passes statistics through unchanged, as `RepartitionExec`
@@ -621,9 +650,10 @@ what the plan reports.
 
 ## C. Order and input requirements
 
-Generated inputs carry a hidden `__row_id` column that increases within each
-input and uses a separate range for each child. Many nodes pass it through,
-which lets the checks track where each output row came from.
+The harness gives every input a row id column (`__row_id_0`, `__row_id_1`,
+and so on) whose ids increase within the input and use a separate range for
+each input. Many nodes pass it through, which lets the checks track where
+each output row came from.
 
 ### C1 `maintains_input_order_holds`
 
@@ -971,6 +1001,10 @@ the spill path.
 - **Severity:** Invariant. Lint for emitting empty batches.
 - **What:** inputs with zero partitions, zero batches, or only empty batches
   work.
+- **Today:** the harness's `empty input` case runs every check but those
+  that need stream experiments on inputs whose partitions have no rows, and
+  every case has empty batches, and all but `single partition` an empty
+  partition. Inputs with zero partitions are not generated yet.
 
 ### F4 `partition_isolation`
 

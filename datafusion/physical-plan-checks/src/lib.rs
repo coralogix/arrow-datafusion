@@ -35,8 +35,14 @@
 //! crate checks that the descriptions are consistent with each other and with
 //! what the plan does when it runs.
 //!
+//! The easiest way to test a plan is to describe how to build it from its
+//! inputs with a [`harness::PlanFactory`], and check it with a
+//! [`harness::PlanHarness`]. The harness generates the inputs, derives the
+//! cases worth testing from the plan's input requirements, runs every check
+//! on every case, and groups the findings of all cases in one report.
+//!
 //! Use [`PlanChecker`] to run every built-in check against every node of a
-//! plan. Build the plan under test on inputs generated with
+//! plan built by hand. Build the plan under test on inputs generated with
 //! [`fixtures::SourceSpec`], which produces a [`fixtures::MockSourceExec`]
 //! whose data, statistics, partitioning and ordering are known to be
 //! consistent.
@@ -64,6 +70,7 @@ pub mod checks;
 mod context;
 mod experiments;
 pub mod fixtures;
+pub mod harness;
 pub mod oracle;
 mod report;
 mod variants;

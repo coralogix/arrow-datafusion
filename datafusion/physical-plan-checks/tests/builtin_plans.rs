@@ -19,14 +19,18 @@
 //! records the findings in snapshots, one per family of operators: simple
 //! operators, aggregates and joins.
 //!
+//! Every plan is a `PlanFactory`: a function that builds the plan from its
+//! inputs. The `PlanHarness` generates the inputs, meets the plan's
+//! `required_input_ordering` and `input_distribution_requirements`, and
+//! checks every case of `Profile::defaults`, or of `Profile::extended` with
+//! the `extended_tests` feature, which records separate snapshots.
+//! Aggregates and joins are built the way the physical planner and the
+//! optimizer build them.
+//!
 //! The snapshots are the list of known violations in the built-in plans. When
 //! a plan is fixed, or a new check finds a new problem, a snapshot changes
 //! and must be reviewed and updated with `cargo insta review` (or by running
 //! the test with `INSTA_UPDATE=always`).
-//!
-//! Aggregates and joins are built the way the physical planner and the
-//! optimizer build them, on inputs that meet their `required_input_ordering`
-//! and `input_distribution_requirements`.
 //!
 //! Known findings are also listed, with their causes, in
 //! `IMPLEMENTATION_STATUS.md`, as are checks allowed for specific plans.
@@ -36,7 +40,9 @@ use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion_common::{JoinSide, JoinType, NullEquality, Result, ScalarValue};
+use datafusion_common::{
+    JoinSide, JoinType, NullEquality, Result, ScalarValue, internal_datafusion_err,
+};
 use datafusion_expr::{AggregateUDF, Operator};
 use datafusion_functions_aggregate::average::avg_udaf;
 use datafusion_functions_aggregate::count::count_udaf;
@@ -47,6 +53,7 @@ use datafusion_physical_expr::expressions::{BinaryExpr, Column, Literal, col};
 use datafusion_physical_expr::{
     LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
 };
+use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::aggregates::{
     AggregateExec, AggregateMode, LimitOptions, PhysicalGroupBy,
 };
@@ -68,64 +75,67 @@ use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::{ExecutionPlan, displayable};
-use datafusion_physical_plan_checks::PlanChecker;
-use datafusion_physical_plan_checks::fixtures::{BatchLayout, SourceSpec};
+use datafusion_physical_plan_checks::fixtures::SourceSpec;
+use datafusion_physical_plan_checks::harness::{PlanFactory, PlanHarness, Profile};
+
+type Plan = Arc<dyn ExecutionPlan>;
 
 const FETCH: usize = 10;
 
-/// A plan under test
-struct Case {
-    name: String,
-    plan: Arc<dyn ExecutionPlan>,
-    /// Checks skipped for this plan. Each one is a known limitation of the
-    /// check, explained where the case is built and in
-    /// `IMPLEMENTATION_STATUS.md`, never a way to hide a real problem.
-    allowed: Vec<&'static str>,
-}
-
-impl Case {
-    fn new(name: impl Into<String>, plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self {
-            name: name.into(),
-            plan,
-            allowed: vec![],
-        }
-    }
-
-    /// Skip `check` for this plan
-    fn allow(mut self, check: &'static str) -> Self {
-        self.allowed.push(check);
-        self
-    }
-}
-
-/// Run every check that is not allowed against each case and render the
-/// plans and findings.
+/// Check every factory and render the reports.
 ///
 /// Runs on a current-thread runtime (see the tests) so that execution, and
 /// therefore the snapshot, is deterministic. Some plans, such as a
 /// partitioned TopK `SortExec`, produce output that depends on how partitions
 /// interleave.
-async fn audit(cases: Vec<Case>) -> Result<String> {
+async fn audit(factories: Vec<PlanFactory>) -> Result<String> {
+    let profiles = if cfg!(feature = "extended_tests") {
+        Profile::extended()
+    } else {
+        Profile::defaults()
+    };
+    let harness = PlanHarness::new().with_profiles(profiles);
     let mut output = String::new();
-    for case in cases {
-        let checker = case
-            .allowed
-            .iter()
-            .fold(PlanChecker::new(), |checker, check| checker.allow(*check));
-        let report = checker.check_async(&case.plan).await?;
-        writeln!(output, "## {}", case.name).unwrap();
-        let display = displayable(case.plan.as_ref()).indent(true).to_string();
-        for line in display.lines() {
-            writeln!(output, "    {line}").unwrap();
-        }
-        if !case.allowed.is_empty() {
-            writeln!(output, "allowed: {}", case.allowed.join(", ")).unwrap();
-        }
-        writeln!(output, "{report}\n").unwrap();
+    for factory in factories {
+        let report = harness.check_async(&factory).await?;
+        writeln!(output, "## {report}\n").unwrap();
     }
     Ok(output)
+}
+
+/// Record `output` in the snapshot `name`, or in `<name>_extended` with the
+/// `extended_tests` feature
+fn assert_snapshot(name: &str, output: &str) {
+    let name = if cfg!(feature = "extended_tests") {
+        format!("{name}_extended")
+    } else {
+        name.to_string()
+    };
+    insta::assert_snapshot!(name, output);
+}
+
+/// A factory for a plan with one input generated from `spec`
+fn one_input<F>(name: &str, spec: SourceSpec, create: F) -> PlanFactory
+where
+    F: Fn(Plan) -> Result<Plan> + Send + Sync + 'static,
+{
+    PlanFactory::new(name, vec![spec], move |mut inputs| create(inputs.remove(0)))
+}
+
+/// `plan.with_fetch(Some(fetch))`, which must return a plan
+fn with_fetch(plan: &dyn ExecutionPlan, fetch: usize) -> Result<Plan> {
+    let name = plan.name().to_string();
+    plan.with_fetch(Some(fetch))
+        .ok_or_else(|| internal_datafusion_err!("{name} does not support a fetch"))
+}
+
+/// The ascending ordering on `column` of `input`
+fn ordering_on(column: &str, input: &Plan) -> Result<LexOrdering> {
+    Ok(LexOrdering::new(vec![PhysicalSortExpr::new_default(col(
+        column,
+        &input.schema(),
+    )?)])
+    .unwrap())
 }
 
 fn schema() -> SchemaRef {
@@ -136,230 +146,152 @@ fn schema() -> SchemaRef {
     ]))
 }
 
-fn ordering_on_a() -> Result<LexOrdering> {
-    Ok(
-        LexOrdering::new(vec![PhysicalSortExpr::new_default(col("a", &schema())?)])
-            .unwrap(),
-    )
-}
-
-/// Random batches of up to 16 rows, including empty batches
-const BATCH_LAYOUT: BatchLayout = BatchLayout::Random {
-    max_rows: 16,
-    empty_batches: true,
-};
-
-/// The spec every source starts from: random batches of up to 16 rows,
-/// including empty batches, with exact statistics
+/// The input of every simple operator: 600 rows of `schema`
 fn spec() -> SourceSpec {
-    SourceSpec::new(schema()).with_batch_layout(BATCH_LAYOUT)
+    SourceSpec::new(schema()).with_num_rows(600)
 }
 
-/// Three partitions with exact row counts
-fn multi_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
-    spec().with_partition_rows(&[100, 200, 300]).build_arc()
-}
-
-/// Three partitions with exact row counts, each sorted on `a`
-fn sorted_multi_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
-    spec()
-        .with_partition_rows(&[100, 200, 300])
-        .with_ordering(ordering_on_a()?)
-        .build_arc()
-}
-
-/// One partition with an exact row count
-fn single_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
-    spec().with_partition_rows(&[600]).build_arc()
-}
-
-/// One partition with an exact row count, sorted on `a`
-fn sorted_single_partition_source() -> Result<Arc<dyn ExecutionPlan>> {
-    spec()
-        .with_partition_rows(&[600])
-        .with_ordering(ordering_on_a()?)
-        .build_arc()
+/// [`spec`], with every partition sorted on `a`
+fn sorted_spec() -> Result<SourceSpec> {
+    let ordering =
+        LexOrdering::new(vec![PhysicalSortExpr::new_default(col("a", &schema())?)])
+            .unwrap();
+    Ok(spec().with_ordering(ordering))
 }
 
 #[expect(deprecated)]
-fn coalesce_batches(
-    input: Arc<dyn ExecutionPlan>,
-    fetch: Option<usize>,
-) -> Arc<dyn ExecutionPlan> {
+fn coalesce_batches(input: Plan, fetch: Option<usize>) -> Plan {
     use datafusion_physical_plan::coalesce_batches::CoalesceBatchesExec;
     Arc::new(CoalesceBatchesExec::new(input, 8192).with_fetch(fetch))
 }
 
-/// The simple operators under test, each with a descriptive name
-fn builtin_plans() -> Result<Vec<Case>> {
-    let schema = schema();
-    let a = col("a", &schema)?;
-    let b = col("b", &schema)?;
-
-    let plans: Vec<(&'static str, Arc<dyn ExecutionPlan>)> = vec![
-        ("EmptyExec", Arc::new(EmptyExec::new(Arc::clone(&schema)))),
-        (
-            "PlaceholderRowExec",
-            Arc::new(PlaceholderRowExec::new(Arc::clone(&schema))),
-        ),
-        (
-            "ProjectionExec",
-            Arc::new(ProjectionExec::try_new(
-                vec![(Arc::clone(&a), "a".to_string())],
-                multi_partition_source()?,
-            )?),
-        ),
-        (
-            "FilterExec",
-            Arc::new(FilterExec::try_new(
-                Arc::clone(&b),
-                multi_partition_source()?,
-            )?),
-        ),
-        (
-            "FilterExec with fetch",
-            FilterExec::try_new(Arc::clone(&b), multi_partition_source()?)?
-                .with_fetch(Some(FETCH))
-                .expect("FilterExec supports fetch"),
-        ),
-        (
-            "CoalesceBatchesExec",
-            coalesce_batches(multi_partition_source()?, None),
-        ),
-        (
-            "CoalesceBatchesExec with fetch",
-            coalesce_batches(multi_partition_source()?, Some(FETCH)),
-        ),
-        (
-            "CoalescePartitionsExec",
-            Arc::new(CoalescePartitionsExec::new(multi_partition_source()?)),
-        ),
-        (
-            "CoalescePartitionsExec with fetch",
-            Arc::new(
-                CoalescePartitionsExec::new(multi_partition_source()?)
-                    .with_fetch(Some(FETCH)),
-            ),
-        ),
-        (
-            "SortExec",
-            Arc::new(SortExec::new(ordering_on_a()?, single_partition_source()?)),
-        ),
-        (
-            "SortExec with fetch",
-            Arc::new(
-                SortExec::new(ordering_on_a()?, single_partition_source()?)
-                    .with_fetch(Some(FETCH)),
-            ),
-        ),
-        (
-            "SortExec on a nullable column",
-            Arc::new(SortExec::new(
-                LexOrdering::new(vec![PhysicalSortExpr::new_default(col("c", &schema)?)])
-                    .unwrap(),
-                single_partition_source()?,
-            )),
-        ),
-        (
-            "SortExec on sorted input",
-            Arc::new(SortExec::new(
-                ordering_on_a()?,
-                sorted_single_partition_source()?,
-            )),
-        ),
-        (
+/// The simple operators under test
+fn builtin_plans() -> Result<Vec<PlanFactory>> {
+    Ok(vec![
+        PlanFactory::new("EmptyExec", vec![], |_| {
+            Ok(Arc::new(EmptyExec::new(schema())) as Plan)
+        }),
+        PlanFactory::new("PlaceholderRowExec", vec![], |_| {
+            Ok(Arc::new(PlaceholderRowExec::new(schema())) as Plan)
+        }),
+        one_input("ProjectionExec", spec(), |input| {
+            let a = col("a", &input.schema())?;
+            Ok(Arc::new(ProjectionExec::try_new(
+                vec![(a, "a".to_string())],
+                input,
+            )?))
+        }),
+        one_input("FilterExec", spec(), |input| {
+            let b = col("b", &input.schema())?;
+            Ok(Arc::new(FilterExec::try_new(b, input)?))
+        }),
+        one_input("FilterExec with fetch", spec(), |input| {
+            let b = col("b", &input.schema())?;
+            with_fetch(&FilterExec::try_new(b, input)?, FETCH)
+        }),
+        one_input("CoalesceBatchesExec", spec(), |input| {
+            Ok(coalesce_batches(input, None))
+        }),
+        one_input("CoalesceBatchesExec with fetch", spec(), |input| {
+            Ok(coalesce_batches(input, Some(FETCH)))
+        }),
+        one_input("CoalescePartitionsExec", spec(), |input| {
+            Ok(Arc::new(CoalescePartitionsExec::new(input)))
+        }),
+        one_input("CoalescePartitionsExec with fetch", spec(), |input| {
+            Ok(Arc::new(
+                CoalescePartitionsExec::new(input).with_fetch(Some(FETCH)),
+            ))
+        }),
+        one_input("SortExec", spec(), |input| {
+            Ok(Arc::new(SortExec::new(ordering_on("a", &input)?, input)))
+        }),
+        one_input("SortExec with fetch", spec(), |input| {
+            Ok(Arc::new(
+                SortExec::new(ordering_on("a", &input)?, input).with_fetch(Some(FETCH)),
+            ))
+        }),
+        one_input("SortExec on a nullable column", spec(), |input| {
+            Ok(Arc::new(SortExec::new(ordering_on("c", &input)?, input)))
+        }),
+        one_input("SortExec on sorted input", sorted_spec()?, |input| {
+            Ok(Arc::new(SortExec::new(ordering_on("a", &input)?, input)))
+        }),
+        one_input(
             "SortExec with fetch on sorted input",
-            Arc::new(
-                SortExec::new(ordering_on_a()?, sorted_single_partition_source()?)
-                    .with_fetch(Some(FETCH)),
-            ),
+            sorted_spec()?,
+            |input| {
+                Ok(Arc::new(
+                    SortExec::new(ordering_on("a", &input)?, input)
+                        .with_fetch(Some(FETCH)),
+                ))
+            },
         ),
-        (
-            "SortExec with preserve_partitioning",
-            Arc::new(
-                SortExec::new(ordering_on_a()?, multi_partition_source()?)
+        one_input("SortExec with preserve_partitioning", spec(), |input| {
+            Ok(Arc::new(
+                SortExec::new(ordering_on("a", &input)?, input)
                     .with_preserve_partitioning(true),
-            ),
-        ),
-        (
+            ))
+        }),
+        one_input(
             "SortExec with preserve_partitioning and fetch",
-            Arc::new(
-                SortExec::new(ordering_on_a()?, multi_partition_source()?)
-                    .with_preserve_partitioning(true)
+            spec(),
+            |input| {
+                Ok(Arc::new(
+                    SortExec::new(ordering_on("a", &input)?, input)
+                        .with_preserve_partitioning(true)
+                        .with_fetch(Some(FETCH)),
+                ))
+            },
+        ),
+        one_input("SortPreservingMergeExec", spec(), |input| {
+            Ok(Arc::new(SortPreservingMergeExec::new(
+                ordering_on("a", &input)?,
+                input,
+            )))
+        }),
+        one_input("SortPreservingMergeExec with fetch", spec(), |input| {
+            Ok(Arc::new(
+                SortPreservingMergeExec::new(ordering_on("a", &input)?, input)
                     .with_fetch(Some(FETCH)),
-            ),
-        ),
-        (
-            "SortPreservingMergeExec",
-            Arc::new(SortPreservingMergeExec::new(
-                ordering_on_a()?,
-                sorted_multi_partition_source()?,
-            )),
-        ),
-        (
-            "SortPreservingMergeExec with fetch",
-            Arc::new(
-                SortPreservingMergeExec::new(
-                    ordering_on_a()?,
-                    sorted_multi_partition_source()?,
-                )
-                .with_fetch(Some(FETCH)),
-            ),
-        ),
-        (
-            "RepartitionExec round robin",
-            Arc::new(RepartitionExec::try_new(
-                multi_partition_source()?,
+            ))
+        }),
+        one_input("RepartitionExec round robin", spec(), |input| {
+            Ok(Arc::new(RepartitionExec::try_new(
+                input,
                 Partitioning::RoundRobinBatch(4),
-            )?),
-        ),
-        (
-            "RepartitionExec hash",
-            Arc::new(RepartitionExec::try_new(
-                multi_partition_source()?,
-                Partitioning::Hash(vec![Arc::clone(&a)], 4),
-            )?),
-        ),
-        (
-            "GlobalLimitExec",
-            Arc::new(GlobalLimitExec::new(
-                single_partition_source()?,
-                5,
-                Some(FETCH),
-            )),
-        ),
-        (
-            "GlobalLimitExec without fetch",
-            Arc::new(GlobalLimitExec::new(single_partition_source()?, 5, None)),
-        ),
-        (
-            "LocalLimitExec",
-            Arc::new(LocalLimitExec::new(multi_partition_source()?, FETCH)),
-        ),
-        (
-            "UnionExec",
-            UnionExec::try_new(vec![
-                multi_partition_source()?,
-                single_partition_source()?,
-            ])?,
-        ),
-        (
-            "BufferExec",
-            Arc::new(BufferExec::new(multi_partition_source()?, 1024)),
-        ),
-        (
-            "CooperativeExec",
-            Arc::new(CooperativeExec::new(multi_partition_source()?)),
-        ),
-    ];
-    Ok(plans
-        .into_iter()
-        .map(|(name, plan)| Case::new(name, plan))
-        .collect())
+            )?))
+        }),
+        one_input("RepartitionExec hash", spec(), |input| {
+            let a = col("a", &input.schema())?;
+            Ok(Arc::new(RepartitionExec::try_new(
+                input,
+                Partitioning::Hash(vec![a], 4),
+            )?))
+        }),
+        one_input("GlobalLimitExec", spec(), |input| {
+            Ok(Arc::new(GlobalLimitExec::new(input, 5, Some(FETCH))))
+        }),
+        one_input("GlobalLimitExec without fetch", spec(), |input| {
+            Ok(Arc::new(GlobalLimitExec::new(input, 5, None)))
+        }),
+        one_input("LocalLimitExec", spec(), |input| {
+            Ok(Arc::new(LocalLimitExec::new(input, FETCH)))
+        }),
+        // A union needs inputs with the same schema, including the name of
+        // the row id column
+        PlanFactory::new("UnionExec", vec![spec(), spec()], UnionExec::try_new)
+            .with_shared_row_id_name(),
+        one_input("BufferExec", spec(), |input| {
+            Ok(Arc::new(BufferExec::new(input, 1024)))
+        }),
+        one_input("CooperativeExec", spec(), |input| {
+            Ok(Arc::new(CooperativeExec::new(input)))
+        }),
+    ])
 }
 
-/// Partitions of the hash repartition between two aggregation phases, and of
-/// hash partitioned inputs
+/// Partitions of the hash repartition between two aggregation phases
 const HASH_PARTITIONS: usize = 3;
 
 /// Two grouping keys, one of them nullable, and two value columns
@@ -372,49 +304,69 @@ fn aggregate_schema() -> SchemaRef {
     ]))
 }
 
+/// 600 rows of `aggregate_schema`
 fn aggregate_spec() -> SourceSpec {
-    SourceSpec::new(aggregate_schema()).with_batch_layout(BATCH_LAYOUT)
+    SourceSpec::new(aggregate_schema()).with_num_rows(600)
 }
 
-fn ordering_on_g() -> Result<LexOrdering> {
-    Ok(LexOrdering::new(vec![PhysicalSortExpr::new_default(col(
+/// [`aggregate_spec`], with every partition sorted on `g`
+fn aggregate_spec_sorted_on_g() -> Result<SourceSpec> {
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(col(
         "g",
         &aggregate_schema(),
     )?)])
-    .unwrap())
+    .unwrap();
+    Ok(aggregate_spec().with_ordering(ordering))
 }
 
-/// `udaf(arg) AS alias`, with `arg` a column of `schema`
+/// Many distinct values, so that few groups tie on `max(v)` and the groups a
+/// TopK aggregate keeps are well defined, or so that there are more groups
+/// than rows
+fn many_values(rows: usize) -> SourceSpec {
+    aggregate_spec()
+        .with_distinct_values(1000)
+        .with_num_rows(rows)
+}
+
+/// `udaf(arg) AS alias`, with `arg` a column of `input`
 fn aggregate(
     udaf: Arc<AggregateUDF>,
     arg: &str,
     alias: &str,
-    schema: &SchemaRef,
+    input: &Plan,
 ) -> Result<Arc<AggregateFunctionExpr>> {
+    let schema = input.schema();
     Ok(Arc::new(
-        AggregateExprBuilder::new(udaf, vec![col(arg, schema)?])
-            .schema(Arc::clone(schema))
+        AggregateExprBuilder::new(udaf, vec![col(arg, &schema)?])
+            .schema(schema)
             .alias(alias)
             .build()?,
     ))
 }
 
 /// `count(v), sum(v), min(v), max(v), avg(f), sum(f)`
-fn all_aggregates() -> Result<Vec<Arc<AggregateFunctionExpr>>> {
-    let schema = aggregate_schema();
+fn all_aggregates(input: &Plan) -> Result<Vec<Arc<AggregateFunctionExpr>>> {
     Ok(vec![
-        aggregate(count_udaf(), "v", "count(v)", &schema)?,
-        aggregate(sum_udaf(), "v", "sum(v)", &schema)?,
-        aggregate(min_udaf(), "v", "min(v)", &schema)?,
-        aggregate(max_udaf(), "v", "max(v)", &schema)?,
-        aggregate(avg_udaf(), "f", "avg(f)", &schema)?,
-        aggregate(sum_udaf(), "f", "sum(f)", &schema)?,
+        aggregate(count_udaf(), "v", "count(v)", input)?,
+        aggregate(sum_udaf(), "v", "sum(v)", input)?,
+        aggregate(min_udaf(), "v", "min(v)", input)?,
+        aggregate(max_udaf(), "v", "max(v)", input)?,
+        aggregate(avg_udaf(), "f", "avg(f)", input)?,
+        aggregate(sum_udaf(), "f", "sum(f)", input)?,
     ])
 }
 
-/// `GROUP BY` the given columns of the aggregate schema
-fn group_by(columns: &[&str]) -> Result<PhysicalGroupBy> {
-    let schema = aggregate_schema();
+/// `min(v), max(v)`
+fn min_max(input: &Plan) -> Result<Vec<Arc<AggregateFunctionExpr>>> {
+    Ok(vec![
+        aggregate(min_udaf(), "v", "min(v)", input)?,
+        aggregate(max_udaf(), "v", "max(v)", input)?,
+    ])
+}
+
+/// `GROUP BY` the given columns of `input`
+fn group_by(columns: &[&str], input: &Plan) -> Result<PhysicalGroupBy> {
+    let schema = input.schema();
     Ok(PhysicalGroupBy::new_single(
         columns
             .iter()
@@ -429,8 +381,8 @@ fn no_group_by() -> PhysicalGroupBy {
 }
 
 /// `GROUP BY ROLLUP (g, h)`, as the physical planner expands it
-fn rollup_g_h() -> Result<PhysicalGroupBy> {
-    let schema = aggregate_schema();
+fn rollup_g_h(input: &Plan) -> Result<PhysicalGroupBy> {
+    let schema = input.schema();
     let null = |data_type: &DataType| -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(Literal::new(ScalarValue::try_from(data_type)?)))
     };
@@ -453,9 +405,9 @@ fn single_phase(
     mode: AggregateMode,
     group_by: PhysicalGroupBy,
     aggr_expr: Vec<Arc<AggregateFunctionExpr>>,
-    input: Arc<dyn ExecutionPlan>,
+    input: Plan,
     limit: Option<LimitOptions>,
-) -> Result<Arc<dyn ExecutionPlan>> {
+) -> Result<Plan> {
     let filters = vec![None; aggr_expr.len()];
     let input_schema = input.schema();
     Ok(Arc::new(
@@ -476,14 +428,15 @@ enum Exchange {
 
 /// A two-phase aggregate, as the physical planner builds it and
 /// `EnforceDistribution` connects the phases. `limit` is set on both phases,
-/// as `TopKAggregation` does.
+/// as `TopKAggregation` does. The exchange between the phases is part of the
+/// plan under test, not an input.
 fn two_phase(
     group_by: PhysicalGroupBy,
     aggr_expr: Vec<Arc<AggregateFunctionExpr>>,
-    input: Arc<dyn ExecutionPlan>,
+    input: Plan,
     exchange: Exchange,
     limit: Option<LimitOptions>,
-) -> Result<Arc<dyn ExecutionPlan>> {
+) -> Result<Plan> {
     let filters = vec![None; aggr_expr.len()];
     let input_schema = input.schema();
     let partial = AggregateExec::try_new(
@@ -497,7 +450,7 @@ fn two_phase(
     .with_limit_options(limit);
     let final_group_by = partial.group_expr().as_final();
     let final_aggr_expr = partial.aggr_expr().to_vec();
-    let (mode, exchanged): (AggregateMode, Arc<dyn ExecutionPlan>) = match exchange {
+    let (mode, exchanged): (AggregateMode, Plan) = match exchange {
         Exchange::Coalesce => (
             AggregateMode::Final,
             Arc::new(CoalescePartitionsExec::new(Arc::new(partial))),
@@ -530,190 +483,152 @@ fn two_phase(
 }
 
 /// The aggregates under test
-fn aggregate_plans() -> Result<Vec<Case>> {
-    let schema = aggregate_schema();
-    let multi_partition = || aggregate_spec().with_partition_rows(&[100, 200, 300]);
-    let single_partition = || aggregate_spec().with_partition_rows(&[600]);
-    let hash_on_g = || -> Result<SourceSpec> {
-        Ok(aggregate_spec().with_hash_partitioning(
-            vec![col("g", &schema)?],
-            HASH_PARTITIONS,
-            600,
-        ))
+fn aggregate_plans() -> Result<Vec<PlanFactory>> {
+    let hash = Exchange::Hash {
+        preserve_order: false,
     };
-    let min_max = vec![
-        aggregate(min_udaf(), "v", "min(v)", &schema)?,
-        aggregate(max_udaf(), "v", "max(v)", &schema)?,
-    ];
-    // Many distinct values, so that few groups tie on max(v) and the groups
-    // a TopK aggregate keeps are well defined
-    let many_values = || aggregate_spec().with_distinct_values(1000);
-
     Ok(vec![
         // SELECT count(v), ... FROM t
-        Case::new(
+        one_input(
             "AggregateExec Partial and Final without GROUP BY",
-            two_phase(
-                no_group_by(),
-                all_aggregates()?,
-                multi_partition().build_arc()?,
-                Exchange::Coalesce,
-                None,
-            )?,
+            aggregate_spec(),
+            |input| {
+                let aggr_expr = all_aggregates(&input)?;
+                two_phase(no_group_by(), aggr_expr, input, Exchange::Coalesce, None)
+            },
         ),
         // SELECT min(v), max(v) FROM t: the partial aggregate creates a
         // dynamic filter
-        Case::new(
+        one_input(
             "AggregateExec Partial and Final without GROUP BY, min and max only",
-            two_phase(
-                no_group_by(),
-                min_max,
-                multi_partition().build_arc()?,
-                Exchange::Coalesce,
-                None,
-            )?,
+            aggregate_spec(),
+            |input| {
+                let aggr_expr = min_max(&input)?;
+                two_phase(no_group_by(), aggr_expr, input, Exchange::Coalesce, None)
+            },
         ),
         // SELECT g, count(v), ... FROM t GROUP BY g, with one target
-        // partition over a multi-partition input
-        Case::new(
+        // partition
+        one_input(
             "AggregateExec Partial and Final",
-            two_phase(
-                group_by(&["g"])?,
-                all_aggregates()?,
-                multi_partition().build_arc()?,
-                Exchange::Coalesce,
-                None,
-            )?,
+            aggregate_spec(),
+            |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                two_phase(group_by, aggr_expr, input, Exchange::Coalesce, None)
+            },
         ),
-        Case::new(
+        one_input(
             "AggregateExec Partial and FinalPartitioned",
-            two_phase(
-                group_by(&["g", "h"])?,
-                all_aggregates()?,
-                multi_partition().build_arc()?,
-                Exchange::Hash {
-                    preserve_order: false,
-                },
-                None,
-            )?,
+            aggregate_spec(),
+            move |input| {
+                let group_by = group_by(&["g", "h"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                two_phase(group_by, aggr_expr, input, hash, None)
+            },
         ),
-        Case::new(
+        // On input sorted by the grouping key, both phases run in
+        // `InputOrderMode::Sorted`
+        one_input(
             "AggregateExec Partial and FinalPartitioned on sorted input",
-            two_phase(
-                group_by(&["g"])?,
-                all_aggregates()?,
-                multi_partition()
-                    .with_ordering(ordering_on_g()?)
-                    .build_arc()?,
-                Exchange::Hash {
+            aggregate_spec_sorted_on_g()?,
+            |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                let exchange = Exchange::Hash {
                     preserve_order: true,
-                },
-                None,
-            )?,
+                };
+                two_phase(group_by, aggr_expr, input, exchange, None)
+            },
         ),
-        Case::new(
-            "AggregateExec Single",
-            single_phase(
-                AggregateMode::Single,
-                group_by(&["g"])?,
-                all_aggregates()?,
-                single_partition().build_arc()?,
-                None,
-            )?,
-        ),
-        Case::new(
+        one_input("AggregateExec Single", aggregate_spec(), |input| {
+            let group_by = group_by(&["g"], &input)?;
+            let aggr_expr = all_aggregates(&input)?;
+            single_phase(AggregateMode::Single, group_by, aggr_expr, input, None)
+        }),
+        one_input(
             "AggregateExec Single without GROUP BY",
-            single_phase(
-                AggregateMode::Single,
-                no_group_by(),
-                all_aggregates()?,
-                single_partition().build_arc()?,
-                None,
-            )?,
+            aggregate_spec(),
+            |input| {
+                let aggr_expr = all_aggregates(&input)?;
+                single_phase(AggregateMode::Single, no_group_by(), aggr_expr, input, None)
+            },
         ),
-        Case::new(
+        one_input(
             "AggregateExec Single on sorted input",
-            single_phase(
-                AggregateMode::Single,
-                group_by(&["g"])?,
-                all_aggregates()?,
-                single_partition()
-                    .with_ordering(ordering_on_g()?)
-                    .build_arc()?,
-                None,
-            )?,
+            aggregate_spec_sorted_on_g()?,
+            |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                single_phase(AggregateMode::Single, group_by, aggr_expr, input, None)
+            },
         ),
-        Case::new(
+        // Grouping on (h, g) over input sorted on g: `PartiallySorted`
+        one_input(
             "AggregateExec Single on partially sorted input",
-            single_phase(
-                AggregateMode::Single,
-                group_by(&["h", "g"])?,
-                all_aggregates()?,
-                single_partition()
-                    .with_ordering(ordering_on_g()?)
-                    .build_arc()?,
-                None,
-            )?,
+            aggregate_spec_sorted_on_g()?,
+            |input| {
+                let group_by = group_by(&["h", "g"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                single_phase(AggregateMode::Single, group_by, aggr_expr, input, None)
+            },
         ),
-        Case::new(
+        one_input(
             "AggregateExec SinglePartitioned",
-            single_phase(
-                AggregateMode::SinglePartitioned,
-                group_by(&["g"])?,
-                all_aggregates()?,
-                hash_on_g()?.build_arc()?,
-                None,
-            )?,
+            aggregate_spec(),
+            |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                single_phase(
+                    AggregateMode::SinglePartitioned,
+                    group_by,
+                    aggr_expr,
+                    input,
+                    None,
+                )
+            },
         ),
         // SELECT g, max(v) FROM t GROUP BY g ORDER BY max(v) DESC LIMIT 5,
         // after `TopKAggregation` pushed the limit into both phases
-        Case::new(
+        one_input(
             "AggregateExec Partial and FinalPartitioned with TopK limit",
-            two_phase(
-                group_by(&["g"])?,
-                vec![aggregate(max_udaf(), "v", "max(v)", &schema)?],
-                many_values()
-                    .with_partition_rows(&[100, 200, 300])
-                    .build_arc()?,
-                Exchange::Hash {
-                    preserve_order: false,
-                },
-                Some(LimitOptions::new_with_order(5, true)),
-            )?,
+            many_values(600),
+            move |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let aggr_expr = vec![aggregate(max_udaf(), "v", "max(v)", &input)?];
+                let limit = Some(LimitOptions::new_with_order(5, true));
+                two_phase(group_by, aggr_expr, input, hash, limit)
+            },
         ),
         // SELECT DISTINCT g FROM t LIMIT 5, after `LimitedDistinctAggregation`
-        Case::new(
+        one_input(
             "AggregateExec Single with DISTINCT limit",
-            single_phase(
-                AggregateMode::Single,
-                group_by(&["g"])?,
-                vec![],
-                single_partition().build_arc()?,
-                Some(LimitOptions::new(5)),
-            )?,
+            aggregate_spec(),
+            |input| {
+                let group_by = group_by(&["g"], &input)?;
+                let limit = Some(LimitOptions::new(5));
+                single_phase(AggregateMode::Single, group_by, vec![], input, limit)
+            },
         )
-        // The limit is a soft limit: the aggregate stops after the input
-        // batch in which it has seen 5 groups, so how many and which groups
-        // it emits depends on batch boundaries, and only the `LIMIT` above it
-        // makes the result well defined (`aggregates/mod.rs:859-864`). It
-        // reports no fetch, so the check cannot know that.
-        .allow("batch_boundary_invariance"),
+        .allow(
+            "batch_boundary_invariance",
+            "the limit is a soft limit: the aggregate stops after the input batch in \
+             which it has seen 5 groups, so how many and which groups it emits depends \
+             on batch boundaries, and only the LIMIT above it makes the result well \
+             defined (aggregates/mod.rs:859-864); it reports no fetch, so the check \
+             cannot know that",
+        ),
         // SELECT g, h, count(v), ... FROM t GROUP BY ROLLUP (g, h), on few
         // rows with many distinct values, so that there are more groups
         // than input rows
-        Case::new(
+        one_input(
             "AggregateExec Partial and FinalPartitioned with ROLLUP",
-            two_phase(
-                rollup_g_h()?,
-                all_aggregates()?,
-                many_values()
-                    .with_partition_rows(&[20, 30, 40])
-                    .build_arc()?,
-                Exchange::Hash {
-                    preserve_order: false,
-                },
-                None,
-            )?,
+            many_values(90),
+            move |input| {
+                let group_by = rollup_g_h(&input)?;
+                let aggr_expr = all_aggregates(&input)?;
+                two_phase(group_by, aggr_expr, input, hash, None)
+            },
         ),
     ])
 }
@@ -723,74 +638,61 @@ const LEFT_ROWS: usize = 60;
 /// Rows of the right input of a join
 const RIGHT_ROWS: usize = 90;
 
-/// A nullable join key and a value, with a row id so that every row is
-/// unique. The left key has more distinct values than the right key, so that
-/// both sides have rows without a match: left rows with keys the right side
-/// does not have, and rows with null keys on both sides.
-fn left_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
+/// A nullable join key and a value. The left key has more distinct values
+/// than the right key, so that both sides have rows without a match: left
+/// rows with keys the right side does not have, and rows with null keys on
+/// both sides.
+fn left_spec() -> SourceSpec {
+    let schema = Arc::new(Schema::new(vec![
         Field::new("l_k", DataType::Int32, true),
         Field::new("l_v", DataType::Int32, false),
-    ]))
-}
-
-fn right_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("r_k", DataType::Int32, true),
-        Field::new("r_v", DataType::Int32, false),
-    ]))
-}
-
-fn left_spec() -> SourceSpec {
-    SourceSpec::new(left_schema())
-        .with_batch_layout(BATCH_LAYOUT)
+    ]));
+    SourceSpec::new(schema)
         .with_distinct_values(12)
-        .with_row_id_column("l_id", 0)
+        .with_num_rows(LEFT_ROWS)
 }
 
 fn right_spec() -> SourceSpec {
-    SourceSpec::new(right_schema())
-        .with_batch_layout(BATCH_LAYOUT)
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("r_k", DataType::Int32, true),
+        Field::new("r_v", DataType::Int32, false),
+    ]));
+    SourceSpec::new(schema)
         .with_distinct_values(8)
-        .with_row_id_column("r_id", 1_000_000)
-        .with_seed(1)
+        .with_num_rows(RIGHT_ROWS)
 }
 
-/// `name` in the schema generated by `spec`, which includes its row id
-fn column(spec: &SourceSpec, name: &str) -> Result<Arc<dyn PhysicalExpr>> {
-    col(name, &spec.schema())
+/// A factory for a join of a [`left_spec`] and a [`right_spec`] input
+fn join<F>(name: impl Into<String>, create: F) -> PlanFactory
+where
+    F: Fn(Plan, Plan) -> Result<Plan> + Send + Sync + 'static,
+{
+    PlanFactory::new(name, vec![left_spec(), right_spec()], move |inputs| {
+        let [left, right] = <[Plan; 2]>::try_from(inputs)
+            .map_err(|_| internal_datafusion_err!("a join has two inputs"))?;
+        create(left, right)
+    })
 }
 
 /// `(l_k, r_k)`
-fn join_on() -> Result<JoinOn> {
+fn join_on(left: &Plan, right: &Plan) -> Result<JoinOn> {
     Ok(vec![(
-        column(&left_spec(), "l_k")?,
-        column(&right_spec(), "r_k")?,
+        col("l_k", &left.schema())?,
+        col("r_k", &right.schema())?,
     )])
-}
-
-/// `spec` with every partition sorted on `sort_exprs`, which refer to the
-/// schema generated by `spec`
-fn sorted_on(spec: SourceSpec, sort_exprs: Vec<PhysicalSortExpr>) -> SourceSpec {
-    spec.with_ordering(LexOrdering::new(sort_exprs).unwrap())
-}
-
-/// `spec` with `rows` rows, hash partitioned on its column `key`
-fn hash_on_key(spec: SourceSpec, key: &str, rows: usize) -> Result<SourceSpec> {
-    let key = column(&spec, key)?;
-    Ok(spec.with_hash_partitioning(vec![key], HASH_PARTITIONS, rows))
 }
 
 /// A join filter comparing `left_column` with `right_column` using `op`. Its
 /// intermediate schema copies the input fields, with their nullability, as
 /// the physical planner does.
 fn join_filter(
+    left: &Plan,
     left_column: &str,
     op: Operator,
+    right: &Plan,
     right_column: &str,
 ) -> Result<JoinFilter> {
-    let left = left_spec().schema();
-    let right = right_spec().schema();
+    let (left, right) = (left.schema(), right.schema());
     let left_index = left.index_of(left_column)?;
     let right_index = right.index_of(right_column)?;
     let schema = Arc::new(Schema::new(vec![
@@ -819,11 +721,12 @@ fn join_filter(
 }
 
 /// `l_v < r_v`, which keeps about half of the pairs with matching keys
-fn value_filter() -> Result<JoinFilter> {
-    join_filter("l_v", Operator::Lt, "r_v")
+fn value_filter(left: &Plan, right: &Plan) -> Result<JoinFilter> {
+    join_filter(left, "l_v", Operator::Lt, right, "r_v")
 }
 
-/// Options of a hash join case
+/// Options of a hash join factory
+#[derive(Debug, Clone, Copy)]
 struct HashJoin {
     mode: PartitionMode,
     join_type: JoinType,
@@ -848,294 +751,243 @@ impl HashJoin {
         self
     }
 
-    /// A hash join as the physical planner and `JoinSelection` build it:
-    /// in `CollectLeft` mode on a single-partition build side and a
-    /// multi-partition probe side, and in `Partitioned` mode on inputs hash
-    /// partitioned on the join keys
-    fn build(self) -> Result<Arc<dyn ExecutionPlan>> {
-        let (left, right) = match self.mode {
-            PartitionMode::Partitioned => (
-                hash_on_key(left_spec(), "l_k", LEFT_ROWS)?,
-                hash_on_key(right_spec(), "r_k", RIGHT_ROWS)?,
-            ),
-            _ => (
-                left_spec().with_partition_rows(&[LEFT_ROWS]),
-                right_spec().with_partition_rows(&[30, 0, 60]),
-            ),
-        };
-        let filter = self.filter.then(value_filter).transpose()?;
-        let join = HashJoinExec::try_new(
-            left.build_arc()?,
-            right.build_arc()?,
-            join_on()?,
-            filter,
-            &self.join_type,
-            None,
-            self.mode,
-            self.null_equality,
-            false,
-        )?;
-        Ok(match self.fetch {
-            Some(fetch) => join
-                .with_fetch(Some(fetch))
-                .expect("hash join supports fetch"),
-            None => Arc::new(join),
+    /// A hash join as the physical planner and `JoinSelection` build it. The
+    /// harness puts the build side of `CollectLeft` in one partition, and
+    /// hash partitions both inputs of `Partitioned` on the join keys.
+    fn factory(self, name: impl Into<String>) -> PlanFactory {
+        join(name, move |left, right| {
+            let on = join_on(&left, &right)?;
+            let filter = self
+                .filter
+                .then(|| value_filter(&left, &right))
+                .transpose()?;
+            let join = HashJoinExec::try_new(
+                left,
+                right,
+                on,
+                filter,
+                &self.join_type,
+                None,
+                self.mode,
+                self.null_equality,
+                false,
+            )?;
+            match self.fetch {
+                Some(fetch) => with_fetch(&join, fetch),
+                None => Ok(Arc::new(join)),
+            }
         })
     }
 }
 
-/// A sort merge join on inputs sorted on the join keys and hash partitioned
-/// on them, as `EnforceDistribution` and `EnforceSorting` arrange them
-fn sort_merge_join(
-    join_type: JoinType,
-    filter: Option<JoinFilter>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let options = SortOptions::default();
-    let left = hash_on_key(left_spec(), "l_k", LEFT_ROWS)?;
-    let right = hash_on_key(right_spec(), "r_k", RIGHT_ROWS)?;
-    let left_key = column(&left, "l_k")?;
-    let right_key = column(&right, "r_k")?;
-    let left = sorted_on(left, vec![PhysicalSortExpr::new(left_key, options)]);
-    let right = sorted_on(right, vec![PhysicalSortExpr::new(right_key, options)]);
-    Ok(Arc::new(SortMergeJoinExec::try_new(
-        left.build_arc()?,
-        right.build_arc()?,
-        join_on()?,
-        filter,
-        join_type,
-        vec![options],
-        NullEquality::NullEqualsNothing,
-    )?))
+/// A sort merge join. The harness sorts both inputs on the join keys and
+/// hash partitions them on the keys, as `EnforceDistribution` and
+/// `EnforceSorting` arrange them.
+fn sort_merge_join(name: String, join_type: JoinType, filter: bool) -> PlanFactory {
+    join(name, move |left, right| {
+        let on = join_on(&left, &right)?;
+        let filter = filter.then(|| value_filter(&left, &right)).transpose()?;
+        Ok(Arc::new(SortMergeJoinExec::try_new(
+            left,
+            right,
+            on,
+            filter,
+            join_type,
+            vec![SortOptions::default()],
+            NullEquality::NullEqualsNothing,
+        )?))
+    })
 }
 
 /// A nested loop join with the filter `l_k < r_k`, which is false for null
-/// keys, on a single-partition left input
-fn nested_loop_join(join_type: JoinType) -> Result<Arc<dyn ExecutionPlan>> {
-    Ok(Arc::new(NestedLoopJoinExec::try_new(
-        left_spec().with_partition_rows(&[LEFT_ROWS]).build_arc()?,
-        right_spec().with_partition_rows(&[30, 0, 60]).build_arc()?,
-        Some(join_filter("l_k", Operator::Lt, "r_k")?),
-        &join_type,
-        None,
-    )?))
+/// keys. The harness puts the left input in one partition.
+fn nested_loop_join(join_type: JoinType) -> PlanFactory {
+    join(
+        format!("NestedLoopJoinExec {join_type}"),
+        move |left, right| {
+            let filter = join_filter(&left, "l_k", Operator::Lt, &right, "r_k")?;
+            Ok(Arc::new(NestedLoopJoinExec::try_new(
+                left,
+                right,
+                Some(filter),
+                &join_type,
+                None,
+            )?))
+        },
+    )
 }
 
-/// A piecewise merge join on `l_k < r_k`, with the buffered (left) side in
-/// one partition and sorted as the join requires. Right existence joins
-/// require neither, and get a buffered side with several unsorted
-/// partitions.
-fn piecewise_merge_join(join_type: JoinType) -> Result<Arc<dyn ExecutionPlan>> {
-    let left_key = column(&left_spec(), "l_k")?;
-    let right_key = column(&right_spec(), "r_k")?;
-    let left = if matches!(
-        join_type,
-        JoinType::RightSemi | JoinType::RightAnti | JoinType::RightMark
-    ) {
-        left_spec().with_partition_rows(&[20, 0, 40])
-    } else {
-        // `<` requires the buffered side in descending order, nulls first
-        sorted_on(
-            left_spec().with_partition_rows(&[LEFT_ROWS]),
-            vec![PhysicalSortExpr::new(
-                Arc::clone(&left_key),
-                SortOptions::new(true, true),
-            )],
-        )
-    };
-    Ok(Arc::new(PiecewiseMergeJoinExec::try_new(
-        left.build_arc()?,
-        right_spec().with_partition_rows(&[30, 0, 60]).build_arc()?,
-        (left_key, right_key),
-        Operator::Lt,
-        join_type,
-        HASH_PARTITIONS,
-    )?))
+/// A piecewise merge join on `l_k < r_k`. The harness puts the buffered
+/// (left) side in one partition and sorts it as the join requires; right
+/// existence joins require neither.
+fn piecewise_merge_join(join_type: JoinType) -> PlanFactory {
+    join(
+        format!("PiecewiseMergeJoinExec {join_type}"),
+        move |left, right| {
+            let on = (col("l_k", &left.schema())?, col("r_k", &right.schema())?);
+            Ok(Arc::new(PiecewiseMergeJoinExec::try_new(
+                left,
+                right,
+                on,
+                Operator::Lt,
+                join_type,
+                HASH_PARTITIONS,
+            )?))
+        },
+    )
 }
 
 /// A symmetric hash join, which `JoinSelection` uses when both inputs are
 /// unbounded, on finite inputs
 fn symmetric_hash_join(
+    name: &str,
     mode: StreamJoinPartitionMode,
     join_type: JoinType,
-    filter: Option<JoinFilter>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let (left, right) = match mode {
-        StreamJoinPartitionMode::Partitioned => (
-            hash_on_key(left_spec(), "l_k", LEFT_ROWS)?,
-            hash_on_key(right_spec(), "r_k", RIGHT_ROWS)?,
-        ),
-        StreamJoinPartitionMode::SinglePartition => (
-            left_spec().with_partition_rows(&[LEFT_ROWS]),
-            right_spec().with_partition_rows(&[RIGHT_ROWS]),
-        ),
-    };
-    Ok(Arc::new(SymmetricHashJoinExec::try_new(
-        left.build_arc()?,
-        right.build_arc()?,
-        join_on()?,
-        filter,
-        &join_type,
-        NullEquality::NullEqualsNothing,
-        None,
-        None,
-        mode,
-    )?))
+    filter: bool,
+) -> PlanFactory {
+    join(name, move |left, right| {
+        let on = join_on(&left, &right)?;
+        let filter = filter.then(|| value_filter(&left, &right)).transpose()?;
+        Ok(Arc::new(SymmetricHashJoinExec::try_new(
+            left,
+            right,
+            on,
+            filter,
+            &join_type,
+            NullEquality::NullEqualsNothing,
+            None,
+            None,
+            mode,
+        )?))
+    })
 }
 
-/// `ASOF JOIN ... ON l_k = r_k MATCH_CONDITION (l_v >= r_v)`, on inputs
-/// sorted as the join requires: on the equality keys, ascending with nulls
-/// first, then on the match expression, ascending for `>=`
-fn asof_join() -> Result<Arc<dyn ExecutionPlan>> {
-    let options = SortOptions::new(false, true);
-    let sorted = |spec: SourceSpec, key: &str, value: &str| -> Result<SourceSpec> {
-        let exprs = vec![
-            PhysicalSortExpr::new(column(&spec, key)?, options),
-            PhysicalSortExpr::new(column(&spec, value)?, options),
-        ];
-        Ok(sorted_on(spec, exprs))
-    };
-    let left = sorted(left_spec().with_partition_rows(&[20, 0, 40]), "l_k", "l_v")?;
-    let right = sorted(
-        right_spec().with_partition_rows(&[RIGHT_ROWS]),
-        "r_k",
-        "r_v",
-    )?;
-    let match_condition = AsOfMatchExpr::new(
-        column(&left_spec(), "l_v")?,
-        Operator::GtEq,
-        column(&right_spec(), "r_v")?,
-    );
-    Ok(Arc::new(AsOfJoinExec::try_new(
-        left.build_arc()?,
-        right.build_arc()?,
-        join_on()?,
-        match_condition,
-        None,
-    )?))
+/// `ASOF JOIN ... ON l_k = r_k MATCH_CONDITION (l_v >= r_v)`. The harness
+/// sorts both inputs as the join requires, on the equality keys and then on
+/// the match expression, and puts the right input in one partition.
+fn asof_join() -> PlanFactory {
+    join("AsOfJoinExec", |left, right| {
+        let on = join_on(&left, &right)?;
+        let match_condition = AsOfMatchExpr::new(
+            col("l_v", &left.schema())?,
+            Operator::GtEq,
+            col("r_v", &right.schema())?,
+        );
+        Ok(Arc::new(AsOfJoinExec::try_new(
+            left,
+            right,
+            on,
+            match_condition,
+            None,
+        )?))
+    })
 }
 
 /// The joins under test. Join types are chosen to cover the different code
 /// paths of each operator rather than every combination: types that emit
 /// unmatched rows of the build side at the end, types that emit probe rows
 /// as they arrive, existence and mark joins, and filters.
-fn join_plans() -> Result<Vec<Case>> {
+fn join_plans() -> Vec<PlanFactory> {
     use JoinType::*;
     use PartitionMode::{CollectLeft, Partitioned};
 
-    let mut cases = vec![];
+    let mut factories = vec![];
     for join_type in [
         Inner, Left, Right, Full, LeftSemi, RightSemi, LeftAnti, RightAnti, LeftMark,
         RightMark,
     ] {
-        cases.push((
-            format!("HashJoinExec CollectLeft {join_type}"),
-            HashJoin::new(CollectLeft, join_type).build()?,
-        ));
+        factories.push(
+            HashJoin::new(CollectLeft, join_type)
+                .factory(format!("HashJoinExec CollectLeft {join_type}")),
+        );
     }
     for join_type in [Inner, Full, RightSemi, LeftAnti] {
-        cases.push((
-            format!("HashJoinExec CollectLeft {join_type} with filter"),
+        factories.push(
             HashJoin::new(CollectLeft, join_type)
                 .with_filter()
-                .build()?,
-        ));
+                .factory(format!("HashJoinExec CollectLeft {join_type} with filter")),
+        );
     }
     let mut nulls_equal = HashJoin::new(CollectLeft, Inner);
     nulls_equal.null_equality = NullEquality::NullEqualsNull;
-    cases.push((
-        "HashJoinExec CollectLeft Inner with nulls equal".to_string(),
-        nulls_equal.build()?,
-    ));
+    factories
+        .push(nulls_equal.factory("HashJoinExec CollectLeft Inner with nulls equal"));
     let mut with_fetch = HashJoin::new(CollectLeft, Inner);
     with_fetch.fetch = Some(FETCH);
-    cases.push((
-        "HashJoinExec CollectLeft Inner with fetch".to_string(),
-        with_fetch.build()?,
-    ));
+    factories.push(with_fetch.factory("HashJoinExec CollectLeft Inner with fetch"));
     for join_type in [Inner, Left, Full, RightAnti, LeftMark] {
-        cases.push((
-            format!("HashJoinExec Partitioned {join_type}"),
-            HashJoin::new(Partitioned, join_type).build()?,
-        ));
+        factories.push(
+            HashJoin::new(Partitioned, join_type)
+                .factory(format!("HashJoinExec Partitioned {join_type}")),
+        );
     }
-    cases.push((
-        "HashJoinExec Partitioned Full with filter".to_string(),
-        HashJoin::new(Partitioned, Full).with_filter().build()?,
-    ));
+    factories.push(
+        HashJoin::new(Partitioned, Full)
+            .with_filter()
+            .factory("HashJoinExec Partitioned Full with filter"),
+    );
 
     for join_type in [Inner, Left, Full, LeftSemi, RightAnti, LeftMark] {
-        cases.push((
+        factories.push(sort_merge_join(
             format!("SortMergeJoinExec {join_type}"),
-            sort_merge_join(join_type, None)?,
+            join_type,
+            false,
         ));
     }
     for join_type in [Inner, Full, LeftAnti] {
-        cases.push((
+        factories.push(sort_merge_join(
             format!("SortMergeJoinExec {join_type} with filter"),
-            sort_merge_join(join_type, Some(value_filter()?))?,
+            join_type,
+            true,
         ));
     }
 
     for join_type in [Inner, Left, Full, RightSemi, LeftAnti, RightMark] {
-        cases.push((
-            format!("NestedLoopJoinExec {join_type}"),
-            nested_loop_join(join_type)?,
-        ));
+        factories.push(nested_loop_join(join_type));
     }
 
-    cases.push((
-        "CrossJoinExec".to_string(),
-        Arc::new(CrossJoinExec::new(
-            left_spec().with_partition_rows(&[LEFT_ROWS]).build_arc()?,
-            right_spec().with_partition_rows(&[30, 0, 60]).build_arc()?,
-        )),
-    ));
+    factories.push(join("CrossJoinExec", |left, right| {
+        Ok(Arc::new(CrossJoinExec::new(left, right)))
+    }));
 
-    cases.push((
-        "SymmetricHashJoinExec SinglePartition Inner".to_string(),
-        symmetric_hash_join(StreamJoinPartitionMode::SinglePartition, Inner, None)?,
+    factories.push(symmetric_hash_join(
+        "SymmetricHashJoinExec SinglePartition Inner",
+        StreamJoinPartitionMode::SinglePartition,
+        Inner,
+        false,
     ));
-    cases.push((
-        "SymmetricHashJoinExec Partitioned Full with filter".to_string(),
-        symmetric_hash_join(
-            StreamJoinPartitionMode::Partitioned,
-            Full,
-            Some(value_filter()?),
-        )?,
+    factories.push(symmetric_hash_join(
+        "SymmetricHashJoinExec Partitioned Full with filter",
+        StreamJoinPartitionMode::Partitioned,
+        Full,
+        true,
     ));
 
     for join_type in [Inner, Full, RightSemi] {
-        cases.push((
-            format!("PiecewiseMergeJoinExec {join_type}"),
-            piecewise_merge_join(join_type)?,
-        ));
+        factories.push(piecewise_merge_join(join_type));
     }
 
-    cases.push(("AsOfJoinExec".to_string(), asof_join()?));
-
-    Ok(cases
-        .into_iter()
-        .map(|(name, plan)| Case::new(name, plan))
-        .collect())
+    factories.push(asof_join());
+    factories
 }
 
 #[tokio::test]
 async fn builtin_plan_findings() -> Result<()> {
     let output = audit(builtin_plans()?).await?;
-    insta::assert_snapshot!(output);
+    assert_snapshot("builtin_plan_findings", &output);
     Ok(())
 }
 
 #[tokio::test]
 async fn builtin_aggregate_findings() -> Result<()> {
     let output = audit(aggregate_plans()?).await?;
-    insta::assert_snapshot!(output);
+    assert_snapshot("builtin_aggregate_findings", &output);
     Ok(())
 }
 
 #[tokio::test]
 async fn builtin_join_findings() -> Result<()> {
-    let output = audit(join_plans()?).await?;
-    insta::assert_snapshot!(output);
+    let output = audit(join_plans()).await?;
+    assert_snapshot("builtin_join_findings", &output);
     Ok(())
 }

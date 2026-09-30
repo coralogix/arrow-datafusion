@@ -123,7 +123,7 @@ pub trait PlanCheck: Debug + Send + Sync {
 /// ```
 ///
 /// [`MockSourceExec`]: crate::fixtures::MockSourceExec
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlanChecker {
     checks: Vec<Arc<dyn PlanCheck>>,
     allowed: HashSet<String>,
@@ -207,6 +207,15 @@ impl PlanChecker {
     /// The checks this checker runs, including allowed (skipped) checks
     pub fn checks(&self) -> &[Arc<dyn PlanCheck>] {
         &self.checks
+    }
+
+    /// Keep only the checks for which `keep` returns true
+    pub(crate) fn retain_checks(
+        mut self,
+        keep: impl Fn(&Arc<dyn PlanCheck>) -> bool,
+    ) -> Self {
+        self.checks.retain(keep);
+        self
     }
 
     /// Run all checks that are not allowed against every node in `plan`.
