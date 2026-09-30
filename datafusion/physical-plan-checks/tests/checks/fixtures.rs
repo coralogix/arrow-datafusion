@@ -34,8 +34,8 @@ use datafusion_physical_plan::{
     displayable,
 };
 use datafusion_physical_plan_checks::fixtures::{
-    BatchLayout, MockSourceExec, SourceSpec, StatisticsPrecision, StreamBehavior,
-    StreamProbe,
+    BatchLayout, MockSourceExec, ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
+    StreamBehavior,
 };
 use datafusion_physical_plan_checks::{PlanChecker, oracle};
 use futures::StreamExt;
@@ -101,10 +101,7 @@ fn partition_rows_and_batch_layout() {
 fn random_batch_layout_with_empty_batches() {
     let source = SourceSpec::new(schema())
         .with_partition_rows(&[200, 0])
-        .with_batch_layout(BatchLayout::Random {
-            max_rows: 5,
-            empty_batches: true,
-        })
+        .with_batch_layout(BatchLayout::Random { max_rows: 5 })
         .build()
         .unwrap();
     assert_eq!(rows_per_partition(&source), vec![200, 0]);
@@ -204,10 +201,10 @@ fn row_ids_are_unique_and_increasing() {
             )])
             .unwrap(),
         )
-        .with_row_id_column("__row_id", 1000);
+        .with_row_ids(1000);
     let source = spec.build().unwrap();
     assert_eq!(source.schema(), spec.schema());
-    assert_eq!(source.schema().fields().len(), 4);
+    assert_eq!(source.schema().field(3).name(), ROW_ID_COLUMN);
 
     let ids: Vec<u64> = all_batches(&source)
         .iter()
@@ -267,10 +264,7 @@ fn generated_sources_pass_every_check() {
         SourceSpec::new(Arc::clone(&schema)).with_partition_rows(&[0, 0]),
         SourceSpec::new(Arc::clone(&schema))
             .with_partition_rows(&[30, 5, 80])
-            .with_batch_layout(BatchLayout::Random {
-                max_rows: 3,
-                empty_batches: true,
-            })
+            .with_batch_layout(BatchLayout::Random { max_rows: 3 })
             .with_ordering(ordering),
         SourceSpec::new(Arc::clone(&schema)).with_hash_partitioning(
             vec![col("b", &schema).unwrap()],
@@ -279,7 +273,7 @@ fn generated_sources_pass_every_check() {
         ),
         SourceSpec::new(Arc::clone(&schema))
             .with_partition_rows(&[10, 10])
-            .with_row_id_column("__row_id", 0)
+            .with_row_ids(0)
             .with_statistics_precision(StatisticsPrecision::Inexact),
     ];
     for spec in specs {
@@ -395,9 +389,14 @@ async fn next_item(
 
 #[tokio::test]
 async fn pending_after_serves_batches_then_stalls() {
-    let spec = small_spec().with_stream_behavior(StreamBehavior::PendingAfter(2));
-    let source = spec.build().unwrap();
-    let mut stream = execute(&source, 0);
+    let source = small_spec().build().unwrap();
+    let stalling = |batches| {
+        source
+            .clone()
+            .try_with_stream_behavior(StreamBehavior::PendingAfter(batches))
+            .unwrap()
+    };
+    let mut stream = execute(&stalling(2), 0);
     for _ in 0..2 {
         assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
     }
@@ -407,11 +406,7 @@ async fn pending_after_serves_batches_then_stalls() {
     );
 
     // Fewer batches than requested: all of them, then pending
-    let source = spec
-        .with_stream_behavior(StreamBehavior::PendingAfter(10))
-        .build()
-        .unwrap();
-    let mut stream = execute(&source, 1);
+    let mut stream = execute(&stalling(10), 1);
     for _ in 0..3 {
         assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
     }
@@ -424,8 +419,9 @@ async fn pending_after_serves_batches_then_stalls() {
 #[tokio::test]
 async fn error_after_serves_batches_then_fails() {
     let source = small_spec()
-        .with_stream_behavior(StreamBehavior::ErrorAfter(1))
         .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::ErrorAfter(1))
         .unwrap();
     let mut stream = execute(&source, 0);
     assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
@@ -457,9 +453,10 @@ fn stalling_and_failing_sources_keep_their_properties() {
 
 #[tokio::test]
 async fn unbounded_source_repeats_its_data() {
-    let source = small_spec()
-        .with_stream_behavior(StreamBehavior::Unbounded { max_rows: Some(50) })
-        .build()
+    let bounded = small_spec().build().unwrap();
+    let source = bounded
+        .clone()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 50 })
         .unwrap();
     assert_eq!(
         source.properties().boundedness,
@@ -486,7 +483,7 @@ async fn unbounded_source_repeats_its_data() {
     }
     let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
     assert_eq!(rows, 50);
-    assert_eq!(batches[3], source.partitions()[0][0]);
+    assert_eq!(batches[3], bounded.partitions()[0][0]);
 }
 
 #[tokio::test]
@@ -500,8 +497,9 @@ async fn unbounded_sorted_source_stays_sorted() {
         .with_partition_rows(&[10, 0])
         .with_batch_layout(BatchLayout::Fixed(4))
         .with_ordering(ordering.clone())
-        .with_stream_behavior(StreamBehavior::Unbounded { max_rows: Some(40) })
         .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 40 })
         .unwrap();
     let mut stream = execute(&source, 0);
     let mut batches = vec![];
@@ -523,61 +521,9 @@ async fn unbounded_sorted_source_stays_sorted() {
 fn unbounded_source_needs_rows() {
     let error = SourceSpec::new(schema())
         .with_partition_rows(&[0, 0])
-        .with_stream_behavior(StreamBehavior::Unbounded { max_rows: None })
         .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 10 })
         .unwrap_err();
     assert!(error.to_string().contains("at least one row"), "{error}");
-}
-
-#[tokio::test]
-async fn probe_records_the_stream_lifecycle() {
-    let probe = StreamProbe::new();
-    let source = small_spec().build().unwrap().with_probe(probe.clone());
-    assert!(source.probe().is_some());
-
-    let mut stream = execute(&source, 1);
-    let created = probe.partition(1);
-    assert_eq!(created.streams_created, 1);
-    assert_eq!(created.polls, 0);
-    assert!(created.created_at.is_some());
-    assert_eq!(probe.streams_alive(), 1);
-
-    while let Some(batch) = stream.next().await {
-        batch.unwrap();
-    }
-    drop(stream);
-    let observation = probe.partition(1);
-    assert_eq!(observation.batches, 3);
-    assert_eq!(observation.rows, 10);
-    // One poll per batch and one for the end
-    assert_eq!(observation.polls, 4);
-    assert_eq!(observation.streams_finished, 1);
-    assert_eq!(observation.streams_dropped, 1);
-    assert_eq!(probe.streams_alive(), 0);
-    let at = |t: Option<u64>| t.unwrap();
-    assert!(at(observation.created_at) < at(observation.first_polled_at));
-    assert!(at(observation.first_polled_at) < at(observation.finished_at));
-    assert!(at(observation.finished_at) < at(observation.dropped_at));
-
-    // Partition 0 was never executed
-    assert_eq!(probe.partition(0), Default::default());
-    assert_eq!(probe.partitions().len(), 2);
-}
-
-#[tokio::test]
-async fn probe_counts_polls_without_demand() {
-    let consumer = StreamProbe::new();
-    let probe = StreamProbe::with_consumer(&consumer);
-    let source = small_spec().build().unwrap().with_probe(probe.clone());
-
-    // Polled through a stream observed by the consumer: driven by demand
-    let mut output = consumer.observe(0, execute(&source, 0));
-    output.next().await.unwrap().unwrap();
-    assert_eq!(probe.partition(0).polls, 1);
-    assert_eq!(probe.partition(0).polls_without_demand, 0);
-
-    // Polled directly: not driven by the consumer
-    let mut input = execute(&source, 1);
-    input.next().await.unwrap().unwrap();
-    assert_eq!(probe.partition(1).polls_without_demand, 1);
 }

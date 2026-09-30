@@ -38,9 +38,9 @@ use datafusion_physical_plan::execution_plan::{
 };
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 
-use crate::context::{NodeOutput, collect_output};
-use crate::experiments::{map_mock_leaves, with_batch_size};
-use crate::fixtures::BatchLayout;
+use crate::exec::{self, collect_output};
+use crate::fixtures::{BatchLayout, map_mock_leaves};
+use crate::{CheckContext, NodeOutput};
 
 /// Fetches and input limits tried for every node, besides one larger than the
 /// node's output and inputs. A limit of 0 is not tried: `LIMIT 0` is replaced by
@@ -48,16 +48,13 @@ use crate::fixtures::BatchLayout;
 /// of 0.
 const SMALL_LIMITS: [usize; 2] = [1, 7];
 
-/// Batch sizes tried by [`VariantKind::BatchSize`]
+/// Batch sizes tried by [`Variant::BatchSize`]
 const BATCH_SIZES: [usize; 4] = [1, 2, 7, 8192];
 
-/// Batch layouts tried by [`VariantKind::BatchLayout`]
+/// Batch layouts tried by [`Variant::BatchLayout`]
 const LEAF_LAYOUTS: [BatchLayout; 3] = [
     BatchLayout::Fixed(1),
-    BatchLayout::Random {
-        max_rows: 3,
-        empty_batches: true,
-    },
+    BatchLayout::Random { max_rows: 3 },
     BatchLayout::Single,
 ];
 
@@ -65,74 +62,37 @@ const LEAF_LAYOUTS: [BatchLayout; 3] = [
 /// its children see the same batches in their leaves.
 const LAYOUT_SEED: u64 = 42;
 
-/// A family of variant runs the [`PlanChecker`] can collect for each node.
-/// Checks request them with [`PlanCheck::variants`], and read the results
-/// with [`CheckContext::variant_runs`]. See [`Variant`] for what each run
-/// executes.
+/// One variant run of a node. The [`PlanChecker`] runs every variant that
+/// applies to each node when a [`CheckKind::Variant`] check is enabled, and
+/// checks read the results with [`CheckContext::variant_runs`].
 ///
 /// [`PlanChecker`]: crate::PlanChecker
-/// [`PlanCheck::variants`]: crate::PlanCheck::variants
-/// [`CheckContext::variant_runs`]: crate::CheckContext::variant_runs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum VariantKind {
-    /// [`Variant::WithoutFetch`], for nodes where `with_fetch(None)` returns a
-    /// plan. Collected first, so that the other kinds can size their runs by
-    /// its output.
-    WithoutFetch,
-    /// [`Variant::WithFetch`] for fetches of 1, 7 and one more than the
-    /// rows of the node's output and of each of its inputs, for nodes where
-    /// `with_fetch` returns a plan
-    WithFetch,
-    /// [`Variant::LimitedInputs`] for the same values as
-    /// [`Self::WithFetch`], for nodes with children for which
-    /// `supports_limit_pushdown()` is true
-    LimitedInputs,
-    /// [`Variant::BatchSize`] with batch sizes 1, 2, 7 and 8192, for every
-    /// node
-    BatchSize,
-    /// [`Variant::BatchLayout`] with one row per batch, random batches of up
-    /// to 3 rows and empty batches, and one batch per partition, for nodes
-    /// with at least one [`MockSourceExec`] leaf
-    ///
-    /// [`MockSourceExec`]: crate::fixtures::MockSourceExec
-    BatchLayout,
-}
-
-/// One variant run of a node
+/// [`CheckKind::Variant`]: crate::CheckKind::Variant
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
-    /// The plan returned by `with_fetch(None)`
+    /// The plan returned by `with_fetch(None)`, for nodes where it returns a
+    /// plan. Its output is the **unfetched output** of a node with a fetch.
     WithoutFetch,
-    /// The plan returned by `with_fetch(Some(n))`
+    /// The plan returned by `with_fetch(Some(n))`, for `n` of 1, 7 and one
+    /// more than the rows of the node's output (with and without its fetch)
+    /// and of each of its inputs
     WithFetch(usize),
     /// The node rebuilt with every child limited to its first `n` rows per
-    /// partition: a `GlobalLimitExec` above a child with one partition, and a
-    /// `LocalLimitExec` above any other child. This is how the
-    /// `LimitPushdown` optimizer rule limits the children of a node that
-    /// supports limit pushdown.
+    /// partition, for the same values as [`Self::WithFetch`], if the node has
+    /// children and `supports_limit_pushdown()` is true. A child with one
+    /// partition is limited with a `GlobalLimitExec`, and any other child with
+    /// a `LocalLimitExec`, as the `LimitPushdown` optimizer rule limits them.
     LimitedInputs(usize),
-    /// The node executed with the session batch size set to `n`
+    /// The node executed with the session batch size set to 1, 2, 7 and 8192
     BatchSize(usize),
     /// The node rebuilt with the rows of each partition of its
-    /// [`MockSourceExec`] leaves split into batches with this layout. Every
-    /// leaf keeps the same rows in the same order and partitions, and the
-    /// same `PlanProperties`.
+    /// [`MockSourceExec`] leaves split into one row per batch, random batches
+    /// of up to 3 rows, and one batch per partition. Every leaf keeps the same
+    /// rows in the same order and partitions, and the same `PlanProperties`.
+    /// Only for nodes with a `MockSourceExec` leaf.
     ///
     /// [`MockSourceExec`]: crate::fixtures::MockSourceExec
     BatchLayout(BatchLayout),
-}
-
-impl Variant {
-    /// The family this variant belongs to
-    pub fn kind(&self) -> VariantKind {
-        match self {
-            Variant::WithoutFetch => VariantKind::WithoutFetch,
-            Variant::WithFetch(_) => VariantKind::WithFetch,
-            Variant::LimitedInputs(_) => VariantKind::LimitedInputs,
-            Variant::BatchSize(_) => VariantKind::BatchSize,
-            Variant::BatchLayout(_) => VariantKind::BatchLayout,
-        }
-    }
 }
 
 impl fmt::Display for Variant {
@@ -159,68 +119,66 @@ pub struct VariantRun {
     pub output: std::result::Result<NodeOutput, String>,
 }
 
-/// Settings shared by all variant runs
-#[derive(Debug, Clone)]
-pub(crate) struct VariantOptions {
-    /// Context of the normal execution, which variants other than
-    /// [`Variant::BatchSize`] use unchanged
-    pub task_context: Arc<TaskContext>,
-    /// Time allowed for each run
-    pub timeout: Duration,
-}
-
-/// Run the variants of `kind` that apply to `node`. `larger_than_output` is
-/// a row count larger than the output of the node and of each of its
-/// children, used as a fetch or limit that removes nothing.
+/// Run every variant that applies to `node`, whose normal output and the
+/// normal outputs of its children are in `context`
 pub(crate) async fn run(
     node: &Arc<dyn ExecutionPlan>,
-    kind: VariantKind,
-    larger_than_output: usize,
-    options: &VariantOptions,
+    context: &CheckContext,
+    timeout: Duration,
 ) -> Vec<VariantRun> {
+    // The output without the fetch sizes the other variants, so it runs first
+    let mut runs: Vec<VariantRun> = run_variant(node, Variant::WithoutFetch, timeout)
+        .await
+        .into_iter()
+        .collect();
+
+    // A limit larger than the output of the node, with and without its fetch,
+    // and of each of its children, which removes nothing
+    let unfetched = runs.first().and_then(|run| run.output.as_ref().ok());
+    let larger = std::iter::once(node)
+        .chain(node.children())
+        .filter_map(|plan| context.output(plan))
+        .chain(unfetched)
+        .map(NodeOutput::num_rows)
+        .max()
+        .unwrap_or(0)
+        + 1;
     let mut limits = SMALL_LIMITS.to_vec();
-    if !limits.contains(&larger_than_output) {
-        limits.push(larger_than_output);
+    if !limits.contains(&larger) {
+        limits.push(larger);
     }
-    let variants: Vec<Variant> = match kind {
-        VariantKind::WithoutFetch => vec![Variant::WithoutFetch],
-        VariantKind::WithFetch => limits.into_iter().map(Variant::WithFetch).collect(),
-        VariantKind::LimitedInputs => {
-            if node.supports_limit_pushdown() && !node.children().is_empty() {
-                limits.into_iter().map(Variant::LimitedInputs).collect()
-            } else {
-                vec![]
-            }
-        }
-        VariantKind::BatchSize => BATCH_SIZES.map(Variant::BatchSize).to_vec(),
-        VariantKind::BatchLayout => LEAF_LAYOUTS.map(Variant::BatchLayout).to_vec(),
-    };
-    let mut runs = vec![];
+
+    let mut variants: Vec<Variant> =
+        limits.iter().map(|n| Variant::WithFetch(*n)).collect();
+    if node.supports_limit_pushdown() && !node.children().is_empty() {
+        variants.extend(limits.iter().map(|n| Variant::LimitedInputs(*n)));
+    }
+    variants.extend(BATCH_SIZES.map(Variant::BatchSize));
+    variants.extend(LEAF_LAYOUTS.map(Variant::BatchLayout));
     for variant in variants {
-        let plan = match build(node, variant) {
-            Ok(Some(plan)) => plan,
-            Ok(None) => continue,
-            Err(e) => {
-                runs.push(VariantRun {
-                    variant,
-                    output: Err(format!(
-                        "building the plan failed: {}",
-                        e.strip_backtrace()
-                    )),
-                });
-                continue;
-            }
-        };
-        let task_context = match variant {
-            Variant::BatchSize(batch_size) => {
-                Arc::new(with_batch_size(&options.task_context, batch_size))
-            }
-            _ => Arc::clone(&options.task_context),
-        };
-        let output = collect_output(plan, task_context, options.timeout).await;
-        runs.push(VariantRun { variant, output });
+        runs.extend(run_variant(node, variant, timeout).await);
     }
     runs
+}
+
+/// Run `variant` on `node`, or return `None` if it does not apply to the node
+async fn run_variant(
+    node: &Arc<dyn ExecutionPlan>,
+    variant: Variant,
+    timeout: Duration,
+) -> Option<VariantRun> {
+    let output = match build(node, variant) {
+        Ok(None) => return None,
+        Ok(Some(plan)) => {
+            let task_context = match variant {
+                Variant::BatchSize(batch_size) => exec::task_context(batch_size),
+                _ => Arc::new(TaskContext::default()),
+            };
+            collect_output(plan, task_context, timeout).await
+        }
+        Err(e) => Err(format!("building the plan failed: {}", e.strip_backtrace())),
+    };
+    Some(VariantRun { variant, output })
 }
 
 /// Build the plan that `variant` executes from a fresh copy of `node`, or
@@ -256,7 +214,9 @@ fn build(
             let mut changed = false;
             let plan = map_mock_leaves(&node, |source| {
                 changed = true;
-                source.with_batch_layout(layout, LAYOUT_SEED).map(Some)
+                Ok(Some(Arc::new(
+                    source.with_batch_layout(layout, LAYOUT_SEED)?,
+                )))
             })?;
             changed.then_some(plan)
         }

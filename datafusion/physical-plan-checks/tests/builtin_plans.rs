@@ -278,10 +278,7 @@ fn builtin_plans() -> Result<Vec<PlanFactory>> {
         one_input("LocalLimitExec", spec(), |input| {
             Ok(Arc::new(LocalLimitExec::new(input, FETCH)))
         }),
-        // A union needs inputs with the same schema, including the name of
-        // the row id column
-        PlanFactory::new("UnionExec", vec![spec(), spec()], UnionExec::try_new)
-            .with_shared_row_id_name(),
+        PlanFactory::new("UnionExec", vec![spec(), spec()], UnionExec::try_new),
         one_input("BufferExec", spec(), |input| {
             Ok(Arc::new(BufferExec::new(input, 1024)))
         }),

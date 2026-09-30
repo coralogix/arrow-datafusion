@@ -40,7 +40,7 @@ use datafusion_physical_plan_checks::harness::{PlanFactory, PlanHarness};
 let factory = PlanFactory::new("MyExec", vec![SourceSpec::new(schema)], |inputs| {
     let input = Arc::clone(&inputs[0]);
     // Bind expressions to the input's schema by name: the harness adds a
-    // row id column to every input
+    // `__row_id` column to every input
     let key = col("a", &input.schema())?;
     Ok(Arc::new(MyExec::try_new(key, input)?) as Arc<dyn ExecutionPlan>)
 });
@@ -52,9 +52,8 @@ report.assert_no_invariant_violations();
 The harness generates the inputs, sorts, hash partitions or merges them into
 one partition as the plan requires, and checks the plan on several cases:
 several partitions with an empty one, a single partition, inexact and absent
-statistics, and empty input. The report groups the findings of all cases and
-names the cases each one occurred in, and any case can be rerun on its own
-with `PlanHarness::run_case`.
+statistics, and empty input. The report lists every case, with the plan and
+the findings of each case that has any.
 
 To check a plan built by hand, use `PlanChecker` on inputs generated with
 `SourceSpec`:
@@ -79,6 +78,10 @@ report.assert_no_invariant_violations();
   implemented, and the violations currently found in DataFusion's own plans.
 - [DESIGN.md](DESIGN.md) describes how the crate is structured, including the
   harness, and where it is heading.
+
+To add a check, write a function in `src/checks/` that returns the findings
+for one node, add it to `checks::all_checks` with its name and `CheckKind`,
+and describe it in [CHECKS.md](CHECKS.md).
 
 [apache arrow]: https://arrow.apache.org/
 [apache datafusion]: https://datafusion.apache.org/

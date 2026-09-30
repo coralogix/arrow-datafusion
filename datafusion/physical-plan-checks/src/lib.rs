@@ -37,9 +37,8 @@
 //!
 //! The easiest way to test a plan is to describe how to build it from its
 //! inputs with a [`harness::PlanFactory`], and check it with a
-//! [`harness::PlanHarness`]. The harness generates the inputs, derives the
-//! cases worth testing from the plan's input requirements, runs every check
-//! on every case, and groups the findings of all cases in one report.
+//! [`harness::PlanHarness`]. The harness generates the inputs, meets the
+//! plan's input requirements, and runs every check on several cases.
 //!
 //! Use [`PlanChecker`] to run every built-in check against every node of a
 //! plan built by hand. Build the plan under test on inputs generated with
@@ -47,15 +46,14 @@
 //! whose data, statistics, partitioning and ordering are known to be
 //! consistent.
 //!
-//! Checks that need to see how a node drives its input streams, rather than
-//! what it outputs, read the results of stream [`Experiment`]s: runs of each
-//! node on copies of its inputs that stall, fail or never end, observed with
-//! [`fixtures::StreamProbe`]s.
-//!
-//! Checks that compare a node's output with the output of a rewritten copy of
-//! the node, such as the plan returned by `with_fetch`, or of the node run
-//! under other settings, such as another batch size, read the results of
-//! [`Variant`] runs. The [`oracle`] module compares their rows.
+//! A [`PlanCheck`] reads what the checker gathered for its [`CheckKind`]:
+//! nothing but the node itself, the output of executing each node, the
+//! outputs of [`Variant`]s of each node (rewritten copies, such as the plan
+//! returned by `with_fetch`, or copies run under other settings, such as
+//! another batch size), or the results of stream [`Experiment`]s (runs on
+//! inputs that stall, fail or never end, observing how the node drives its
+//! input streams). The [`oracle`] module computes the true properties of a
+//! set of batches.
 //!
 //! See `CHECKS.md` in this crate for the catalog of checks, why each one
 //! matters and how to fix a violation, and `IMPLEMENTATION_STATUS.md` for which
@@ -68,6 +66,7 @@
 mod checker;
 pub mod checks;
 mod context;
+mod exec;
 mod experiments;
 pub mod fixtures;
 pub mod harness;
@@ -75,8 +74,8 @@ pub mod oracle;
 mod report;
 mod variants;
 
-pub use checker::{PlanCheck, PlanChecker};
+pub use checker::{CheckKind, PlanCheck, PlanChecker};
 pub use context::{CheckContext, NodeOutput};
-pub use experiments::{Experiment, RunOutcome, StreamRun};
+pub use experiments::{Experiment, PartitionObservation, RunOutcome, StreamRun};
 pub use report::{Finding, Report, Severity, Violation};
-pub use variants::{Variant, VariantKind, VariantRun};
+pub use variants::{Variant, VariantRun};

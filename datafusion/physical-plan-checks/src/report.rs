@@ -70,9 +70,7 @@ impl Finding {
 /// A [`Finding`] attributed to a check and a node in the plan tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
-    /// Catalog code of the check, such as `A1` (see `CHECKS.md`)
-    pub code: &'static str,
-    /// Stable name of the check, such as `equal_cardinality_num_rows`
+    /// Name of the check, such as `equal_cardinality_num_rows`
     pub check: &'static str,
     /// How serious the problem is
     pub severity: Severity,
@@ -88,70 +86,38 @@ pub struct Violation {
 
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let path = if self.path.is_empty() {
-            "root".to_string()
-        } else {
-            let parts: Vec<String> = self.path.iter().map(ToString::to_string).collect();
-            format!("root/{}", parts.join("/"))
-        };
         write!(
             f,
-            "[{}] {} {} at {} ({path}): {}",
-            self.severity, self.code, self.check, self.node, self.message
-        )
+            "[{}] {} at {} (root",
+            self.severity, self.check, self.node
+        )?;
+        for child in &self.path {
+            write!(f, "/{child}")?;
+        }
+        write!(f, "): {}", self.message)
     }
 }
 
-/// The result of running a [`PlanChecker`] against a plan.
+/// The violations found by a [`PlanChecker`], in plan traversal order.
 ///
 /// [`PlanChecker`]: crate::PlanChecker
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
-    violations: Vec<Violation>,
+    pub violations: Vec<Violation>,
 }
 
 impl Report {
-    /// Create a report from a list of violations
-    pub fn new(violations: Vec<Violation>) -> Self {
-        Self { violations }
-    }
-
-    /// All violations, in plan traversal order
-    pub fn violations(&self) -> &[Violation] {
-        &self.violations
-    }
-
-    /// Violations with [`Severity::Invariant`]
-    pub fn invariant_violations(&self) -> impl Iterator<Item = &Violation> {
+    /// Returns true if the report contains a [`Severity::Invariant`] violation
+    pub fn has_invariant_violations(&self) -> bool {
         self.violations
             .iter()
-            .filter(|v| v.severity == Severity::Invariant)
-    }
-
-    /// Violations with [`Severity::Lint`]
-    pub fn lints(&self) -> impl Iterator<Item = &Violation> {
-        self.violations
-            .iter()
-            .filter(|v| v.severity == Severity::Lint)
-    }
-
-    /// Violations reported by the check with the given name
-    pub fn for_check<'a>(
-        &'a self,
-        check: &'a str,
-    ) -> impl Iterator<Item = &'a Violation> {
-        self.violations.iter().filter(move |v| v.check == check)
-    }
-
-    /// Returns true if no violations were found
-    pub fn is_empty(&self) -> bool {
-        self.violations.is_empty()
+            .any(|v| v.severity == Severity::Invariant)
     }
 
     /// Panics if the report contains any [`Severity::Invariant`] violation
     pub fn assert_no_invariant_violations(&self) {
         assert!(
-            self.invariant_violations().next().is_none(),
+            !self.has_invariant_violations(),
             "ExecutionPlan invariant violations found:\n{self}"
         );
     }
@@ -159,7 +125,7 @@ impl Report {
     /// Panics if the report contains any violation, including lints
     pub fn assert_clean(&self) {
         assert!(
-            self.is_empty(),
+            self.violations.is_empty(),
             "ExecutionPlan check violations found:\n{self}"
         );
     }

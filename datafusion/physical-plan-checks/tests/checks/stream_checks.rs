@@ -22,7 +22,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use datafusion_common::Result;
 use datafusion_physical_expr::expressions::col;
 use datafusion_physical_plan::execution_plan::{
     Boundedness, EmissionType, EvaluationType,
@@ -33,25 +32,25 @@ use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_physical_plan_checks::fixtures::StatisticsPrecision;
 use datafusion_physical_plan_checks::{
-    CheckContext, Experiment, Finding, PlanCheck, PlanChecker, Report, Severity, checks,
+    CheckKind, Experiment, Finding, PlanCheck, PlanChecker, Report, Severity,
 };
 
 use crate::common::{
-    ConfigurableExec, Effect, FetchMode, HoldInput, OnInputError, exact_source, schema,
-    source, summary,
+    ConfigurableExec, Effect, FetchMode, HoldInput, OnInputError, checker, exact_source,
+    messages, schema, source, summary,
 };
 
-/// A checker with short timeouts, so that plans that never end are reported
+/// `checker` with short timeouts, so that plans that never end are reported
 /// quickly
-fn checker(checks: Vec<Arc<dyn PlanCheck>>) -> PlanChecker {
-    PlanChecker::with_checks(checks)
+fn with_short_timeouts(checker: PlanChecker) -> PlanChecker {
+    checker
         .with_timeout(Duration::from_millis(300))
         .with_stream_timeout(Duration::from_millis(300))
 }
 
-/// Run only `check`
-fn check_with(check: Arc<dyn PlanCheck>, plan: &Arc<dyn ExecutionPlan>) -> Report {
-    checker(vec![check]).check(plan).unwrap()
+/// Run only the check named `name`
+fn check_with(name: &str, plan: &Arc<dyn ExecutionPlan>) -> Report {
+    with_short_timeouts(checker(&[name])).check(plan).unwrap()
 }
 
 fn multi_partition_source() -> Arc<dyn ExecutionPlan> {
@@ -85,16 +84,16 @@ fn correct_plans_are_clean() {
     }
     // The fetch plan does not apply its fetch to its statistics, so only run
     // the checks that use stream experiments
-    let stream_checks: Vec<Arc<dyn PlanCheck>> = vec![
-        Arc::new(checks::ExecutionSucceeds),
-        Arc::new(checks::BoundednessHolds),
-        Arc::new(checks::EmissionTypeHolds),
-        Arc::new(checks::LazyEvaluationHolds),
-        Arc::new(checks::ResourcesReleased),
-        Arc::new(checks::ErrorsPropagate),
-    ];
+    let stream_checks = checker(&[
+        "execution_succeeds",
+        "boundedness_holds",
+        "emission_type_holds",
+        "lazy_evaluation_holds",
+        "resources_released",
+        "errors_propagate",
+    ]);
     for plan in plans {
-        checker(stream_checks.clone())
+        with_short_timeouts(stream_checks.clone())
             .check(&plan)
             .unwrap()
             .assert_clean();
@@ -106,21 +105,18 @@ fn bounded_claim_that_does_not_hold() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.boundedness = Some(Boundedness::Bounded);
     let lying = exec.build();
-    let report = check_with(Arc::new(checks::BoundednessHolds), &lying);
+    let report = check_with("boundedness_holds", &lying);
     assert_eq!(
         summary(&report),
         vec![(Severity::Invariant, "boundedness_holds")]
     );
-    assert!(
-        report.violations()[0].message.contains("did not end"),
-        "{report}"
-    );
+    assert!(messages(&report)[0].contains("did not end"), "{report}");
 
     // A parent that trusts the child's claim is not reported
     let parent = ConfigurableExec::new(lying).build();
-    let report = check_with(Arc::new(checks::BoundednessHolds), &parent);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    let report = check_with("boundedness_holds", &parent);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
 }
 
 #[test]
@@ -128,7 +124,7 @@ fn fetch_that_makes_the_output_bounded_is_a_lint() {
     let mut exec = ConfigurableExec::new(multi_partition_source()).fetch(5);
     exec.fetch_mode = FetchMode::Enforce;
     let plan = exec.build();
-    let report = check_with(Arc::new(checks::BoundednessHolds), &plan);
+    let report = check_with("boundedness_holds", &plan);
     assert_eq!(
         summary(&report),
         vec![(Severity::Lint, "boundedness_holds")]
@@ -141,7 +137,7 @@ fn fetch_that_makes_the_output_bounded_is_a_lint() {
         .effect(Effect::LowerEqual);
     exec.fetch_mode = FetchMode::Enforce;
     let plan = exec.build();
-    check_with(Arc::new(checks::BoundednessHolds), &plan).assert_clean();
+    check_with("boundedness_holds", &plan).assert_clean();
 }
 
 #[test]
@@ -149,13 +145,13 @@ fn incremental_claim_that_does_not_hold() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.buffer_all = true;
     let plan = exec.build();
-    let report = check_with(Arc::new(checks::EmissionTypeHolds), &plan);
+    let report = check_with("emission_type_holds", &plan);
     assert_eq!(
         summary(&report),
         vec![(Severity::Invariant, "emission_type_holds")]
     );
     assert!(
-        report.violations()[0].message.contains("produced no rows"),
+        messages(&report)[0].contains("produced no rows"),
         "{report}"
     );
 }
@@ -170,7 +166,7 @@ fn incremental_node_over_a_final_child_is_not_checked() {
     let mut parent = ConfigurableExec::new(child.build());
     parent.emission_type = Some(EmissionType::Incremental);
     let plan = parent.build();
-    check_with(Arc::new(checks::EmissionTypeHolds), &plan).assert_clean();
+    check_with("emission_type_holds", &plan).assert_clean();
 }
 
 #[test]
@@ -178,15 +174,13 @@ fn lazy_claim_that_does_not_hold() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.eager = true;
     let eager = exec.build();
-    let report = check_with(Arc::new(checks::LazyEvaluationHolds), &eager);
+    let report = check_with("lazy_evaluation_holds", &eager);
     assert_eq!(
         summary(&report),
         vec![(Severity::Invariant, "lazy_evaluation_holds")]
     );
     assert!(
-        report.violations()[0]
-            .message
-            .contains("partitions [0, 1, 2] of child 0"),
+        messages(&report)[0].contains("partitions [0, 1, 2] of child 0"),
         "{report}"
     );
 
@@ -198,7 +192,7 @@ fn lazy_claim_that_does_not_hold() {
     let mut parent = ConfigurableExec::new(exec.build());
     parent.evaluation_type = Some(EvaluationType::Lazy);
     let plan = parent.build();
-    check_with(Arc::new(checks::LazyEvaluationHolds), &plan).assert_clean();
+    check_with("lazy_evaluation_holds", &plan).assert_clean();
 }
 
 #[test]
@@ -206,15 +200,13 @@ fn input_streams_held_by_the_plan_are_a_lint() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::InPlan;
     let plan = exec.build();
-    let report = check_with(Arc::new(checks::ResourcesReleased), &plan);
+    let report = check_with("resources_released", &plan);
     assert_eq!(
         summary(&report),
         vec![(Severity::Lint, "resources_released")]
     );
     assert!(
-        report.violations()[0]
-            .message
-            .contains("only dropped once the plan itself was dropped"),
+        messages(&report)[0].contains("only dropped once the plan itself was dropped"),
         "{report}"
     );
 }
@@ -224,15 +216,13 @@ fn input_streams_that_are_never_dropped() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::Forever;
     let plan = exec.build();
-    let report = check_with(Arc::new(checks::ResourcesReleased), &plan);
+    let report = check_with("resources_released", &plan);
     assert_eq!(
         summary(&report),
         vec![(Severity::Invariant, "resources_released")]
     );
     assert!(
-        report.violations()[0]
-            .message
-            .contains("partitions [0, 1, 2] of child 0 were still alive"),
+        messages(&report)[0].contains("partitions [0, 1, 2] of child 0 were still alive"),
         "{report}"
     );
 }
@@ -244,7 +234,7 @@ fn input_streams_released_later_by_a_task_are_clean() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::InTask;
     let plan = exec.build();
-    check_with(Arc::new(checks::ResourcesReleased), &plan).assert_clean();
+    check_with("resources_released", &plan).assert_clean();
 }
 
 #[test]
@@ -252,23 +242,21 @@ fn memory_that_is_never_released() {
     let mut exec = ConfigurableExec::new(exact_source(10));
     exec.leak_memory = true;
     let leaking = exec.build();
-    let report = check_with(Arc::new(checks::ResourcesReleased), &leaking);
+    let report = check_with("resources_released", &leaking);
     assert_eq!(
         summary(&report),
         vec![(Severity::Invariant, "resources_released")]
     );
     assert!(
-        report.violations()[0]
-            .message
-            .contains("1024 bytes are still reserved"),
+        messages(&report)[0].contains("1024 bytes are still reserved"),
         "{report}"
     );
 
     // The parent inherits the leak, and is not reported
     let parent = ConfigurableExec::new(leaking).build();
-    let report = check_with(Arc::new(checks::ResourcesReleased), &parent);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    let report = check_with("resources_released", &parent);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
 }
 
 #[test]
@@ -284,14 +272,14 @@ fn errors_that_do_not_propagate() {
         let mut exec = ConfigurableExec::new(multi_partition_source());
         exec.on_input_error = on_error;
         let plan = exec.build();
-        let report = check_with(Arc::new(checks::ErrorsPropagate), &plan);
+        let report = check_with("errors_propagate", &plan);
         assert_eq!(
             summary(&report),
             vec![(Severity::Invariant, "errors_propagate")],
             "{on_error:?}"
         );
         assert!(
-            report.violations()[0].message.contains(expected),
+            messages(&report)[0].contains(expected),
             "{on_error:?}: {report}"
         );
     }
@@ -300,9 +288,9 @@ fn errors_that_do_not_propagate() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.on_input_error = OnInputError::Swallow;
     let parent = ConfigurableExec::new(exec.build()).build();
-    let report = check_with(Arc::new(checks::ErrorsPropagate), &parent);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    let report = check_with("errors_propagate", &parent);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
 }
 
 #[test]
@@ -316,32 +304,15 @@ fn error_after_the_fetch_is_satisfied_does_not_have_to_propagate() {
     exec.fetch_mode = FetchMode::Enforce;
     exec.on_input_error = OnInputError::Swallow;
     let plan = exec.build();
-    check_with(Arc::new(checks::ErrorsPropagate), &plan).assert_clean();
+    check_with("errors_propagate", &plan).assert_clean();
 }
 
-/// A user defined check that reads the laziness experiment and reports how
-/// many input polls were not driven by the node's output
-#[derive(Debug)]
-struct CountUndemandedPolls;
-
-impl PlanCheck for CountUndemandedPolls {
-    fn code(&self) -> &'static str {
-        "X1"
-    }
-
-    fn name(&self) -> &'static str {
-        "count_undemanded_polls"
-    }
-
-    fn experiments(&self) -> &'static [Experiment] {
-        &[Experiment::Laziness]
-    }
-
-    fn check_node(
-        &self,
-        node: &Arc<dyn ExecutionPlan>,
-        context: &CheckContext,
-    ) -> Result<Vec<Finding>> {
+/// A user defined check that reads the laziness experiment and reports each
+/// input partition that was polled without demand
+const COUNT_UNDEMANDED_POLLS: PlanCheck = PlanCheck {
+    name: "count_undemanded_polls",
+    kind: CheckKind::Stream,
+    check: |node, context| {
         Ok(context
             .stream_runs(node, Experiment::Laziness)
             .iter()
@@ -349,8 +320,8 @@ impl PlanCheck for CountUndemandedPolls {
             .filter(|observation| observation.polls_without_demand > 0)
             .map(|_| Finding::lint("undemanded"))
             .collect())
-    }
-}
+    },
+};
 
 #[test]
 fn laziness_experiment_tells_eager_from_lazy_builtin_plans() {
@@ -370,9 +341,10 @@ fn laziness_experiment_tells_eager_from_lazy_builtin_plans() {
         .unwrap(),
     );
     // The repartition polls every input partition from a spawned task
-    let report = check_with(Arc::new(CountUndemandedPolls), &repartition);
-    assert_eq!(report.violations().len(), 3, "{report}");
-    check_with(Arc::new(CountUndemandedPolls), &projection).assert_clean();
+    let checker = PlanChecker::with_checks(vec![COUNT_UNDEMANDED_POLLS]);
+    let report = checker.check(&repartition).unwrap();
+    assert_eq!(report.violations.len(), 3, "{report}");
+    checker.check(&projection).unwrap().assert_clean();
 }
 
 #[test]
@@ -384,15 +356,15 @@ fn limit_that_needs_more_rows_than_the_input_serves_is_not_reported() {
     let large_skip: Arc<dyn ExecutionPlan> =
         Arc::new(GlobalLimitExec::new(exact_source(40), 10_000_000, Some(10)));
     for plan in [large_fetch, large_skip] {
-        check_with(Arc::new(checks::BoundednessHolds), &plan).assert_clean();
-        check_with(Arc::new(checks::EmissionTypeHolds), &plan).assert_clean();
+        check_with("boundedness_holds", &plan).assert_clean();
+        check_with("emission_type_holds", &plan).assert_clean();
     }
 
     // Without a fetch, the limit never ends, whatever the row limit
     let no_fetch: Arc<dyn ExecutionPlan> =
         Arc::new(GlobalLimitExec::new(exact_source(40), 5, None));
     assert_eq!(
-        summary(&check_with(Arc::new(checks::BoundednessHolds), &no_fetch)),
+        summary(&check_with("boundedness_holds", &no_fetch)),
         vec![(Severity::Invariant, "boundedness_holds")]
     );
 }

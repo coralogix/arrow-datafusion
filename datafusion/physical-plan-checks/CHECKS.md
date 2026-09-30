@@ -29,11 +29,11 @@ implemented.
 
 ## Reading this catalog
 
-Each check has a **code** (such as `A1`) that places it in this catalog, and
-a **name** (such as `equal_cardinality_num_rows`) that is stable and appears
-in reports. A catalog entry can contain more than one named check when they
-verify closely related properties. Use the name with `PlanFactory::allow` or
-`PlanChecker::allow` to skip a check.
+Each check has a **name** (such as `equal_cardinality_num_rows`) that is
+stable and appears in reports, and a **code** (such as `A1`) that places it
+in this catalog. A catalog entry can contain more than one named check when
+they verify closely related properties. Use the name with
+`PlanFactory::allow` or `PlanChecker::allow` to skip a check.
 
 Every violation has a severity:
 
@@ -58,6 +58,11 @@ Checks come in four kinds:
 
 Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
+In code, each check has a `CheckKind` that says what the checker gathers for
+it before checks run: nothing (`Static`, section A), the output of each node
+(`Execution`, B0 to B8), variant runs (`Variant`, sections D and E) or
+stream experiments (`Stream`, B10 to B12, F1 and F2).
+
 Checks run on one node at a time, but the checker visits every node of a
 plan. Tests should build the plan under test on inputs generated with
 `fixtures::SourceSpec`. It produces a `fixtures::MockSourceExec` whose
@@ -75,8 +80,9 @@ execution, such as a dynamic filter, does not affect another.
 ### Stream experiments
 
 Some checks need to see how a node drives its input streams, which its output
-alone does not show. They request **stream experiments** (`Experiment`), which
-the checker runs on every node with children before running checks:
+alone does not show. When any of them is enabled, the checker runs every
+**stream experiment** (`Experiment`) on every node with children before
+running checks:
 
 - The node is rebuilt from a `reset_plan_states` copy of its subtree. The
   `MockSourceExec` leaves below some or all children are replaced by copies
@@ -91,7 +97,7 @@ the checker runs on every node with children before running checks:
   happen outside a poll of the node's own output. Because the probes sit
   directly below the node, what they record is caused by the node, not by its
   descendants.
-- Experiments use a batch size of at most 8, and every run has a timeout.
+- Experiments use a batch size of 8, and every run has a timeout.
   Runs on finite inputs use the execution timeout (`PlanChecker::with_timeout`,
   30 seconds by default). Runs on inputs that never end, and waits for streams
   and memory to be released, use the stream timeout
@@ -110,9 +116,9 @@ stream experiments only in the `default` case (see [Cases](#cases)).
 
 The checks in sections D and E compare a node's output with the output of a
 **variant run** (`Variant`): a rewritten copy of the node, or the node run
-under other settings. The checker runs the variants that enabled checks
-request (`VariantKind`) after it has executed every node normally, so that
-their sizes can depend on the normal outputs:
+under other settings. When any of them is enabled, the checker runs every
+variant that applies to each node, after it has executed every node
+normally, so that their sizes can depend on the normal outputs:
 
 - Each run executes a fresh `reset_plan_states` copy of the node's subtree to
   completion, like the normal execution, within the execution timeout.
@@ -135,37 +141,39 @@ their sizes can depend on the normal outputs:
 
 Rows are compared with the functions in `oracle`: as multisets, in order, and
 as a prefix of a sorted sequence in which rows that tie on the sort key may
-appear in any order and may be exchanged for each other. Floating point
-values are equal when their relative difference is at most `1e-6`
-(`oracle::FLOAT_RELATIVE_TOLERANCE`), since changing batch sizes or batch
-boundaries can change the order in which an operator adds them. Sort keys are
-compared exactly.
+appear in any order and may be exchanged for each other. Values are compared
+exactly. The floating point values `SourceSpec` generates are small
+multiples of 0.5, so sums of them do not depend on the order in which an
+operator adds them, which batch sizes and batch boundaries can change.
 
 ### Cases
 
 The `PlanHarness` checks a plan on several **cases**, one per `Profile`,
 each a fully specified set of inputs. `Profile::defaults()` gives:
 
-- `default`: three partitions, the second of them empty, random batches of
-  up to 16 rows including empty batches, and exact statistics;
+- `default`: three partitions, the second of them empty, and exact
+  statistics;
 - `single partition`;
 - `inexact statistics` and `absent statistics`, with the default layout;
 - `empty input`: every partition empty.
+
+Every case splits the rows of each partition into random batches of up to 16
+rows, including empty batches.
 
 Inputs are then adapted to the plan's requirements: an input that must be
 sorted is sorted, one that must be hash partitioned is hash partitioned into
 the profile's number of partitions (the same for every input, so
 co-partitioned inputs match), and one that must be a single partition gets
-one. Every input has a row id column, `__row_id_0` for the first input and
-so on, with ids in a separate range per input.
+one. Every input has a `__row_id` column, with ids in a separate range per
+input.
 
 Checks that need stream experiments (`boundedness_holds`,
 `emission_type_holds`, `lazy_evaluation_holds`, `resources_released` and
 `errors_propagate`) only run in the `default` case: they depend on how the
 plan drives its streams rather than on the shape of its data, and several
 of them wait for the stream timeout. Every other check runs in every case.
-The report groups a finding that occurs in several cases and names the
-cases, so a finding that only appears with, say, empty input stands out.
+The report lists every case, with the plan and the findings of each case
+that has any.
 
 ### Terms
 
@@ -436,18 +444,9 @@ what the plan reports.
   statistics depend on which of the child's is not known; the child is
   reported instead. A node that makes false claims of its own over such a
   child is only reported once the child is fixed.
-- **Reporting:** a node has at most one finding per statistic, in the order
-  `num_rows`, `null_count`, `distinct_count`, `min_value`, `max_value`, since
-  one cause, such as column statistics passed through unchanged, usually
-  makes the same statistic false in many columns and partitions. The finding
-  gives the claimed and actual values of the first false one, taking the
-  overall statistics before those of the partitions and columns in schema
-  order, and then counts the others and lists where they are, by column in
-  schema order and then by partition, for example
-  `(also 6 more false null_count statistics: 'l_k' in partitions 0-2; 'r_k' overall and in partitions 0, 2)`.
-  At most four columns, and four partitions or ranges of consecutive
-  partitions per column, are listed; the rest are counted, as in
-  `and 2 more` or `and 4 more in 2 other columns`.
+- **Reporting:** one finding for the overall statistics and one for each
+  partition that has a false exact statistic, listing every false statistic
+  with its claimed and actual values, by column in schema order.
 - **Why:** exact statistics are used to prove things, for example to remove a
   limit or to answer an aggregate without reading data.
 - **Fix:** report `Inexact` for anything that cannot be proven.
@@ -650,10 +649,9 @@ what the plan reports.
 
 ## C. Order and input requirements
 
-The harness gives every input a row id column (`__row_id_0`, `__row_id_1`,
-and so on) whose ids increase within the input and use a separate range for
-each input. Many nodes pass it through, which lets the checks track where
-each output row came from.
+The harness gives every input a `__row_id` column whose ids increase within
+the input and use a separate range for each input. Many nodes pass it
+through, which lets the checks track where each output row came from.
 
 ### C1 `maintains_input_order_holds`
 
@@ -883,8 +881,6 @@ Some differences are legitimate:
   of rows of a node with one output partition), rows from the unfetched
   output, and the first rows in sort order where the node reports an
   ordering. Without the unfetched output, only the row counts are compared.
-- **Floating point values** are compared with a relative tolerance (see
-  [Variant runs](#variant-runs)).
 - **Attribution:** batch sizes and leaf layouts apply to the whole subtree. A
   node is only compared under a setting in which every child produced exactly
   the same rows, in the same order and partitions, as it does normally.

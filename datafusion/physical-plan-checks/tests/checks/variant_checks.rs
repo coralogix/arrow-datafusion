@@ -22,10 +22,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion_common::Result;
 use datafusion_physical_expr::expressions::col;
 use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion_physical_plan::ExecutionPlan;
@@ -37,34 +34,17 @@ use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeE
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan_checks::fixtures::{BatchLayout, SourceSpec};
 use datafusion_physical_plan_checks::{
-    CheckContext, Finding, PlanCheck, PlanChecker, Report, Severity, Variant,
-    VariantKind, checks, oracle,
+    CheckKind, Finding, PlanCheck, PlanChecker, Report, Severity, Variant, oracle,
 };
 
-use crate::common::{ConfigurableExec, Effect, FetchMode, Transform, schema, summary};
+use crate::common::{
+    ConfigurableExec, Effect, FetchMode, Transform, checker, checker_of, messages,
+    schema, summary,
+};
 
-/// Run only `check`
-fn check_with(check: Arc<dyn PlanCheck>, plan: &Arc<dyn ExecutionPlan>) -> Report {
-    PlanChecker::with_checks(vec![check]).check(plan).unwrap()
-}
-
-/// The checks this file tests
-fn variant_checks() -> Vec<Arc<dyn PlanCheck>> {
-    vec![
-        Arc::new(checks::WithFetchEquivalent),
-        Arc::new(checks::LimitPushdownEquivalent),
-        Arc::new(checks::BatchSizeInvariance),
-        Arc::new(checks::BatchBoundaryInvariance),
-    ]
-}
-
-/// Messages of every violation in the report
-fn messages(report: &Report) -> Vec<&str> {
-    report
-        .violations()
-        .iter()
-        .map(|v| v.message.as_str())
-        .collect()
+/// Run only the check named `name`
+fn check_with(name: &str, plan: &Arc<dyn ExecutionPlan>) -> Report {
+    checker(&[name]).check(plan).unwrap()
 }
 
 fn ordering_on_a() -> LexOrdering {
@@ -79,7 +59,7 @@ fn ordering_on_a() -> LexOrdering {
 fn rows_source(rows: &[usize]) -> Arc<dyn ExecutionPlan> {
     SourceSpec::new(schema())
         .with_partition_rows(rows)
-        .with_row_id_column("id", 0)
+        .with_row_ids(0)
         .build_arc()
         .unwrap()
 }
@@ -91,7 +71,7 @@ fn sorted_rows_source(rows: &[usize]) -> Arc<dyn ExecutionPlan> {
         .with_partition_rows(rows)
         .with_distinct_values(5)
         .with_ordering(ordering_on_a())
-        .with_row_id_column("id", 0)
+        .with_row_ids(0)
         .build_arc()
         .unwrap()
 }
@@ -120,7 +100,7 @@ fn correct_nodes_are_clean() {
         pushdown.limit_pushdown = true;
         plans.push(pushdown.build());
         for plan in plans {
-            PlanChecker::with_checks(variant_checks())
+            checker_of(&[CheckKind::Variant])
                 .check(&plan)
                 .unwrap()
                 .assert_clean();
@@ -132,17 +112,18 @@ fn correct_nodes_are_clean() {
 fn fetch_that_keeps_too_many_rows() {
     let mut exec = fetching(rows_source(&[40, 0, 60]), None);
     exec.fetch_mode = FetchMode::KeepOneMore;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Invariant, "with_fetch_equivalent")]
-    );
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
-            "with_fetch(Some(1)): partition 0 has 2 rows, more than 1 (also \
-             with_fetch(Some(7)))"
+            "with_fetch(Some(1)): partition 0 has 2 rows, more than the limit of 1",
+            "with_fetch(Some(7)): partition 0 has 8 rows, more than the limit of 7",
         ]
+    );
+    assert!(
+        summary(&report)
+            .iter()
+            .all(|finding| *finding == (Severity::Invariant, "with_fetch_equivalent"))
     );
 }
 
@@ -150,13 +131,16 @@ fn fetch_that_keeps_too_many_rows() {
 fn fetch_that_keeps_too_few_rows() {
     let mut exec = fetching(rows_source(&[100]), None);
     exec.fetch_mode = FetchMode::KeepHalf;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
-            "with_fetch(Some(1)): the output has 0 rows, but limiting the output \
-             without the fetch (100 rows) to 1 rows gives 1 (also with_fetch(Some(7)), \
-             with_fetch(Some(101)))"
+            "with_fetch(Some(1)): the output has 0 rows, but limiting 100 rows to 1 \
+             gives 1",
+            "with_fetch(Some(7)): the output has 3 rows, but limiting 100 rows to 7 \
+             gives 7",
+            "with_fetch(Some(101)): the output has 50 rows, but limiting 100 rows to \
+             101 gives 100",
         ]
     );
 }
@@ -170,18 +154,18 @@ fn fetch_that_keeps_rows_that_are_not_first() {
             .with_partition_rows(rows)
             .with_distinct_values(100_000)
             .with_ordering(ordering_on_a())
-            .with_row_id_column("id", 0)
+            .with_row_ids(0)
             .build_arc()
             .unwrap();
         let mut exec = fetching(source, None);
         exec.fetch_mode = FetchMode::SkipFirstRow;
-        let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+        let report = check_with("with_fetch_equivalent", &exec.build());
         let expected = if rows.len() == 1 {
             "with_fetch(Some(1)): the output is not a prefix of the output without \
-             the fetch sorted by [a@0 ASC]"
+             the limit sorted by [a@0 ASC]"
         } else {
             "with_fetch(Some(1)): the first 1 rows of all partitions together, in sort \
-             order, are not the first rows of the output without the fetch sorted by \
+             order, are not the first rows of the output without the limit sorted by \
              [a@0 ASC]"
         };
         assert!(
@@ -194,7 +178,7 @@ fn fetch_that_keeps_rows_that_are_not_first() {
     // the fetch
     let mut exec = fetching(sorted_rows_source(&[100]), None);
     exec.fetch_mode = FetchMode::SkipFirstRow;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert!(
         messages(&report)
             .iter()
@@ -206,12 +190,12 @@ fn fetch_that_keeps_rows_that_are_not_first() {
     // largest fetch shows that a row is missing.
     let mut exec = fetching(rows_source(&[100]), None);
     exec.fetch_mode = FetchMode::SkipFirstRow;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
-            "with_fetch(Some(101)): the output has 99 rows, but limiting the output \
-             without the fetch (100 rows) to 101 rows gives 100"
+            "with_fetch(Some(101)): the output has 99 rows, but limiting 100 rows to \
+             101 gives 100"
         ]
     );
 }
@@ -220,12 +204,14 @@ fn fetch_that_keeps_rows_that_are_not_first() {
 fn fetch_that_makes_up_rows() {
     let mut exec = fetching(rows_source(&[100]), None);
     exec.fetch_mode = FetchMode::RepeatFirstRow;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
             "with_fetch(Some(7)): 6 of its 7 rows do not appear in the output without \
-             the fetch (also with_fetch(Some(101)))"
+             the limit",
+            "with_fetch(Some(101)): 100 of its 101 rows do not appear in the output \
+             without the limit",
         ]
     );
 }
@@ -234,12 +220,13 @@ fn fetch_that_makes_up_rows() {
 fn own_fetch_is_checked() {
     let mut exec = fetching(rows_source(&[100]), Some(5));
     exec.fetch_mode = FetchMode::KeepOneMore;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
-            "the node's own fetch of 5: partition 0 has 6 rows, more than 5 (also \
-             with_fetch(Some(1)), with_fetch(Some(7)))"
+            "the node's own fetch of 5: partition 0 has 6 rows, more than the limit of 5",
+            "with_fetch(Some(1)): partition 0 has 2 rows, more than the limit of 1",
+            "with_fetch(Some(7)): partition 0 has 8 rows, more than the limit of 7",
         ]
     );
 }
@@ -248,7 +235,7 @@ fn own_fetch_is_checked() {
 fn with_fetch_none_that_keeps_the_fetch() {
     let mut exec = fetching(rows_source(&[100]), Some(5));
     exec.keep_fetch_on_with_fetch_none = true;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
     assert!(
         messages(&report).contains(
             &"with_fetch(None): the plan reports fetch() Some(5) instead of None"
@@ -261,10 +248,11 @@ fn with_fetch_none_that_keeps_the_fetch() {
 fn with_fetch_that_drops_the_ordering_is_a_lint() {
     let mut exec = fetching(sorted_rows_source(&[100]), None);
     exec.with_fetch_drops_ordering = true;
-    let report = check_with(Arc::new(checks::WithFetchEquivalent), &exec.build());
+    let report = check_with("with_fetch_equivalent", &exec.build());
+    // Reported for the plans of with_fetch(None) and each with_fetch(Some(n))
     assert_eq!(
         summary(&report),
-        vec![(Severity::Lint, "with_fetch_equivalent")]
+        vec![(Severity::Lint, "with_fetch_equivalent"); 4]
     );
     assert!(
         messages(&report)[0].starts_with(
@@ -284,7 +272,7 @@ fn partitioned_topk_can_keep_fewer_rows_per_partition() {
             .with_preserve_partitioning(true)
             .with_fetch(Some(10)),
     );
-    check_with(Arc::new(checks::WithFetchEquivalent), &plan).assert_clean();
+    check_with("with_fetch_equivalent", &plan).assert_clean();
 }
 
 #[test]
@@ -315,7 +303,7 @@ fn limit_pushdown_through_correct_nodes_is_clean() {
     ];
     for plan in plans {
         assert!(plan.supports_limit_pushdown());
-        check_with(Arc::new(checks::LimitPushdownEquivalent), &plan).assert_clean();
+        check_with("limit_pushdown_equivalent", &plan).assert_clean();
     }
 }
 
@@ -326,15 +314,18 @@ fn limit_pushdown_through_a_node_that_needs_later_rows() {
     let mut exec = ConfigurableExec::new(rows_source(&[100])).effect(Effect::LowerEqual);
     exec.skip = 5;
     exec.limit_pushdown = true;
-    let report = check_with(Arc::new(checks::LimitPushdownEquivalent), &exec.build());
+    let report = check_with("limit_pushdown_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
             "with every child limited to its first 1 rows per partition: the output \
-             has 0 rows, but limiting the normal output (95 rows) to 1 rows gives 1, so \
-             a limit above the node cannot be pushed to its children; return false \
-             from supports_limit_pushdown (also with every child limited to its first \
-             7 rows per partition)"
+             has 0 rows, but limiting 95 rows to 1 gives 1, so a limit above the node \
+             cannot be pushed to its children; return false from \
+             supports_limit_pushdown",
+            "with every child limited to its first 7 rows per partition: the output \
+             has 2 rows, but limiting 95 rows to 7 gives 7, so a limit above the node \
+             cannot be pushed to its children; return false from \
+             supports_limit_pushdown",
         ]
     );
 
@@ -344,7 +335,7 @@ fn limit_pushdown_through_a_node_that_needs_later_rows() {
     let limit: Arc<dyn ExecutionPlan> =
         Arc::new(GlobalLimitExec::new(rows_source(&[100]), 5, Some(10)));
     assert!(limit.supports_limit_pushdown());
-    check_with(Arc::new(checks::LimitPushdownEquivalent), &limit).assert_clean();
+    check_with("limit_pushdown_equivalent", &limit).assert_clean();
 }
 
 #[test]
@@ -355,14 +346,16 @@ fn limit_pushdown_through_a_node_that_combines_partitions() {
     let mut exec = ConfigurableExec::new(rows_source(&[40, 30, 60]));
     exec.coalesce = true;
     exec.limit_pushdown = true;
-    let report = check_with(Arc::new(checks::LimitPushdownEquivalent), &exec.build());
+    let report = check_with("limit_pushdown_equivalent", &exec.build());
     assert_eq!(
         messages(&report),
         vec![
             "with every child limited to its first 1 rows per partition: partition 0 \
-             has 3 rows, more than 1, so a limit above the node cannot be pushed to its \
-             children; return false from supports_limit_pushdown (also with every \
-             child limited to its first 7 rows per partition)"
+             has 3 rows, more than the limit of 1, so a limit above the node cannot be \
+             pushed to its children; return false from supports_limit_pushdown",
+            "with every child limited to its first 7 rows per partition: partition 0 \
+             has 21 rows, more than the limit of 7, so a limit above the node cannot \
+             be pushed to its children; return false from supports_limit_pushdown",
         ]
     );
 
@@ -371,7 +364,7 @@ fn limit_pushdown_through_a_node_that_combines_partitions() {
     // node above.
     let coalesce: Arc<dyn ExecutionPlan> =
         Arc::new(CoalescePartitionsExec::new(rows_source(&[40, 30, 60])));
-    check_with(Arc::new(checks::LimitPushdownEquivalent), &coalesce).assert_clean();
+    check_with("limit_pushdown_equivalent", &coalesce).assert_clean();
 }
 
 #[test]
@@ -379,36 +372,39 @@ fn output_that_depends_on_the_batch_size() {
     let mut exec = ConfigurableExec::new(rows_source(&[100])).effect(Effect::LowerEqual);
     exec.stop_after_session_batch = true;
     let broken = exec.build();
-    let report = check_with(Arc::new(checks::BatchSizeInvariance), &broken);
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Invariant, "batch_size_invariance")]
-    );
+    let report = check_with("batch_size_invariance", &broken);
     assert_eq!(
         messages(&report),
-        vec![
-            "with batch size 1: the node produced 1 rows, 0 of which do not appear in \
-             the normal output, instead of the 100 rows it produces normally (also with \
-             batch size 2, with batch size 7)"
-        ]
+        [1, 2, 7]
+            .map(|n| format!(
+                "with batch size {n}: the node produced {n} rows, 0 of which do not \
+                 appear in the normal output, instead of the 100 rows it produces \
+                 normally"
+            ))
+            .to_vec()
     );
     // The batch size does not change the batches the leaves serve
-    check_with(Arc::new(checks::BatchBoundaryInvariance), &broken).assert_clean();
+    check_with("batch_boundary_invariance", &broken).assert_clean();
 
     // A correct parent sees different input under those batch sizes, and is
     // not reported
     let parent = ConfigurableExec::new(Arc::clone(&broken)).build();
-    let report = check_with(Arc::new(checks::BatchSizeInvariance), &parent);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    let report = check_with("batch_size_invariance", &parent);
+    assert!(
+        report.violations.iter().all(|v| v.path == vec![0]),
+        "{report}"
+    );
 
     // Above a child whose output does not change, the node is reported
     let child = ConfigurableExec::new(rows_source(&[100])).build();
     let mut exec = ConfigurableExec::new(child).effect(Effect::LowerEqual);
     exec.stop_after_session_batch = true;
-    let report = check_with(Arc::new(checks::BatchSizeInvariance), &exec.build());
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, Vec::<usize>::new());
+    let report = check_with("batch_size_invariance", &exec.build());
+    assert_eq!(report.violations.len(), 3, "{report}");
+    assert!(
+        report.violations.iter().all(|v| v.path.is_empty()),
+        "{report}"
+    );
 }
 
 #[test]
@@ -418,22 +414,22 @@ fn output_that_depends_on_batch_boundaries() {
         .effect(Effect::LowerEqual)
         .transform(Transform::DropHalf)
         .build();
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &broken);
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Invariant, "batch_boundary_invariance")]
-    );
+    let report = check_with("batch_boundary_invariance", &broken);
+    assert!(!report.violations.is_empty());
     assert!(
         messages(&report)[0].starts_with("with input rows in batches of 1 row: the node"),
         "{report}"
     );
-    check_with(Arc::new(checks::BatchSizeInvariance), &broken).assert_clean();
+    check_with("batch_size_invariance", &broken).assert_clean();
 
     // Reported on the node, not on its parent
     let parent = ConfigurableExec::new(Arc::clone(&broken)).build();
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &parent);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    let report = check_with("batch_boundary_invariance", &parent);
+    assert!(!report.violations.is_empty());
+    assert!(
+        report.violations.iter().all(|v| v.path == vec![0]),
+        "{report}"
+    );
 
     // Above a child whose output does not change, the node is reported
     let child = ConfigurableExec::new(rows_source(&[40, 0, 60])).build();
@@ -441,9 +437,12 @@ fn output_that_depends_on_batch_boundaries() {
         .effect(Effect::LowerEqual)
         .transform(Transform::DropHalf)
         .build();
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &broken);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, Vec::<usize>::new());
+    let report = check_with("batch_boundary_invariance", &broken);
+    assert!(!report.violations.is_empty());
+    assert!(
+        report.violations.iter().all(|v| v.path.is_empty()),
+        "{report}"
+    );
 }
 
 #[test]
@@ -467,92 +466,46 @@ fn ordering_that_depends_on_batch_boundaries() {
     let mut exec = ConfigurableExec::new(source).transform(Transform::Reverse);
     exec.claimed_ordering = Some(descending);
     let plan = exec.build();
-    PlanChecker::with_checks(vec![Arc::new(checks::OrderingsHold)])
-        .check(&plan)
-        .unwrap()
-        .assert_clean();
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &plan);
+    check_with("orderings_hold", &plan).assert_clean();
+    let report = check_with("batch_boundary_invariance", &plan);
+    let messages = messages(&report);
+    assert_eq!(messages.len(), 2, "{report}");
     assert_eq!(
-        messages(&report),
-        vec![
-            "with input rows in batches of 1 row: partition 0 is not sorted by [a@0 \
-             DESC NULLS LAST] at row 3, although the node reports that ordering and \
-             its normal output is sorted by it (also with input rows in random batches \
-             of up to 3 rows and empty batches)"
-        ]
+        messages[0],
+        "with input rows in batches of 1 row: partition 0 is not sorted by [a@0 DESC \
+         NULLS LAST] at row 3, although the node reports that ordering and its normal \
+         output is sorted by it"
     );
-}
-
-fn float_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("a", DataType::Int32, false),
-        Field::new("x", DataType::Float64, true),
-    ]))
-}
-
-#[test]
-fn floating_point_values_are_compared_with_a_tolerance() {
-    let source = || {
-        SourceSpec::new(float_schema())
-            .with_partition_rows(&[100])
-            .with_row_id_column("id", 0)
-            .build_arc()
-            .unwrap()
-    };
-    // Differences in the last bits, as from adding values in another order
-    let mut exec = ConfigurableExec::new(source());
-    exec.float_noise = Some(1e-12);
-    check_with(Arc::new(checks::BatchBoundaryInvariance), &exec.build()).assert_clean();
-
-    // Larger differences are reported
-    let mut exec = ConfigurableExec::new(source());
-    exec.float_noise = Some(1e-3);
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &exec.build());
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Invariant, "batch_boundary_invariance")]
+    assert!(
+        messages[1].starts_with(
+            "with input rows in random batches of up to 3 rows and empty batches: \
+             partition 0 is not sorted by [a@0 DESC NULLS LAST]"
+        ),
+        "{report}"
     );
 }
 
 /// Reports a lint for every batch layout under which a node produces other
 /// rows than normally, to show that a difference exists
-#[derive(Debug)]
-struct DifferentRowsUnderLayouts;
-
-impl PlanCheck for DifferentRowsUnderLayouts {
-    fn code(&self) -> &'static str {
-        "X2"
-    }
-
-    fn name(&self) -> &'static str {
-        "different_rows_under_layouts"
-    }
-
-    fn variants(&self) -> &'static [VariantKind] {
-        &[VariantKind::BatchLayout]
-    }
-
-    fn check_node(
-        &self,
-        node: &Arc<dyn ExecutionPlan>,
-        context: &CheckContext,
-    ) -> Result<Vec<Finding>> {
+const DIFFERENT_ROWS_UNDER_LAYOUTS: PlanCheck = PlanCheck {
+    name: "different_rows_under_layouts",
+    kind: CheckKind::Variant,
+    check: |node, context| {
         let Some(normal) = context.output(node) else {
             return Ok(vec![]);
         };
-        let normal: Vec<RecordBatch> = normal.batches().cloned().collect();
         Ok(context
-            .variant_runs(node, VariantKind::BatchLayout)
+            .variant_runs(node)
             .iter()
+            .filter(|run| matches!(run.variant, Variant::BatchLayout(_)))
             .filter_map(|run| run.output.as_ref().ok())
             .filter(|output| {
-                let batches: Vec<RecordBatch> = output.batches().cloned().collect();
-                !oracle::same_rows(&batches, &normal).unwrap()
+                !oracle::same_rows(&output.batches(), &normal.batches()).unwrap()
             })
             .map(|_| Finding::lint("different rows"))
             .collect())
-    }
-}
+    },
+};
 
 #[test]
 fn fetch_may_keep_different_rows_under_other_batch_layouts() {
@@ -562,9 +515,11 @@ fn fetch_may_keep_different_rows_under_other_batch_layouts() {
     let mut exec = fetching(rows_source(&[100]), Some(10)).transform(Transform::Reverse);
     exec.fetch_mode = FetchMode::Enforce;
     let plan = exec.build();
-    let report = check_with(Arc::new(DifferentRowsUnderLayouts), &plan);
-    assert!(!report.is_empty(), "the kept rows should differ");
-    PlanChecker::with_checks(variant_checks())
+    let report = PlanChecker::with_checks(vec![DIFFERENT_ROWS_UNDER_LAYOUTS])
+        .check(&plan)
+        .unwrap();
+    assert!(!report.violations.is_empty(), "the kept rows should differ");
+    checker_of(&[CheckKind::Variant])
         .check(&plan)
         .unwrap()
         .assert_clean();
@@ -574,62 +529,40 @@ fn fetch_may_keep_different_rows_under_other_batch_layouts() {
     let plan = fetching(rows_source(&[100]), Some(10))
         .transform(Transform::DropHalf)
         .build();
-    let report = check_with(Arc::new(checks::BatchBoundaryInvariance), &plan);
+    let report = check_with("batch_boundary_invariance", &plan);
     assert!(
         messages(&report)[0].starts_with(
-            "with input rows in batches of 1 row: the output has 0 rows, but limiting \
-             the output without the fetch"
+            "with input rows in batches of 1 row: the output has 0 rows, but limiting"
         ),
         "{report}"
     );
 }
 
-/// Reports every variant run on the root node
-#[derive(Debug)]
-struct ListVariants;
-
-impl PlanCheck for ListVariants {
-    fn code(&self) -> &'static str {
-        "X3"
-    }
-
-    fn name(&self) -> &'static str {
-        "list_variants"
-    }
-
-    fn variants(&self) -> &'static [VariantKind] {
-        &[
-            VariantKind::WithoutFetch,
-            VariantKind::WithFetch,
-            VariantKind::LimitedInputs,
-            VariantKind::BatchSize,
-            VariantKind::BatchLayout,
-        ]
-    }
-
-    fn check_node(
-        &self,
-        node: &Arc<dyn ExecutionPlan>,
-        context: &CheckContext,
-    ) -> Result<Vec<Finding>> {
-        let kinds = self.variants().iter();
-        Ok(kinds
-            .flat_map(|kind| context.variant_runs(node, *kind))
+/// Reports every variant run on every node
+const LIST_VARIANTS: PlanCheck = PlanCheck {
+    name: "list_variants",
+    kind: CheckKind::Variant,
+    check: |node, context| {
+        Ok(context
+            .variant_runs(node)
+            .iter()
             .map(|run| {
                 assert!(run.output.is_ok(), "{run:?}");
                 Finding::lint(format!("{:?}", run.variant))
             })
             .collect())
-    }
-}
+    },
+};
 
 #[test]
 fn variants_run_on_builtin_plans() {
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(CoalescePartitionsExec::new(rows_source(&[100, 200, 300])));
-    let report = check_with(Arc::new(ListVariants), &plan);
+    let report = PlanChecker::with_checks(vec![LIST_VARIANTS])
+        .check(&plan)
+        .unwrap();
     let root: Vec<&str> = report
-        .violations()
+        .violations
         .iter()
         .filter(|v| v.path.is_empty())
         .map(|v| v.message.as_str())
@@ -647,10 +580,7 @@ fn variants_run_on_builtin_plans() {
         Variant::BatchSize(7),
         Variant::BatchSize(8192),
         Variant::BatchLayout(BatchLayout::Fixed(1)),
-        Variant::BatchLayout(BatchLayout::Random {
-            max_rows: 3,
-            empty_batches: true,
-        }),
+        Variant::BatchLayout(BatchLayout::Random { max_rows: 3 }),
         Variant::BatchLayout(BatchLayout::Single),
     ]
     .iter()
@@ -661,7 +591,7 @@ fn variants_run_on_builtin_plans() {
     // The source has no fetch and no children, so only the batch size and
     // layout variants apply to it
     let leaf = report
-        .violations()
+        .violations
         .iter()
         .filter(|v| v.path == vec![0])
         .count();

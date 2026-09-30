@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use arrow::array::{RecordBatch, UInt32Array};
 use arrow::compute::{concat_batches, take_record_batch};
-use arrow::datatypes::{Schema, SchemaRef};
-use datafusion_common::tree_node::TreeNodeRecursion;
+use arrow::datatypes::SchemaRef;
+use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion_common::{
     Result, Statistics, exec_datafusion_err, internal_err, not_impl_err, plan_err,
 };
@@ -39,8 +39,8 @@ use futures::{StreamExt, stream};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use super::BatchLayout;
 use super::spec::split_rows;
-use super::{BatchLayout, StreamProbe};
 use crate::oracle;
 
 /// How precise the statistics reported by a [`MockSourceExec`] are.
@@ -57,16 +57,6 @@ pub enum StatisticsPrecision {
     Inexact,
     /// Report `Statistics::new_unknown`
     Absent,
-}
-
-impl StatisticsPrecision {
-    fn apply(self, schema: &Schema, statistics: &Statistics) -> Arc<Statistics> {
-        Arc::new(match self {
-            StatisticsPrecision::Exact => statistics.clone(),
-            StatisticsPrecision::Inexact => statistics.clone().to_inexact(),
-            StatisticsPrecision::Absent => Statistics::new_unknown(schema),
-        })
-    }
 }
 
 /// How the streams of a [`MockSourceExec`] behave.
@@ -98,16 +88,13 @@ pub enum StreamBehavior {
     /// are reported as unknown, since the row count is infinite. Row ids, if
     /// any, repeat as well.
     ///
-    /// After `max_rows` rows in a partition, if set, the stream stays pending
-    /// forever. It still never ends, but this bounds the memory that a plan
-    /// buffering the input can use. The stream consumes Tokio task budget, so
-    /// a plan that keeps polling it still yields to the runtime.
+    /// After `max_rows` rows in a partition, the stream stays pending forever.
+    /// It still never ends, but this bounds the memory that a plan buffering
+    /// the input can use. The stream consumes Tokio task budget, so a plan
+    /// that keeps polling it still yields to the runtime.
     ///
     /// A source with no rows at all cannot be unbounded.
-    Unbounded {
-        /// Stay pending after this many rows per partition
-        max_rows: Option<usize>,
-    },
+    Unbounded { max_rows: usize },
 }
 
 impl fmt::Display for StreamBehavior {
@@ -116,10 +103,9 @@ impl fmt::Display for StreamBehavior {
             StreamBehavior::Finite => write!(f, "Finite"),
             StreamBehavior::PendingAfter(batches) => write!(f, "PendingAfter({batches})"),
             StreamBehavior::ErrorAfter(batches) => write!(f, "ErrorAfter({batches})"),
-            StreamBehavior::Unbounded { max_rows: None } => write!(f, "Unbounded"),
-            StreamBehavior::Unbounded {
-                max_rows: Some(rows),
-            } => write!(f, "Unbounded(max_rows={rows})"),
+            StreamBehavior::Unbounded { max_rows } => {
+                write!(f, "Unbounded(max_rows={max_rows})")
+            }
         }
     }
 }
@@ -136,10 +122,6 @@ impl fmt::Display for StreamBehavior {
 /// - [`Self::try_with_stream_behavior`] makes the streams stall, fail or never
 ///   end, and adjusts the reported boundedness and statistics to match.
 ///
-/// A [`StreamProbe`] attached with [`Self::with_probe`] records what happens
-/// to the streams of every partition, such as how often they are polled and
-/// whether they are dropped. Clones of the source share the probe.
-///
 /// Because of this, checks that compare a plan with its input can treat what
 /// a `MockSourceExec` reports as correct. Use [`SourceSpec`] to generate the
 /// batches.
@@ -153,13 +135,10 @@ pub struct MockSourceExec {
     output_ordering: Option<LexOrdering>,
     precision: StatisticsPrecision,
     behavior: StreamBehavior,
-    probe: Option<StreamProbe>,
     /// Exact statistics of all partitions, before `precision` is applied
-    exact_statistics: Statistics,
+    statistics: Statistics,
     /// Exact statistics of each partition, before `precision` is applied
-    exact_partition_statistics: Vec<Statistics>,
-    statistics: Arc<Statistics>,
-    partition_statistics: Vec<Arc<Statistics>>,
+    partition_statistics: Vec<Statistics>,
     cache: Arc<PlanProperties>,
 }
 
@@ -180,33 +159,23 @@ impl MockSourceExec {
                 }
             }
         }
-        let all_batches: Vec<RecordBatch> =
-            partitions.iter().flatten().cloned().collect();
-        let exact_statistics = oracle::exact_statistics(&schema, &all_batches)?;
-        let exact_partition_statistics = partitions
+        let statistics = oracle::exact_statistics(&schema, &partitions.concat())?;
+        let partition_statistics = partitions
             .iter()
             .map(|batches| oracle::exact_statistics(&schema, batches))
             .collect::<Result<Vec<_>>>()?;
         let partitioning = Partitioning::UnknownPartitioning(partitions.len());
-        let precision = StatisticsPrecision::Exact;
         let behavior = StreamBehavior::Finite;
         let cache = Self::compute_properties(&schema, &partitioning, None, behavior);
-
         Ok(Self {
-            statistics: precision.apply(&schema, &exact_statistics),
-            partition_statistics: exact_partition_statistics
-                .iter()
-                .map(|stats| precision.apply(&schema, stats))
-                .collect(),
             schema,
             partitions,
             partitioning,
             output_ordering: None,
-            precision,
+            precision: StatisticsPrecision::Exact,
             behavior,
-            probe: None,
-            exact_statistics,
-            exact_partition_statistics,
+            statistics,
+            partition_statistics,
             cache,
         })
     }
@@ -215,7 +184,6 @@ impl MockSourceExec {
     /// always reports unknown statistics.
     pub fn with_statistics_precision(mut self, precision: StatisticsPrecision) -> Self {
         self.precision = precision;
-        self.update_statistics();
         self
     }
 
@@ -224,15 +192,12 @@ impl MockSourceExec {
     /// Returns an error for [`StreamBehavior::Unbounded`] if the source has no
     /// rows, since it could not produce infinite data.
     pub fn try_with_stream_behavior(mut self, behavior: StreamBehavior) -> Result<Self> {
-        if matches!(behavior, StreamBehavior::Unbounded { .. })
-            && self.partitions.iter().flatten().all(|b| b.num_rows() == 0)
-        {
+        let unbounded = matches!(behavior, StreamBehavior::Unbounded { .. });
+        if unbounded && !self.has_rows() {
             return plan_err!("an unbounded MockSourceExec needs at least one row");
         }
-        let boundedness_changed =
-            self.is_unbounded() != matches!(behavior, StreamBehavior::Unbounded { .. });
+        let boundedness_changed = self.is_unbounded() != unbounded;
         self.behavior = behavior;
-        self.update_statistics();
         // Keep the same properties when they do not change, so that plans
         // rebuilt on this source can reuse their own properties
         if boundedness_changed {
@@ -269,22 +234,6 @@ impl MockSourceExec {
         })
     }
 
-    /// Record what happens to the streams of every partition in `probe`
-    pub fn with_probe(mut self, probe: StreamProbe) -> Self {
-        self.probe = Some(probe);
-        self
-    }
-
-    /// The probe attached with [`Self::with_probe`], if any
-    pub fn probe(&self) -> Option<&StreamProbe> {
-        self.probe.as_ref()
-    }
-
-    /// How the streams behave after serving their batches
-    pub fn stream_behavior(&self) -> StreamBehavior {
-        self.behavior
-    }
-
     /// Returns true if the source has at least one row
     pub fn has_rows(&self) -> bool {
         self.partitions.iter().flatten().any(|b| b.num_rows() > 0)
@@ -292,20 +241,6 @@ impl MockSourceExec {
 
     fn is_unbounded(&self) -> bool {
         matches!(self.behavior, StreamBehavior::Unbounded { .. })
-    }
-
-    fn update_statistics(&mut self) {
-        let precision = if self.is_unbounded() {
-            StatisticsPrecision::Absent
-        } else {
-            self.precision
-        };
-        self.statistics = precision.apply(&self.schema, &self.exact_statistics);
-        self.partition_statistics = self
-            .exact_partition_statistics
-            .iter()
-            .map(|stats| precision.apply(&self.schema, stats))
-            .collect();
     }
 
     /// Declare that every partition is sorted by `ordering`.
@@ -406,7 +341,7 @@ impl MockSourceExec {
         ))
     }
 
-    /// The batches of `partition`, followed by what `self.behavior` adds
+    /// The batches of a partition, followed by what `self.behavior` adds
     fn stream_items(
         &self,
         batches: &[RecordBatch],
@@ -448,12 +383,11 @@ impl MockSourceExec {
                     } else {
                         Box::new(partition.clone().into_iter().cycle())
                     };
-                let max_rows = max_rows.unwrap_or(usize::MAX);
                 let mut served = 0;
                 let batches =
                     partition.into_iter().chain(repeated).take_while(move |b| {
                         let more = served < max_rows;
-                        served = served.saturating_add(b.num_rows());
+                        served += b.num_rows();
                         more
                     });
                 stream::iter(batches.map(Ok))
@@ -550,14 +484,10 @@ impl ExecutionPlan for MockSourceExec {
             Arc::clone(&self.schema),
             self.stream_items(batches),
         ));
-        let stream = if self.is_unbounded() {
+        Ok(if self.is_unbounded() {
             make_cooperative(stream)
         } else {
             stream
-        };
-        Ok(match &self.probe {
-            Some(probe) => probe.observe(partition, stream),
-            None => stream,
         })
     }
 
@@ -566,15 +496,48 @@ impl ExecutionPlan for MockSourceExec {
         _input_stats: &[Arc<Statistics>],
         args: &StatisticsArgs,
     ) -> Result<Arc<Statistics>> {
-        match args.partition() {
-            None => Ok(Arc::clone(&self.statistics)),
+        let statistics = match args.partition() {
+            None => &self.statistics,
             Some(partition) => match self.partition_statistics.get(partition) {
-                Some(stats) => Ok(Arc::clone(stats)),
-                None => internal_err!(
-                    "Invalid partition index: {partition}, the partition count is {}",
-                    self.partition_statistics.len()
-                ),
+                Some(statistics) => statistics,
+                None => {
+                    return internal_err!(
+                        "Invalid partition index: {partition}, the partition count is {}",
+                        self.partition_statistics.len()
+                    );
+                }
             },
-        }
+        };
+        let precision = if self.is_unbounded() {
+            StatisticsPrecision::Absent
+        } else {
+            self.precision
+        };
+        Ok(Arc::new(match precision {
+            StatisticsPrecision::Exact => statistics.clone(),
+            StatisticsPrecision::Inexact => statistics.clone().to_inexact(),
+            StatisticsPrecision::Absent => Statistics::new_unknown(&self.schema),
+        }))
     }
+}
+
+/// Replace each [`MockSourceExec`] leaf of `plan`, including `plan` itself,
+/// by the plan `replace` returns for it, if any, and rebuild the nodes above
+/// the replaced leaves. A replacement that reports the same properties as the
+/// original lets the rebuilt nodes keep theirs.
+pub(crate) fn map_mock_leaves(
+    plan: &Arc<dyn ExecutionPlan>,
+    mut replace: impl FnMut(&MockSourceExec) -> Result<Option<Arc<dyn ExecutionPlan>>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(Arc::clone(plan)
+        .transform_up(|plan| {
+            let Some(source) = plan.downcast_ref::<MockSourceExec>() else {
+                return Ok(Transformed::no(plan));
+            };
+            Ok(match replace(source)? {
+                Some(replacement) => Transformed::yes(replacement),
+                None => Transformed::no(plan),
+            })
+        })?
+        .data)
 }

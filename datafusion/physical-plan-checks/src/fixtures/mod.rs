@@ -19,7 +19,9 @@
 //!
 //! [`MockSourceExec`] is a leaf plan that serves fixed batches and reports
 //! properties (statistics, ordering, partitioning) that are verified against
-//! those batches. Checks treat what it reports as the truth.
+//! those batches. Checks treat what it reports as the truth. Its
+//! [`StreamBehavior`] controls what its streams do after serving their
+//! batches: end, stall, fail or never end.
 //!
 //! [`SourceSpec`] describes a source to generate: its schema, how its rows are
 //! split into partitions and batches, the value distribution, and the
@@ -27,17 +29,11 @@
 //! [`harness`] can derive many variations of an input from one spec.
 //!
 //! [`harness`]: crate::harness
-//!
-//! [`StreamBehavior`] controls what a source's streams do after serving their
-//! batches: end, stall, fail or never end. [`StreamProbe`] records what
-//! happens to a set of streams, such as how often they are polled and when
-//! they are dropped, so that tests can observe how a plan drives its inputs.
 
-mod probe;
 mod source;
 mod spec;
 mod values;
 
-pub use probe::{PartitionObservation, StreamProbe};
+pub(crate) use source::map_mock_leaves;
 pub use source::{MockSourceExec, StatisticsPrecision, StreamBehavior};
-pub use spec::{BatchLayout, SourceSpec};
+pub use spec::{BatchLayout, ROW_ID_COLUMN, SourceSpec};

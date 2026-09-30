@@ -28,8 +28,11 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::values::{ValueOptions, random_array};
-use super::{MockSourceExec, StatisticsPrecision, StreamBehavior};
+use super::{MockSourceExec, StatisticsPrecision};
 use crate::oracle;
+
+/// Name of the row id column added by [`SourceSpec::with_row_ids`]
+pub const ROW_ID_COLUMN: &str = "__row_id";
 
 /// How the rows of each partition are split into batches
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,13 +40,10 @@ pub enum BatchLayout {
     /// Batches of `rows` rows, except that the last batch of a partition can be
     /// smaller
     Fixed(usize),
-    /// Batches of a random size between 1 and `max_rows` rows. When
-    /// `empty_batches` is true, batches with no rows are added at random
-    /// positions, including at the start and end of a partition.
-    Random {
-        max_rows: usize,
-        empty_batches: bool,
-    },
+    /// Batches of a random size between 1 and `max_rows` rows, with batches
+    /// without rows at random positions, including at the start and end of a
+    /// partition
+    Random { max_rows: usize },
     /// All rows of a partition in one batch. A partition without rows has no
     /// batches.
     Single,
@@ -54,15 +54,11 @@ impl fmt::Display for BatchLayout {
         match self {
             BatchLayout::Fixed(1) => write!(f, "batches of 1 row"),
             BatchLayout::Fixed(rows) => write!(f, "batches of {rows} rows"),
-            BatchLayout::Random {
-                max_rows,
-                empty_batches,
-            } => {
-                write!(f, "random batches of up to {max_rows} rows")?;
-                if *empty_batches {
-                    write!(f, " and empty batches")?;
-                }
-                Ok(())
+            BatchLayout::Random { max_rows } => {
+                write!(
+                    f,
+                    "random batches of up to {max_rows} rows and empty batches"
+                )
             }
             BatchLayout::Single => write!(f, "one batch per partition"),
         }
@@ -87,12 +83,9 @@ pub(crate) fn split_rows(
                 offset += len;
             }
         }
-        BatchLayout::Random {
-            max_rows,
-            empty_batches,
-        } => {
+        BatchLayout::Random { max_rows } => {
             let maybe_empty = |batches: &mut Vec<RecordBatch>, rng: &mut StdRng| {
-                if empty_batches && rng.random_bool(0.2) {
+                if rng.random_bool(0.2) {
                     batches.push(batch.slice(0, 0));
                 }
             };
@@ -127,13 +120,6 @@ enum PartitionLayout {
     },
 }
 
-/// A column of unique, increasing row ids added to a generated source
-#[derive(Debug, Clone)]
-struct RowIdColumn {
-    name: String,
-    first_id: u64,
-}
-
 /// Describes a [`MockSourceExec`] to generate.
 ///
 /// Data is random but deterministic for a given seed. Values are drawn from a
@@ -158,7 +144,7 @@ struct RowIdColumn {
 ///     LexOrdering::new(vec![PhysicalSortExpr::new_default(col("a", &schema)?)]).unwrap();
 /// let source = SourceSpec::new(schema)
 ///     .with_partition_rows(&[10, 0, 25])
-///     .with_batch_layout(BatchLayout::Random { max_rows: 4, empty_batches: true })
+///     .with_batch_layout(BatchLayout::Random { max_rows: 4 })
 ///     .with_ordering(ordering)
 ///     .with_seed(42)
 ///     .build()?;
@@ -173,31 +159,27 @@ pub struct SourceSpec {
     values: ValueOptions,
     ordering: Option<LexOrdering>,
     precision: StatisticsPrecision,
-    behavior: StreamBehavior,
-    row_id: Option<RowIdColumn>,
+    /// The first row id, if the source has a row id column
+    first_row_id: Option<u64>,
     seed: u64,
 }
 
 impl SourceSpec {
     /// Create a spec with one partition of 100 rows, random batches of up to 32
     /// rows, 10% nulls in nullable fields, 16 distinct values per column, exact
-    /// statistics, finite streams and seed 0.
+    /// statistics and seed 0.
     pub fn new(schema: SchemaRef) -> Self {
         Self {
             schema,
             layout: PartitionLayout::Rows(vec![100]),
-            batch_layout: BatchLayout::Random {
-                max_rows: 32,
-                empty_batches: false,
-            },
+            batch_layout: BatchLayout::Random { max_rows: 32 },
             values: ValueOptions {
                 null_fraction: 0.1,
                 distinct_values: 16,
             },
             ordering: None,
             precision: StatisticsPrecision::Exact,
-            behavior: StreamBehavior::Finite,
-            row_id: None,
+            first_row_id: None,
             seed: 0,
         }
     }
@@ -209,9 +191,8 @@ impl SourceSpec {
         self
     }
 
-    /// Generate one partition with `rows` rows. The same as
-    /// `with_partition_rows(&[rows])`, and the usual way to set the size of
-    /// the input of a [`PlanFactory`], which lays the rows out into
+    /// Generate one partition with `rows` rows. The usual way to set the size
+    /// of the input of a [`PlanFactory`], which lays the rows out into
     /// partitions itself.
     ///
     /// [`PlanFactory`]: crate::harness::PlanFactory
@@ -267,27 +248,17 @@ impl SourceSpec {
         self
     }
 
-    /// Set how the streams of the source behave after serving their batches,
-    /// for example to generate an unbounded input. See [`StreamBehavior`].
-    pub fn with_stream_behavior(mut self, behavior: StreamBehavior) -> Self {
-        self.behavior = behavior;
-        self
-    }
-
-    /// Append a non-nullable `UInt64` column named `name` with a unique id for
-    /// every row. Ids start at `first_id` and increase by one in the order rows
-    /// are produced: through partition 0, then partition 1, and so on.
+    /// Append a non-nullable `UInt64` column named [`ROW_ID_COLUMN`] with a
+    /// unique id for every row. Ids start at `first_id` and increase by one in
+    /// the order rows are produced: through partition 0, then partition 1, and
+    /// so on.
     ///
-    /// Row ids let checks track where an output row came from. Use a different
-    /// `first_id` for each input of a plan so that ids do not overlap. The
-    /// source does not declare an ordering on the row id column. An unbounded
-    /// source ([`StreamBehavior::Unbounded`]) repeats its rows, and with them
-    /// their ids.
-    pub fn with_row_id_column(mut self, name: impl Into<String>, first_id: u64) -> Self {
-        self.row_id = Some(RowIdColumn {
-            name: name.into(),
-            first_id,
-        });
+    /// Row ids make every row unique, and let checks track where an output row
+    /// came from. Use a different `first_id` for each input of a plan so that
+    /// ids do not overlap. The source does not declare an ordering on the row
+    /// id column.
+    pub fn with_row_ids(mut self, first_id: u64) -> Self {
+        self.first_row_id = Some(first_id);
         self
     }
 
@@ -322,20 +293,12 @@ impl SourceSpec {
         }
     }
 
-    /// The expressions and partition count set with
-    /// [`Self::with_hash_partitioning`], if any
-    pub fn hash_partitioning(&self) -> Option<(&[Arc<dyn PhysicalExpr>], usize)> {
+    /// The expressions set with [`Self::with_hash_partitioning`], if any
+    pub fn hash_partitioning(&self) -> Option<&[Arc<dyn PhysicalExpr>]> {
         match &self.layout {
             PartitionLayout::Rows(_) => None,
-            PartitionLayout::Hash {
-                exprs, partitions, ..
-            } => Some((exprs, *partitions)),
+            PartitionLayout::Hash { exprs, .. } => Some(exprs),
         }
-    }
-
-    /// How the rows of each partition are split into batches
-    pub fn batch_layout(&self) -> BatchLayout {
-        self.batch_layout
     }
 
     /// The ordering every partition is sorted by, if any
@@ -343,43 +306,18 @@ impl SourceSpec {
         self.ordering.as_ref()
     }
 
-    /// The precision of the statistics the source reports
-    pub fn statistics_precision(&self) -> StatisticsPrecision {
-        self.precision
-    }
-
-    /// How the streams of the source behave after serving their batches
-    pub fn stream_behavior(&self) -> StreamBehavior {
-        self.behavior
-    }
-
-    /// The name and first id of the row id column, if one was requested
-    pub fn row_id_column(&self) -> Option<(&str, u64)> {
-        self.row_id
-            .as_ref()
-            .map(|row_id| (row_id.name.as_str(), row_id.first_id))
-    }
-
-    /// The random seed
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
-
     /// The schema of the generated source, including the row id column if one
     /// was requested
     pub fn schema(&self) -> SchemaRef {
-        match &self.row_id {
-            None => Arc::clone(&self.schema),
-            Some(row_id) => {
-                let mut fields: Vec<Arc<Field>> =
-                    self.schema.fields().iter().cloned().collect();
-                fields.push(Arc::new(Field::new(&row_id.name, DataType::UInt64, false)));
-                Arc::new(Schema::new_with_metadata(
-                    fields,
-                    self.schema.metadata().clone(),
-                ))
-            }
+        if self.first_row_id.is_none() {
+            return Arc::clone(&self.schema);
         }
+        let mut fields: Vec<Arc<Field>> = self.schema.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(ROW_ID_COLUMN, DataType::UInt64, false)));
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ))
     }
 
     /// Generate the data and build the source
@@ -411,13 +349,15 @@ impl SourceSpec {
         if let Some(ordering) = &self.ordering {
             partitions = partitions
                 .iter()
-                .map(|batch| sort_batch(batch, ordering))
+                .map(|batch| {
+                    Ok(oracle::sort_rows(std::slice::from_ref(batch), ordering)?
+                        .remove(0))
+                })
                 .collect::<Result<_>>()?;
         }
 
         let schema = self.schema();
-        if let Some(row_id) = &self.row_id {
-            let mut next_id = row_id.first_id;
+        if let Some(mut next_id) = self.first_row_id {
             partitions = partitions
                 .iter()
                 .map(|batch| {
@@ -449,7 +389,7 @@ impl SourceSpec {
             source = source
                 .try_with_partitioning(Partitioning::Hash(exprs.clone(), *partitions))?;
         }
-        source.try_with_stream_behavior(self.behavior)
+        Ok(source)
     }
 
     /// Generate the data and build the source as an `Arc<dyn ExecutionPlan>`
@@ -472,10 +412,4 @@ impl SourceSpec {
             &options,
         )?)
     }
-}
-
-/// Sort the rows of `batch` by `ordering`
-fn sort_batch(batch: &RecordBatch, ordering: &LexOrdering) -> Result<RecordBatch> {
-    let mut sorted = oracle::sort_rows(std::slice::from_ref(batch), ordering)?;
-    Ok(sorted.remove(0))
 }

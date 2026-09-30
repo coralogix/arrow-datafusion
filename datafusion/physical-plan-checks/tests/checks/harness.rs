@@ -16,7 +16,7 @@
 // under the License.
 
 //! Tests of the harness: deriving cases from factories by probing their
-//! input requirements, and grouping the findings of all cases.
+//! input requirements, and reporting the findings of each case.
 
 use std::fmt;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{JoinType, NullEquality, Result, internal_err};
 use datafusion_execution::TaskContext;
-use datafusion_physical_expr::expressions::col;
+use datafusion_physical_expr::expressions::{IsNotNullExpr, col};
 use datafusion_physical_expr::{
     Distribution, LexOrdering, LexRequirement, OrderingRequirements, PhysicalExpr,
     PhysicalSortExpr, PhysicalSortRequirement,
@@ -39,19 +39,22 @@ use datafusion_physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion_physical_plan::limit::GlobalLimitExec;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
     ExecutionPlanProperties, InputDistributionRequirements, Partitioning, PlanProperties,
     ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
     collect_partitioned,
 };
-use datafusion_physical_plan_checks::fixtures::{SourceSpec, StatisticsPrecision};
-use datafusion_physical_plan_checks::harness::{
-    MAX_PROBES, PlanFactory, PlanHarness, Profile, ROW_ID_RANGE,
+use datafusion_physical_plan_checks::fixtures::{
+    ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
 };
-use datafusion_physical_plan_checks::{PlanChecker, Severity};
+use datafusion_physical_plan_checks::harness::{
+    FactoryReport, PlanFactory, PlanHarness, Profile, ROW_ID_RANGE,
+};
+use datafusion_physical_plan_checks::{CheckKind, Severity};
 
-use crate::common::{ConfigurableExec, Effect, FetchMode};
+use crate::common::{ConfigurableExec, Effect, FetchMode, checker_of};
 
 type Plan = Arc<dyn ExecutionPlan>;
 
@@ -84,13 +87,21 @@ where
     })
 }
 
-/// A harness that only derives cases, with the static checks
-fn static_harness() -> PlanHarness {
-    PlanHarness::new().with_checker(PlanChecker::static_only())
+/// A filter on `b IS NOT NULL`, which has no findings
+fn filter() -> PlanFactory {
+    one_input("FilterExec", |input| {
+        let predicate = Arc::new(IsNotNullExpr::new(col("b", &input.schema())?));
+        Ok(Arc::new(FilterExec::try_new(predicate, input)?))
+    })
 }
 
-/// The ids of the row id column `name` of `input`
-fn row_ids(input: &Plan, name: &str) -> Vec<u64> {
+/// A harness with the static checks only
+fn static_harness() -> PlanHarness {
+    PlanHarness::new().with_checker(checker_of(&[CheckKind::Static]))
+}
+
+/// The ids of the row id column of `input`
+fn row_ids(input: &Plan) -> Vec<u64> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -104,7 +115,7 @@ fn row_ids(input: &Plan, name: &str) -> Vec<u64> {
         .iter()
         .flatten()
         .flat_map(|batch: &RecordBatch| {
-            let index = batch.schema().index_of(name).unwrap();
+            let index = batch.schema().index_of(ROW_ID_COLUMN).unwrap();
             batch
                 .column(index)
                 .as_primitive::<UInt64Type>()
@@ -239,17 +250,13 @@ fn ordering_requirement_sorts_the_input() {
             input,
         )))
     });
-    let cases = static_harness().cases(&factory);
+    let cases = static_harness().cases(&factory).unwrap();
     assert_eq!(cases.len(), 5);
     for case in &cases {
-        assert!(case.problem().is_none(), "{:?}", case.problem());
-        assert_eq!(case.inputs()[0].ordering().unwrap().to_string(), "a@0 ASC");
+        assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "a@0 ASC");
     }
     // The input keeps the profile's partitions
-    assert_eq!(
-        cases[0].inputs()[0].partition_rows(),
-        Some(&[20, 0, 40][..])
-    );
+    assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[20, 0, 40][..]));
 }
 
 #[test]
@@ -260,20 +267,21 @@ fn compatible_base_ordering_is_kept() {
         PhysicalSortExpr::new_default(col("b", &schema()).unwrap()),
     ])
     .unwrap();
+    let sort_preserving_merge = |inputs: Vec<Plan>| {
+        let input = Arc::clone(&inputs[0]);
+        Ok(Arc::new(SortPreservingMergeExec::new(
+            ordering_on("a", &input)?,
+            input,
+        )) as Plan)
+    };
     let factory = PlanFactory::new(
         "SortPreservingMergeExec",
         vec![spec().with_ordering(base_ordering)],
-        |inputs| {
-            let input = Arc::clone(&inputs[0]);
-            Ok(Arc::new(SortPreservingMergeExec::new(
-                ordering_on("a", &input)?,
-                input,
-            )) as Plan)
-        },
+        sort_preserving_merge,
     );
-    let case = &static_harness().cases(&factory)[0];
+    let case = &static_harness().cases(&factory).unwrap()[0];
     assert_eq!(
-        case.inputs()[0].ordering().unwrap().to_string(),
+        case.inputs[0].ordering().unwrap().to_string(),
         "a@0 ASC, b@1 ASC"
     );
 
@@ -283,16 +291,10 @@ fn compatible_base_ordering_is_kept() {
         vec![
             spec().with_ordering(ordering_on("b", &spec().build_arc().unwrap()).unwrap()),
         ],
-        |inputs| {
-            let input = Arc::clone(&inputs[0]);
-            Ok(Arc::new(SortPreservingMergeExec::new(
-                ordering_on("a", &input)?,
-                input,
-            )) as Plan)
-        },
+        sort_preserving_merge,
     );
-    let case = &static_harness().cases(&factory)[0];
-    assert_eq!(case.inputs()[0].ordering().unwrap().to_string(), "a@0 ASC");
+    let case = &static_harness().cases(&factory).unwrap()[0];
+    assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "a@0 ASC");
 }
 
 #[test]
@@ -300,43 +302,12 @@ fn single_partition_requirement() {
     let factory = one_input("GlobalLimitExec", |input| {
         Ok(Arc::new(GlobalLimitExec::new(input, 0, Some(5))))
     });
-    let cases = static_harness().cases(&factory);
-    let names: Vec<&str> = cases.iter().map(|case| case.name()).collect();
-    // `single partition` gives the same inputs as `default`, so it adds no
-    // case
-    assert_eq!(
-        names,
-        [
-            "default",
-            "inexact statistics",
-            "absent statistics",
-            "empty input"
-        ]
-    );
+    let cases = static_harness().cases(&factory).unwrap();
+    assert_eq!(cases.len(), 5);
     for case in &cases {
-        assert_eq!(case.inputs()[0].partition_count(), 1);
+        assert_eq!(case.inputs[0].partition_count(), 1, "{}", case.profile.name);
     }
-    assert_eq!(cases[0].inputs()[0].partition_rows(), Some(&[60][..]));
-}
-
-#[test]
-fn duplicate_cases_are_kept_when_they_run_other_checks() {
-    // A profile that gives the same inputs as the default profile, but runs
-    // different checks, is not dropped
-    let factory = one_input("GlobalLimitExec", |input| {
-        Ok(Arc::new(GlobalLimitExec::new(input, 0, Some(5))))
-    });
-    let harness = static_harness().with_profiles(vec![
-        Profile::new("without stream experiments").with_partition_weights(&[1]),
-        Profile::default_profile(),
-    ]);
-    assert_eq!(harness.cases(&factory).len(), 2);
-    // But one that runs no more checks than an earlier one is
-    let harness = static_harness().with_profiles(vec![
-        Profile::default_profile(),
-        Profile::new("without stream experiments").with_partition_weights(&[1]),
-    ]);
-    assert_eq!(harness.cases(&factory).len(), 1);
+    assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[60][..]));
 }
 
 fn hash_join(mode: PartitionMode) -> PlanFactory {
@@ -370,35 +341,34 @@ fn hash_requirement_and_co_partitioning() {
     // partitions as the profile has
     let harness = static_harness().with_profiles(vec![
         Profile::default_profile(),
-        Profile::new("5 partitions").with_partition_weights(&[1, 1, 0, 1, 1]),
+        Profile {
+            partition_weights: vec![1, 1, 0, 1, 1],
+            ..Profile::new("5 partitions")
+        },
     ]);
-    let cases = harness.cases(&hash_join(PartitionMode::Partitioned));
+    let cases = harness
+        .cases(&hash_join(PartitionMode::Partitioned))
+        .unwrap();
     for (case, partitions) in cases.iter().zip([3, 5]) {
-        assert!(case.problem().is_none(), "{:?}", case.problem());
-        let [left, right] = case.inputs() else {
+        let [left, right] = case.inputs.as_slice() else {
             panic!("two inputs");
         };
-        let (left_exprs, left_n) = left.hash_partitioning().unwrap();
-        let (right_exprs, right_n) = right.hash_partitioning().unwrap();
-        assert_eq!(left_exprs[0].to_string(), "a@0");
-        assert_eq!(right_exprs[0].to_string(), "c@0");
-        assert_eq!((left_n, right_n), (partitions, partitions));
+        assert_eq!(left.hash_partitioning().unwrap()[0].to_string(), "a@0");
+        assert_eq!(right.hash_partitioning().unwrap()[0].to_string(), "c@0");
+        assert_eq!(
+            (left.partition_count(), right.partition_count()),
+            (partitions, partitions)
+        );
         assert_eq!((left.num_rows(), right.num_rows()), (60, 90));
     }
-    assert_eq!(
-        cases[0].description(),
-        "default: input 0 hash [a@0] into 3 partitions, 60 rows; input 1 hash [c@0] \
-         into 3 partitions, 90 rows; exact statistics; seeds 0, 1"
-    );
 
     // A collect left join puts its build side in one partition, and leaves
     // the probe side as the profile lays it out
-    let cases = static_harness().cases(&hash_join(PartitionMode::CollectLeft));
-    assert_eq!(cases[0].inputs()[0].partition_rows(), Some(&[60][..]));
-    assert_eq!(
-        cases[0].inputs()[1].partition_rows(),
-        Some(&[30, 0, 60][..])
-    );
+    let cases = static_harness()
+        .cases(&hash_join(PartitionMode::CollectLeft))
+        .unwrap();
+    assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[60][..]));
+    assert_eq!(cases[0].inputs[1].partition_rows(), Some(&[30, 0, 60][..]));
 }
 
 #[test]
@@ -410,10 +380,9 @@ fn requirements_that_depend_on_the_input_are_probed_again() {
         Ok(RequirementExec::plan(input, Rule::HashThenOrdering))
     });
     let harness = static_harness().with_profiles(vec![Profile::default_profile()]);
-    let case = &harness.cases(&factory)[0];
-    assert!(case.problem().is_none(), "{:?}", case.problem());
-    let input = &case.inputs()[0];
-    assert_eq!(input.hash_partitioning().unwrap().0[0].to_string(), "a@0");
+    let case = &harness.cases(&factory).unwrap()[0];
+    let input = &case.inputs[0];
+    assert_eq!(input.hash_partitioning().unwrap()[0].to_string(), "a@0");
     assert_eq!(input.ordering().unwrap().to_string(), "a@0 ASC");
     // The first plan asks for hash partitioning, the second, on hash
     // partitioned input, for an ordering, and the third is satisfied
@@ -425,44 +394,25 @@ fn soft_ordering_requirements_are_not_imposed() {
     let factory = one_input("RequirementExec", |input| {
         Ok(RequirementExec::plan(input, Rule::SoftOrdering))
     });
-    let case = &static_harness().cases(&factory)[0];
-    assert!(case.problem().is_none());
-    assert!(case.inputs()[0].ordering().is_none());
+    let case = &static_harness().cases(&factory).unwrap()[0];
+    assert!(case.inputs[0].ordering().is_none());
 }
 
 #[test]
-fn unsatisfiable_requirements_are_reported() {
+fn unsatisfiable_requirements_are_an_error() {
     let factory = one_input("RequirementExec", |input| {
         Ok(RequirementExec::plan(input, Rule::Alternating))
     });
-    let report = static_harness().check(&factory).unwrap();
-    let problems: Vec<_> = report.harness_problems().collect();
-    assert_eq!(problems.len(), 1, "{report}");
-    let problem = problems[0].harness_problem().unwrap();
-    assert_eq!(
-        (problem.code, problem.name),
-        ("H2", "input_requirements_met")
-    );
+    let error = static_harness().check(&factory).unwrap_err().to_string();
     assert!(
-        problem
-            .message
-            .contains(&format!("after building the plan {MAX_PROBES} times")),
-        "{}",
-        problem.message
+        error.contains("deriving the 'default' case of 'RequirementExec'"),
+        "{error}"
     );
-    assert_eq!(problems[0].cases.len(), report.cases().len());
-    // The plan was not checked
-    assert_eq!(report.violations().count(), 0);
-    assert!(report.plan(0).is_none());
-    assert!(
-        report
-            .to_string()
-            .contains("[harness] H2 input_requirements_met [all cases]")
-    );
+    assert!(error.contains("after building the plan 5 times"), "{error}");
 }
 
 #[test]
-fn requirements_on_children_that_are_not_inputs_are_reported() {
+fn requirements_on_children_that_are_not_inputs_are_an_error() {
     // The projection keeps the ordering of its input, but the harness only
     // sorts inputs to meet the requirements of the nodes directly above them
     let factory = one_input("SortPreservingMergeExec over a projection", |input| {
@@ -477,53 +427,19 @@ fn requirements_on_children_that_are_not_inputs_are_reported() {
             projection,
         )))
     });
-    let case = &static_harness().cases(&factory)[0];
-    let problem = case.problem().unwrap();
-    assert_eq!(problem.code, "H2");
+    let error = static_harness().cases(&factory).unwrap_err().to_string();
     assert!(
-        problem.message.contains(
-            "SortPreservingMergeExec at root requires child 0 to be sorted by [a@0 ASC]; \
-             the child is not an input"
+        error.contains(
+            "SortPreservingMergeExec requires child 0 to be sorted by [a@0 ASC], and the \
+             child is not an input"
         ),
-        "{}",
-        problem.message
-    );
-}
-
-#[test]
-fn case_descriptions() {
-    let factory = one_input("FilterExec", |input| {
-        let b = col("b", &input.schema())?;
-        let predicate =
-            Arc::new(datafusion_physical_expr::expressions::IsNotNullExpr::new(b));
-        Ok(Arc::new(FilterExec::try_new(predicate, input)?))
-    });
-    let descriptions: Vec<String> = static_harness()
-        .cases(&factory)
-        .iter()
-        .map(|case| format!("{} {}", case.index(), case.description()))
-        .collect();
-    assert_eq!(
-        descriptions,
-        [
-            "0 default: input 0 rows [20, 0, 40]; exact statistics; seed 0",
-            "1 single partition: input 0 rows [60]; exact statistics; seed 0",
-            "2 inexact statistics: input 0 rows [20, 0, 40]; inexact statistics; seed 0",
-            "3 absent statistics: input 0 rows [20, 0, 40]; absent statistics; seed 0",
-            "4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0",
-        ]
+        "{error}"
     );
 }
 
 #[test]
 fn case_inputs_follow_the_profile() {
-    let factory = one_input("FilterExec", |input| {
-        let b = col("b", &input.schema())?;
-        let predicate =
-            Arc::new(datafusion_physical_expr::expressions::IsNotNullExpr::new(b));
-        Ok(Arc::new(FilterExec::try_new(predicate, input)?))
-    });
-    let cases = static_harness().cases(&factory);
+    let cases = static_harness().cases(&filter()).unwrap();
     for (case, precision) in cases.iter().zip([
         StatisticsPrecision::Exact,
         StatisticsPrecision::Exact,
@@ -531,98 +447,87 @@ fn case_inputs_follow_the_profile() {
         StatisticsPrecision::Absent,
         StatisticsPrecision::Exact,
     ]) {
-        let input = &case.build_inputs().unwrap()[0];
+        let input = case.inputs[0].build_arc().unwrap();
         let statistics = StatisticsContext::new()
             .compute(input.as_ref(), &StatisticsArgs::new())
             .unwrap();
-        let rows = case.inputs()[0].num_rows();
+        let rows = case.inputs[0].num_rows();
         let expected = match precision {
             StatisticsPrecision::Exact => Precision::Exact(rows),
             StatisticsPrecision::Inexact => Precision::Inexact(rows),
             StatisticsPrecision::Absent => Precision::Absent,
         };
-        assert_eq!(statistics.num_rows, expected, "{}", case.description());
+        assert_eq!(statistics.num_rows, expected, "{}", case.profile.name);
     }
+    assert_eq!(cases[4].inputs[0].partition_rows(), Some(&[0, 0, 0][..]));
+
     // The extended profiles add more seeds, partition counts and rows
-    let extended = static_harness().with_profiles(Profile::extended());
-    let descriptions: Vec<String> = extended
-        .cases(&factory)
+    let cases = static_harness()
+        .with_profiles(Profile::extended())
+        .cases(&filter())
+        .unwrap();
+    let partition_rows: Vec<&[usize]> = cases[5..]
         .iter()
-        .skip(5)
-        .map(|case| case.description())
+        .map(|case| case.inputs[0].partition_rows().unwrap())
         .collect();
     assert_eq!(
-        descriptions,
+        partition_rows,
         [
-            "seed 1: input 0 rows [20, 0, 40]; exact statistics; seed 1000",
-            "seed 2: input 0 rows [20, 0, 40]; exact statistics; seed 2000",
-            "2 partitions: input 0 rows [30, 30]; exact statistics; seed 0",
-            "5 partitions: input 0 rows [17, 8, 0, 25, 10]; exact statistics; seed 0",
-            "large input: input 0 rows [160, 0, 320]; exact statistics; seed 0",
+            &[20, 0, 40][..],
+            &[20, 0, 40],
+            &[30, 30],
+            &[17, 8, 0, 25, 10],
+            &[160, 0, 320]
         ]
     );
+    let data = |case: usize| cases[case].inputs[0].build().unwrap().partitions().to_vec();
+    assert_ne!(data(0), data(5), "seed 1 generates other data");
 }
 
 #[test]
 fn row_id_columns() {
     let factory = hash_join(PartitionMode::CollectLeft);
-    let case = &static_harness().cases(&factory)[0];
-    let inputs = case.build_inputs().unwrap();
-    let left_schema = inputs[0].schema();
-    let right_schema = inputs[1].schema();
-    let names = |schema: &SchemaRef| -> Vec<String> {
-        schema.fields().iter().map(|f| f.name().clone()).collect()
+    let case = &static_harness().cases(&factory).unwrap()[0];
+    let inputs: Vec<Plan> = case
+        .inputs
+        .iter()
+        .map(|spec| spec.build_arc().unwrap())
+        .collect();
+    let names = |input: &Plan| -> Vec<String> {
+        input
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect()
     };
-    assert_eq!(names(&left_schema), ["a", "b", "__row_id_0"]);
-    assert_eq!(names(&right_schema), ["c", "d", "__row_id_1"]);
+    assert_eq!(names(&inputs[0]), ["a", "b", ROW_ID_COLUMN]);
+    assert_eq!(names(&inputs[1]), ["c", "d", ROW_ID_COLUMN]);
 
     // Ids are unique, and each input has its own range
-    let left = row_ids(&inputs[0], "__row_id_0");
-    let right = row_ids(&inputs[1], "__row_id_1");
-    assert_eq!(left, (0..60).collect::<Vec<u64>>());
+    assert_eq!(row_ids(&inputs[0]), (0..60).collect::<Vec<u64>>());
     assert_eq!(
-        right,
+        row_ids(&inputs[1]),
         (ROW_ID_RANGE..ROW_ID_RANGE + 90).collect::<Vec<u64>>()
     );
 
     // The plan binds its keys by name, so they refer to the key columns of
     // the inputs that have row ids
-    let plan = factory.create(inputs).unwrap();
-    assert_eq!(
-        plan.schema().fields().len(),
-        left_schema.fields().len() + right_schema.fields().len()
-    );
+    assert_eq!(case.plan.schema().fields().len(), 6);
 }
 
 #[test]
-fn shared_row_id_name() {
-    let factory = PlanFactory::new("UnionExec", vec![spec(), spec()], |inputs| {
-        datafusion_physical_plan::union::UnionExec::try_new(inputs)
-    })
-    .with_shared_row_id_name();
-    let case = &static_harness().cases(&factory)[0];
-    let inputs = case.build_inputs().unwrap();
-    assert_eq!(inputs[0].schema(), inputs[1].schema());
-    assert_eq!(
-        case.inputs()[1].row_id_column(),
-        Some(("__row_id", ROW_ID_RANGE))
-    );
-
-    let plan = factory.create(inputs).unwrap();
+fn inputs_with_the_same_base_spec_have_the_same_schema() {
+    // So a union needs no projection to rename the row id columns
+    let factory = PlanFactory::new("UnionExec", vec![spec(), spec()], UnionExec::try_new);
+    let case = &static_harness().cases(&factory).unwrap()[0];
+    assert_eq!(case.inputs[0].schema(), case.inputs[1].schema());
     assert!(
-        plan.children()
+        case.plan
+            .children()
             .iter()
             .all(|child| child.name() == "MockSourceExec")
     );
-
-    // Without it, `UnionExec::try_new` renames the row id column of the
-    // second input with a projection, which is then part of the plan
-    let factory = PlanFactory::new("UnionExec", vec![spec(), spec()], |inputs| {
-        datafusion_physical_plan::union::UnionExec::try_new(inputs)
-    });
-    let case = &static_harness().cases(&factory)[0];
-    let plan = factory.create(case.build_inputs().unwrap()).unwrap();
-    assert_eq!(plan.children()[1].name(), "ProjectionExec");
 }
 
 #[test]
@@ -631,16 +536,15 @@ fn factories_without_inputs() {
         Ok(Arc::new(EmptyExec::new(schema())) as Plan)
     });
     let report = PlanHarness::new().check(&factory).unwrap();
-    assert_eq!(report.cases().len(), 1);
-    assert_eq!(report.cases()[0].description(), "default: no inputs");
-    assert!(report.cases()[0].profile().stream_experiments());
+    assert_eq!(report.cases.len(), 1);
+    assert_eq!(report.cases[0].0.profile.name, "default");
     report.assert_clean();
 }
 
 /// A pass-through node over one input that reports `fetch()` 5 and
-/// `CardinalityEffect::Equal` (A2 in every case), and `num_rows`
-/// `Exact(60)`, which is false when the input is empty (B2 in the empty
-/// input case only)
+/// `CardinalityEffect::Equal` (reported in every case), and `num_rows`
+/// `Exact(60)`, which is false when the input is empty (reported in the
+/// `empty input` case only)
 fn fetch_with_equal_effect() -> PlanFactory {
     one_input("ConfigurableExec", |input| {
         let mut exec = ConfigurableExec::new(input)
@@ -652,223 +556,158 @@ fn fetch_with_equal_effect() -> PlanFactory {
     })
 }
 
+/// The profile names of the cases with a violation of `check`
+fn cases_with(report: &FactoryReport, check: &str) -> Vec<String> {
+    report
+        .cases
+        .iter()
+        .filter(|(_, report)| report.violations.iter().any(|v| v.check == check))
+        .map(|(case, _)| case.profile.name.clone())
+        .collect()
+}
+
 #[test]
-fn findings_are_grouped_across_cases() {
-    let report = static_harness().check(&fetch_with_equal_effect()).unwrap();
-    let a2: Vec<_> = report.for_check("fetch_not_equal_cardinality").collect();
-    assert_eq!(a2.len(), 1, "{report}");
-    assert_eq!(a2[0].cases, [0, 1, 2, 3, 4]);
-
-    let display = report.to_string();
-    assert!(
-        display.contains(
-            "[invariant] A2 fetch_not_equal_cardinality at ConfigurableExec (root) \
-             [all cases]: fetch() is Some(5)"
-        ),
-        "{display}"
-    );
-
-    // Findings that only occur in some cases name them. The overall
-    // num_rows claim is only false for empty input.
+fn findings_are_reported_per_case() {
     let report = PlanHarness::new()
         .check(&fetch_with_equal_effect())
         .unwrap();
-    let b2: Vec<_> = report.for_check("exact_statistics_hold").collect();
-    assert_eq!(b2.len(), 1, "{report}");
-    assert_eq!(b2[0].cases, [4]);
-    assert!(
-        report.to_string().contains(
-            "[invariant] B2 exact_statistics_hold at ConfigurableExec (root) [cases: empty \
-             input]: overall statistics report num_rows Exact(60), but the output has \
-             Exact(0) rows"
-        ),
-        "{report}"
-    );
-    // The same claim is an invariant violation when exact and a lint when
-    // an estimate, so the two are grouped separately, although the numbers
-    // in the messages are the same
-    let a3: Vec<(Severity, Vec<usize>)> = report
-        .for_check("fetch_bounds_num_rows")
-        .filter(|group| group.violation().unwrap().message.contains("partition 0"))
-        .map(|group| (group.violation().unwrap().severity, group.cases.clone()))
-        .collect();
+    assert_eq!(cases_with(&report, "fetch_not_equal_cardinality").len(), 5);
     assert_eq!(
-        a3,
-        [(Severity::Invariant, vec![0]), (Severity::Lint, vec![2])],
+        cases_with(&report, "exact_statistics_hold"),
+        ["empty input"],
         "{report}"
     );
-}
-
-#[test]
-fn findings_in_different_places_are_not_merged() {
-    // A3 reports the overall estimate and the estimate of every partition
-    // with rows; they are separate findings, grouped separately
-    let factory = one_input("FilterExec with fetch", |input| {
-        let b = col("b", &input.schema())?;
-        let predicate =
-            Arc::new(datafusion_physical_expr::expressions::IsNotNullExpr::new(b));
-        FilterExec::try_new(predicate, input)?
-            .with_fetch(Some(1))
-            .ok_or_else(|| datafusion_common::internal_datafusion_err!("no fetch"))
-    });
-    let report = static_harness().check(&factory).unwrap();
-    let a3: Vec<(String, Vec<usize>)> = report
-        .for_check("fetch_bounds_num_rows")
-        .map(|group| {
-            (
-                group.violation().unwrap().message.clone(),
-                group.cases.clone(),
-            )
-        })
-        .collect();
-    assert_eq!(a3.len(), 3, "{report}");
-    assert!(a3[0].0.contains("overall"), "{a3:?}");
-    assert!(a3[1].0.contains("partition 0"), "{a3:?}");
-    assert!(a3[2].0.contains("partition 2"), "{a3:?}");
-    // The overall estimate is too large in every case with rows and
-    // statistics, the partition estimates only with several partitions
-    assert_eq!(a3[0].1, [0, 1, 2]);
-    assert_eq!(a3[1].1, [0, 2]);
-}
-
-#[test]
-fn stream_checks_run_in_the_default_case() {
     // A node that polls its input from a spawned task but reports `Lazy` is
-    // reported in the default case, whose profile runs stream experiments,
-    // and not in the others, which do not
+    // only reported in the default case, whose profile runs the stream checks
     let factory = one_input("ConfigurableExec", |input| {
         let mut exec = ConfigurableExec::new(input);
         exec.eager = true;
         Ok(exec.build())
     });
     let report = PlanHarness::new().check(&factory).unwrap();
-    let b12: Vec<_> = report.for_check("lazy_evaluation_holds").collect();
-    assert_eq!(b12.len(), 1, "{report}");
-    assert_eq!(b12[0].cases, [0]);
+    assert_eq!(
+        cases_with(&report, "lazy_evaluation_holds"),
+        ["default"],
+        "{report}"
+    );
 }
 
 #[test]
-fn allowed_checks_with_reasons() {
+fn report_display() {
+    let factory = filter().allow("fetch_not_equal_cardinality", "a reason");
+    let harness = static_harness().with_profiles(vec![
+        Profile::default_profile(),
+        Profile {
+            partition_weights: vec![1],
+            ..Profile::new("single partition")
+        },
+    ]);
+    let report = harness.check(&factory).unwrap();
+    assert_eq!(
+        report.to_string(),
+        "FilterExec
+  allowed fetch_not_equal_cardinality: a reason
+  case default: no violations
+  case single partition: no violations"
+    );
+
+    // The plan is only shown for a case with violations
+    let report = static_harness().check(&fetch_with_equal_effect()).unwrap();
+    assert!(
+        report.to_string().contains(
+            "  case empty input:
+    ConfigurableExec
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[0, 0, 0], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at ConfigurableExec (root): fetch() is Some(5)"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn allowed_checks_are_skipped() {
     let factory = fetch_with_equal_effect()
         .allow("fetch_not_equal_cardinality", "the fetch is only reported");
     let report = static_harness().check(&factory).unwrap();
-    assert_eq!(report.for_check("fetch_not_equal_cardinality").count(), 0);
-    assert_eq!(report.allowed()[0].reason, "the fetch is only reported");
-    assert!(
-        report
-            .to_string()
-            .contains("allowed fetch_not_equal_cardinality: the fetch is only reported")
-    );
-
-    // Allowing a check that does not exist is reported
-    let factory = fetch_with_equal_effect().allow("no_such_check", "a typo");
-    let report = static_harness().check(&factory).unwrap();
-    let problems: Vec<_> = report.harness_problems().collect();
-    assert_eq!(problems.len(), 1, "{report}");
-    assert_eq!(problems[0].harness_problem().unwrap().code, "H4");
+    assert!(cases_with(&report, "fetch_not_equal_cardinality").is_empty());
 }
 
 #[test]
-#[should_panic(expected = "allowing a check needs a reason")]
-fn allowing_a_check_needs_a_reason() {
-    let _ = fetch_with_equal_effect().allow("fetch_not_equal_cardinality", " ");
+#[should_panic(expected = "the checker has no check named 'no_such_check'")]
+fn allowing_an_unknown_check_panics() {
+    let factory = filter().allow("no_such_check", "a typo");
+    let _ = static_harness().check(&factory);
 }
 
 #[test]
-fn reproduce_a_single_case() {
+fn cases_can_be_reproduced_from_their_specs() {
     let factory = fetch_with_equal_effect();
-    let harness = PlanHarness::new();
+    let harness = static_harness();
     let report = harness.check(&factory).unwrap();
-    let empty = report
-        .cases()
-        .iter()
-        .find(|case| case.name() == "empty input")
-        .unwrap()
-        .index();
-
-    // `run_case` derives the case again and checks it, and finds what the
-    // report says about the case
-    let run = harness.run_case(&factory, empty).unwrap();
-    assert_eq!(run.case.description(), report.cases()[empty].description());
-    let violations = run.report.as_ref().unwrap().violations();
-    let in_case: Vec<_> = report
-        .groups()
-        .iter()
-        .filter(|group| group.cases.contains(&empty))
-        .filter_map(|group| group.violation())
-        .collect();
-    assert!(!in_case.is_empty());
-    assert_eq!(in_case.len(), violations.len());
-    for grouped in in_case {
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.check == grouped.check && v.path == grouped.path),
-            "{grouped}"
-        );
+    for (case, case_report) in &report.cases {
+        let inputs = case
+            .inputs
+            .iter()
+            .map(|spec| spec.build_arc().unwrap())
+            .collect();
+        let plan = factory.create(inputs).unwrap();
+        let by_hand = checker_of(&[CheckKind::Static]).check(&plan).unwrap();
+        assert_eq!(&by_hand, case_report);
     }
-
-    // The specs of the case are enough to rebuild and check it by hand
-    let case = &report.cases()[empty];
-    let plan = factory.create(case.build_inputs().unwrap()).unwrap();
-    let by_hand = harness.checker_for(&factory, case).check(&plan).unwrap();
-    assert_eq!(by_hand.violations(), run.report.unwrap().violations());
-
-    assert!(harness.run_case(&factory, 99).is_err());
 }
 
 #[test]
-fn failing_create_is_reported() {
+fn failing_create_is_an_error() {
     let factory = one_input("fails", |_| internal_err!("no plan today"));
-    let report = static_harness().check(&factory).unwrap();
-    let groups: Vec<_> = report.groups().iter().collect();
-    assert_eq!(groups.len(), 1, "{report}");
-    let problem = groups[0].harness_problem().unwrap();
-    assert_eq!((problem.code, problem.name), ("H1", "create_succeeds"));
+    let error = static_harness().check(&factory).unwrap_err().to_string();
     assert!(
-        problem.message.contains("no plan today"),
-        "{}",
-        problem.message
+        error.contains("deriving the 'default' case of 'fails'"),
+        "{error}"
     );
-    assert_eq!(groups[0].cases, [0, 1, 2, 3, 4]);
-
-    // A panic is reported the same way
-    let factory = one_input("panics", |_| panic!("no plan at all"));
-    let report = static_harness().check(&factory).unwrap();
-    let problem = report.groups()[0].harness_problem().unwrap();
-    assert!(problem.message.contains("create panicked: no plan at all"));
+    assert!(error.contains("no plan today"), "{error}");
 
     // So is a factory that only fails for some inputs
-    let factory = one_input("fails on several partitions", |input| {
-        if input.output_partitioning().partition_count() > 1 {
-            return internal_err!("one partition only");
+    let factory = one_input("fails on one partition", |input| {
+        if input.output_partitioning().partition_count() == 1 {
+            return internal_err!("several partitions only");
         }
         Ok(input)
     });
-    let report = static_harness().check(&factory).unwrap();
-    let h1: Vec<_> = report.harness_problems().collect();
-    assert_eq!(h1.len(), 1, "{report}");
-    assert_eq!(h1[0].cases, [0, 2, 3, 4]);
+    let error = static_harness().check(&factory).unwrap_err().to_string();
+    assert!(
+        error.contains("deriving the 'single partition' case"),
+        "{error}"
+    );
 }
 
 #[test]
-#[should_panic(expected = "harness problems found")]
-fn harness_problems_fail_the_assertion() {
-    let factory = one_input("fails", |_| internal_err!("no plan today"));
+#[should_panic(expected = "invariant violations found")]
+fn invariant_violations_fail_the_assertion() {
     static_harness()
-        .check(&factory)
+        .check(&fetch_with_equal_effect())
         .unwrap()
         .assert_no_invariant_violations();
 }
 
 #[test]
-fn invariant_violations_and_lints() {
-    let report = static_harness().check(&fetch_with_equal_effect()).unwrap();
+fn lints_do_not_fail_the_invariant_assertion() {
+    // A filter with a fetch does not apply the fetch to its row estimate,
+    // which is a lint
+    let factory = one_input("FilterExec with fetch", |input| {
+        let predicate = Arc::new(IsNotNullExpr::new(col("b", &input.schema())?));
+        FilterExec::try_new(predicate, input)?
+            .with_fetch(Some(1))
+            .ok_or_else(|| datafusion_common::internal_datafusion_err!("no fetch"))
+    });
+    let report = static_harness().check(&factory).unwrap();
     assert!(
         report
-            .invariant_violations()
-            .all(|group| group.violation().unwrap().severity == Severity::Invariant)
+            .cases
+            .iter()
+            .flat_map(|(_, report)| &report.violations)
+            .all(|v| v.severity == Severity::Lint),
+        "{report}"
     );
-    assert!(report.invariant_violations().next().is_some());
-    assert_eq!(report.name(), "ConfigurableExec");
+    assert!(!cases_with(&report, "fetch_bounds_num_rows").is_empty());
+    report.assert_no_invariant_violations();
 }

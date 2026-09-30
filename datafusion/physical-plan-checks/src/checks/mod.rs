@@ -16,13 +16,15 @@
 // under the License.
 
 //! Built-in [`PlanCheck`]s. See `CHECKS.md` for what each check verifies.
+//! Each check is a function named after the check, documented with its code
+//! in the catalog.
 
 use std::sync::Arc;
 
 use datafusion_common::{Result, Statistics};
 use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 
-use crate::{Finding, PlanCheck};
+use crate::{CheckContext, CheckKind, Finding, PlanCheck};
 
 mod cardinality;
 mod invariance;
@@ -33,60 +35,78 @@ mod statistics;
 mod stream;
 mod structure;
 
-pub use cardinality::{
-    CardinalityEffectBoundsNumRows, EqualCardinalityNumRows, FetchBoundsNumRows,
-    FetchNotEqualCardinality,
+use cardinality::{
+    cardinality_effect_bounds_num_rows, equal_cardinality_num_rows,
+    fetch_bounds_num_rows, fetch_not_equal_cardinality,
 };
-pub use invariance::{BatchBoundaryInvariance, BatchSizeInvariance};
-pub use lifecycle::{ErrorsPropagate, ResourcesReleased};
-pub use rewrite::{LimitPushdownEquivalent, WithFetchEquivalent};
-pub use runtime::{
-    BatchSchema, CardinalityEffectHolds, ExactStatisticsHold, ExecutionSucceeds,
-    OrderingsHold,
+use invariance::{batch_boundary_invariance, batch_size_invariance};
+use lifecycle::{errors_propagate, resources_released};
+use rewrite::{limit_pushdown_equivalent, with_fetch_equivalent};
+use runtime::{
+    batch_schema, cardinality_effect_holds, exact_statistics_hold, execution_succeeds,
+    orderings_hold,
 };
-pub use statistics::{PartitionStatisticsSum, StatisticsIgnoreInputs, StatisticsShape};
-pub use stream::{BoundednessHolds, EmissionTypeHolds, LazyEvaluationHolds};
-pub use structure::{CheckInvariants, PerChildLengths};
+use statistics::{partition_statistics_sum, statistics_ignore_inputs, statistics_shape};
+use stream::{boundedness_holds, emission_type_holds, lazy_evaluation_holds};
+use structure::{check_invariants, per_child_lengths};
+
+type CheckFn = fn(&Arc<dyn ExecutionPlan>, &CheckContext) -> Result<Vec<Finding>>;
+
+const fn check(name: &'static str, kind: CheckKind, check: CheckFn) -> PlanCheck {
+    PlanCheck { name, kind, check }
+}
 
 /// All built-in checks, in catalog order
-pub fn all_checks() -> Vec<Arc<dyn PlanCheck>> {
-    let mut checks = static_checks();
-    checks.extend(execution_checks());
-    checks
-}
-
-/// Built-in checks that execute the plan (sections B to F), in catalog order
-pub fn execution_checks() -> Vec<Arc<dyn PlanCheck>> {
+pub fn all_checks() -> Vec<PlanCheck> {
+    use CheckKind::*;
     vec![
-        Arc::new(ExecutionSucceeds),
-        Arc::new(BatchSchema),
-        Arc::new(ExactStatisticsHold),
-        Arc::new(OrderingsHold),
-        Arc::new(CardinalityEffectHolds),
-        Arc::new(BoundednessHolds),
-        Arc::new(EmissionTypeHolds),
-        Arc::new(LazyEvaluationHolds),
-        Arc::new(WithFetchEquivalent),
-        Arc::new(LimitPushdownEquivalent),
-        Arc::new(BatchSizeInvariance),
-        Arc::new(BatchBoundaryInvariance),
-        Arc::new(ResourcesReleased),
-        Arc::new(ErrorsPropagate),
-    ]
-}
-
-/// Built-in checks that do not execute the plan (section A), in catalog order
-pub fn static_checks() -> Vec<Arc<dyn PlanCheck>> {
-    vec![
-        Arc::new(EqualCardinalityNumRows),
-        Arc::new(FetchNotEqualCardinality),
-        Arc::new(FetchBoundsNumRows),
-        Arc::new(CardinalityEffectBoundsNumRows),
-        Arc::new(PerChildLengths),
-        Arc::new(CheckInvariants),
-        Arc::new(StatisticsShape),
-        Arc::new(PartitionStatisticsSum),
-        Arc::new(StatisticsIgnoreInputs),
+        check(
+            "equal_cardinality_num_rows",
+            Static,
+            equal_cardinality_num_rows,
+        ),
+        check(
+            "fetch_not_equal_cardinality",
+            Static,
+            fetch_not_equal_cardinality,
+        ),
+        check("fetch_bounds_num_rows", Static, fetch_bounds_num_rows),
+        check(
+            "cardinality_effect_bounds_num_rows",
+            Static,
+            cardinality_effect_bounds_num_rows,
+        ),
+        check("per_child_lengths", Static, per_child_lengths),
+        check("check_invariants", Static, check_invariants),
+        check("statistics_shape", Static, statistics_shape),
+        check("partition_statistics_sum", Static, partition_statistics_sum),
+        check("statistics_ignore_inputs", Static, statistics_ignore_inputs),
+        check("execution_succeeds", Execution, execution_succeeds),
+        check("batch_schema", Execution, batch_schema),
+        check("exact_statistics_hold", Execution, exact_statistics_hold),
+        check("orderings_hold", Execution, orderings_hold),
+        check(
+            "cardinality_effect_holds",
+            Execution,
+            cardinality_effect_holds,
+        ),
+        check("boundedness_holds", Stream, boundedness_holds),
+        check("emission_type_holds", Stream, emission_type_holds),
+        check("lazy_evaluation_holds", Stream, lazy_evaluation_holds),
+        check("with_fetch_equivalent", Variant, with_fetch_equivalent),
+        check(
+            "limit_pushdown_equivalent",
+            Variant,
+            limit_pushdown_equivalent,
+        ),
+        check("batch_size_invariance", Variant, batch_size_invariance),
+        check(
+            "batch_boundary_invariance",
+            Variant,
+            batch_boundary_invariance,
+        ),
+        check("resources_released", Stream, resources_released),
+        check("errors_propagate", Stream, errors_propagate),
     ]
 }
 
@@ -109,88 +129,4 @@ fn partition_statistics(
 /// Number of output partitions of `plan`
 fn partition_count(plan: &dyn ExecutionPlan) -> usize {
     plan.properties().output_partitioning().partition_count()
-}
-
-/// Problems of one node found in several places, such as the variant runs of
-/// one kind, or the statistics of each partition. Each kind of problem is
-/// reported once, with the finding of the first place that has it, followed
-/// by a summary of the other places that have it too, so that one cause does
-/// not produce a finding per place. Kinds are reported in the order they are
-/// first added, and places in the order they are added.
-#[derive(Debug)]
-struct Problems<P> {
-    problems: Vec<Problem<P>>,
-}
-
-#[derive(Debug)]
-struct Problem<P> {
-    kind: &'static str,
-    place: P,
-    finding: Finding,
-    other_places: Vec<P>,
-}
-
-impl<P> Default for Problems<P> {
-    fn default() -> Self {
-        Self { problems: vec![] }
-    }
-}
-
-impl<P> Problems<P> {
-    /// Record a problem of `kind`, described by `finding`, at `place`. The
-    /// finding is only kept for the first place with a problem of `kind`.
-    fn add(&mut self, kind: &'static str, place: impl Into<P>, finding: Finding) {
-        let place = place.into();
-        match self
-            .problems
-            .iter_mut()
-            .find(|problem| problem.kind == kind)
-        {
-            Some(problem) => problem.other_places.push(place),
-            None => self.problems.push(Problem {
-                kind,
-                place,
-                finding,
-                other_places: vec![],
-            }),
-        }
-    }
-
-    /// One finding per kind of problem, made by `describe` from the finding
-    /// of the first place, that place, and the other places
-    fn into_findings_with(
-        self,
-        mut describe: impl FnMut(&'static str, Finding, P, Vec<P>) -> Finding,
-    ) -> Vec<Finding> {
-        self.problems
-            .into_iter()
-            .map(|problem| {
-                describe(
-                    problem.kind,
-                    problem.finding,
-                    problem.place,
-                    problem.other_places,
-                )
-            })
-            .collect()
-    }
-}
-
-/// Problems found in several runs of one node, each described by a label
-type RunProblems = Problems<String>;
-
-impl RunProblems {
-    /// Prefix each finding with its run and name the other runs, as in
-    /// `<first run>: <message> (also <run>, <run>)`
-    fn into_findings(self) -> Vec<Finding> {
-        self.into_findings_with(|_, mut finding, run, other_runs| {
-            let also = if other_runs.is_empty() {
-                String::new()
-            } else {
-                format!(" (also {})", other_runs.join(", "))
-            };
-            finding.message = format!("{run}: {}{also}", finding.message);
-            finding
-        })
-    }
 }

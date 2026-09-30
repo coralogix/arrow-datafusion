@@ -23,14 +23,14 @@ use std::sync::Arc;
 use datafusion_common::stats::Precision;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan_checks::fixtures::StatisticsPrecision;
-use datafusion_physical_plan_checks::{PlanChecker, Report, Severity};
+use datafusion_physical_plan_checks::{CheckKind, Report, Severity};
 
 use crate::common::{
-    ConfigurableExec, Effect, exact_source, inexact_source, source, summary,
+    ConfigurableExec, Effect, checker_of, exact_source, inexact_source, source, summary,
 };
 
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
-    PlanChecker::static_only().check(plan).unwrap()
+    checker_of(&[CheckKind::Static]).check(plan).unwrap()
 }
 
 #[test]
@@ -52,8 +52,8 @@ fn equal_cardinality_with_different_exact_num_rows() {
         summary(&report),
         vec![(Severity::Invariant, "equal_cardinality_num_rows")]
     );
-    assert_eq!(report.violations()[0].node, "ConfigurableExec");
-    assert!(report.violations()[0].path.is_empty());
+    assert_eq!(report.violations[0].node, "ConfigurableExec");
+    assert!(report.violations[0].path.is_empty());
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn fetch_bounds_per_partition_num_rows() {
         vec![(Severity::Invariant, "fetch_bounds_num_rows")]
     );
     assert!(
-        report.violations()[0].message.contains("partition 1"),
+        report.violations[0].message.contains("partition 1"),
         "{report}"
     );
 }
@@ -258,9 +258,9 @@ fn statistics_error_is_reported_on_the_failing_node_only() {
     exec.stats_error = true;
     let parent = ConfigurableExec::new(exec.build()).build();
     let report = check(&parent);
-    assert!(!report.is_empty());
+    assert!(!report.violations.is_empty());
     assert!(
-        report.violations().iter().all(|v| v.path == vec![0]),
+        report.violations.iter().all(|v| v.path == vec![0]),
         "{report}"
     );
 }
@@ -322,7 +322,7 @@ fn statistics_ignore_inputs() {
         vec![(Severity::Lint, "statistics_ignore_inputs")]
     );
     assert!(
-        report.violations()[0]
+        report.violations[0]
             .message
             .contains("child_stats_requests() skips the input"),
         "{report}"
@@ -335,11 +335,17 @@ fn allowed_checks_are_skipped() {
         .fetch(10)
         .num_rows(Precision::Exact(10))
         .build();
-    PlanChecker::static_only()
+    checker_of(&[CheckKind::Static])
         .allow("fetch_not_equal_cardinality")
         .check(&plan)
         .unwrap()
         .assert_clean();
+}
+
+#[test]
+#[should_panic(expected = "the checker has no check named 'no_such_check'")]
+fn allowing_an_unknown_check_panics() {
+    let _ = checker_of(&[CheckKind::Static]).allow("no_such_check");
 }
 
 #[test]
@@ -351,18 +357,12 @@ fn violations_are_attributed_to_the_offending_node() {
         .num_rows(Precision::Exact(50))
         .build();
     let report = check(&plan);
-    assert_eq!(report.violations().len(), 1, "{report}");
-    assert_eq!(report.violations()[0].path, vec![0]);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
     assert_eq!(
         report.to_string(),
-        "[invariant] A1 equal_cardinality_num_rows at ConfigurableExec (root/0): \
+        "[invariant] equal_cardinality_num_rows at ConfigurableExec (root/0): \
          cardinality_effect() is Equal, but num_rows is Exact(50) for an input with \
          num_rows Exact(100)"
     );
-
-    // `check_node` only checks the root
-    PlanChecker::static_only()
-        .check_node(&plan)
-        .unwrap()
-        .assert_clean();
 }

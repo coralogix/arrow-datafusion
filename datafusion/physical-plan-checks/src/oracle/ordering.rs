@@ -17,7 +17,7 @@
 
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::compute::{SortColumn, concat_batches, lexsort_to_indices, take_record_batch};
-use arrow::row::{OwnedRow, RowConverter, SortField};
+use arrow::row::{RowConverter, SortField};
 use datafusion_common::Result;
 use datafusion_physical_expr::LexOrdering;
 
@@ -58,38 +58,42 @@ pub fn first_unsorted_row(
     batches: &[RecordBatch],
     ordering: &LexOrdering,
 ) -> Result<Option<usize>> {
-    let fields = batches
-        .first()
-        .map(|batch| {
-            ordering
+    let [keys] = sort_keys([batches], ordering)?;
+    Ok(keys
+        .windows(2)
+        .position(|pair| pair[1] < pair[0])
+        .map(|i| i + 1))
+}
+
+/// The sort key of every row of each set of batches, in the arrow row format,
+/// so that comparing the bytes of two keys compares their rows by `ordering`
+pub(super) fn sort_keys<const N: usize>(
+    sets: [&[RecordBatch]; N],
+    ordering: &LexOrdering,
+) -> Result<[Vec<Vec<u8>>; N]> {
+    let Some(first) = sets.iter().flat_map(|batches| batches.iter()).next() else {
+        return Ok(std::array::from_fn(|_| vec![]));
+    };
+    let fields = ordering
+        .iter()
+        .map(|sort_expr| {
+            let data_type = sort_expr.expr.data_type(&first.schema())?;
+            Ok(SortField::new_with_options(data_type, sort_expr.options))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let converter = RowConverter::new(fields)?;
+    let mut keys: [Vec<Vec<u8>>; N] = std::array::from_fn(|_| vec![]);
+    for (keys, batches) in keys.iter_mut().zip(sets) {
+        for batch in batches {
+            let columns = ordering
                 .iter()
                 .map(|sort_expr| {
-                    let data_type = sort_expr.expr.data_type(&batch.schema())?;
-                    Ok(SortField::new_with_options(data_type, sort_expr.options))
+                    sort_expr.expr.evaluate(batch)?.into_array(batch.num_rows())
                 })
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?;
-    let Some(fields) = fields else {
-        return Ok(None);
-    };
-    let converter = RowConverter::new(fields)?;
-
-    let mut previous: Option<OwnedRow> = None;
-    let mut position = 0;
-    for batch in batches {
-        let columns = ordering
-            .iter()
-            .map(|sort_expr| sort_expr.expr.evaluate(batch)?.into_array(batch.num_rows()))
-            .collect::<Result<Vec<ArrayRef>>>()?;
-        let rows = converter.convert_columns(&columns)?;
-        for row in rows.iter() {
-            if previous.as_ref().is_some_and(|prev| row < prev.row()) {
-                return Ok(Some(position));
-            }
-            previous = Some(row.owned());
-            position += 1;
+                .collect::<Result<Vec<ArrayRef>>>()?;
+            let rows = converter.convert_columns(&columns)?;
+            keys.extend(rows.iter().map(|row| row.as_ref().to_vec()));
         }
     }
-    Ok(None)
+    Ok(keys)
 }

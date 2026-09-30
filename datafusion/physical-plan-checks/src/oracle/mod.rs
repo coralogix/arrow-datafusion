@@ -34,8 +34,5 @@ mod statistics;
 
 pub use ordering::{first_unsorted_row, sort_rows};
 pub use partitioning::{hash_partition, rows_outside_hash_partition};
-pub use rows::{
-    FLOAT_RELATIVE_TOLERANCE, first_non_prefix_row, same_rows, same_rows_in_order,
-    unmatched_rows,
-};
+pub use rows::{first_non_prefix_row, same_rows, same_rows_in_order, unmatched_rows};
 pub use statistics::exact_statistics;

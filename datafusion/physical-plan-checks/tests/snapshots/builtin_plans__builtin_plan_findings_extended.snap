@@ -3,391 +3,496 @@ source: datafusion/physical-plan-checks/tests/builtin_plans.rs
 expression: output
 ---
 ## EmptyExec
-  case 0 default: no inputs
-  plan of case 0:
-    EmptyExec
-no findings
+  case default: no violations
 
 ## PlaceholderRowExec
-  case 0 default: no inputs
-  plan of case 0:
+  case default:
     PlaceholderRowExec
-[invariant] B1 batch_schema at PlaceholderRowExec (root) [all cases]: column 0 of batch 0 of partition 0 is 'placeholder_0' Null, but schema() declares 'a' Int32
-[invariant] B1 batch_schema at PlaceholderRowExec (root) [all cases]: column 1 of batch 0 of partition 0 is 'placeholder_1' Null, but schema() declares 'b' Boolean
-[invariant] B1 batch_schema at PlaceholderRowExec (root) [all cases]: column 2 of batch 0 of partition 0 is 'placeholder_2' Null, but schema() declares 'c' Utf8
+    [invariant] batch_schema at PlaceholderRowExec (root): batch 0 of partition 0: column 0 is 'placeholder_0' Null, but schema() declares 'a' Int32
+    [invariant] batch_schema at PlaceholderRowExec (root): batch 0 of partition 0: column 1 is 'placeholder_1' Null, but schema() declares 'b' Boolean
+    [invariant] batch_schema at PlaceholderRowExec (root): batch 0 of partition 0: column 2 is 'placeholder_2' Null, but schema() declares 'c' Utf8
 
 ## ProjectionExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    ProjectionExec: expr=[a@0 as a]
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## FilterExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    FilterExec: b@1
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## FilterExec with fetch
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     FilterExec: b@1, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[lint] A3 fetch_bounds_num_rows at FilterExec (root) [cases: default, single partition, inexact statistics, seed 1, seed 2, 2 partitions, 5 partitions, large input]: fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (30)
-[lint] A3 fetch_bounds_num_rows at FilterExec (root) [cases: default, inexact statistics, seed 1, seed 2, 2 partitions, 5 partitions, large input]: fetch() is Some(10), but the partition 0 num_rows estimate Inexact(40) is more than the fetch allows (10)
-[lint] A3 fetch_bounds_num_rows at FilterExec (root) [cases: default, inexact statistics, seed 1, seed 2, 2 partitions, 5 partitions, large input]: fetch() is Some(10), but the partition 2 num_rows estimate Inexact(80) is more than the fetch allows (10)
-[lint] A3 fetch_bounds_num_rows at FilterExec (root) [cases: 5 partitions]: fetch() is Some(10), but the partition 3 num_rows estimate Inexact(52) is more than the fetch allows (10)
-[lint] A3 fetch_bounds_num_rows at FilterExec (root) [cases: 5 partitions]: fetch() is Some(10), but the partition 4 num_rows estimate Inexact(18) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (30)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(40) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(80) is more than the fetch allows (10)
+  case single partition:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (10)
+  case inexact statistics:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (30)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(40) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(80) is more than the fetch allows (10)
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (30)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(40) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(80) is more than the fetch allows (10)
+  case seed 2:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (30)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(40) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(80) is more than the fetch allows (10)
+  case 2 partitions:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (20)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(60) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 1 num_rows estimate Inexact(60) is more than the fetch allows (10)
+  case 5 partitions:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(120) is more than the fetch allows (50)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(35) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 1 num_rows estimate Inexact(17) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 3 num_rows estimate Inexact(52) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 4 num_rows estimate Inexact(18) is more than the fetch allows (10)
+  case large input:
+    FilterExec: b@1, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(960) is more than the fetch allows (30)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(320) is more than the fetch allows (10)
+    [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(640) is more than the fetch allows (10)
 
 ## CoalesceBatchesExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    CoalesceBatchesExec: target_batch_size=8192
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## CoalesceBatchesExec with fetch
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[invariant] A2 fetch_not_equal_cardinality at CoalesceBatchesExec (root) [all cases]: fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-[invariant] A8 partition_statistics_sum at CoalesceBatchesExec (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
-[invariant] B2 exact_statistics_hold at CoalesceBatchesExec (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall statistics report num_rows Exact(10), but the output has Exact(20) rows
-[invariant] B8 cardinality_effect_holds at CoalesceBatchesExec (root) [cases: default, single partition, inexact statistics, absent statistics, seed 1, seed 2, 2 partitions, 5 partitions, large input]: cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
-[lint] B10 boundedness_holds at CoalesceBatchesExec (root) [cases: default]: rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+    [lint] boundedness_holds at CoalesceBatchesExec (root): rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+  case single partition:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case inexact statistics:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+  case absent statistics:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Absent
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+  case empty input:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[0, 0, 0], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+  case seed 1:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+  case seed 2:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+  case 2 partitions:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10] sum to 20
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
+  case 5 partitions:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10, 0, 10, 10] sum to 40
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 40 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 40 rows from 600 input rows
+  case large input:
+    CoalesceBatchesExec: target_batch_size=8192, fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+    [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 4800 input rows
 
 ## CoalescePartitionsExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    CoalescePartitionsExec
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## CoalescePartitionsExec with fetch
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     CoalescePartitionsExec: fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[invariant] A2 fetch_not_equal_cardinality at CoalescePartitionsExec (root) [all cases]: fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-[invariant] B8 cardinality_effect_holds at CoalescePartitionsExec (root) [cases: default, single partition, inexact statistics, absent statistics, seed 1, seed 2, 2 partitions, 5 partitions, large input]: cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
-[lint] B10 boundedness_holds at CoalescePartitionsExec (root) [cases: default]: rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+    [lint] boundedness_holds at CoalescePartitionsExec (root): rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+  case single partition:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case inexact statistics:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case absent statistics:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Absent
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case empty input:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[0, 0, 0], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+  case seed 1:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case seed 2:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case 2 partitions:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case 5 partitions:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
+  case large input:
+    CoalescePartitionsExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 4800 input rows
 
 ## SortExec
-  case 0 default: input 0 rows [600]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
-  plan of case 0:
-    SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
-      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec with fetch
-  case 0 default: input 0 rows [600]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
-  plan of case 0:
-    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[false]
-      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec on a nullable column
-  case 0 default: input 0 rows [600]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
-  plan of case 0:
-    SortExec: expr=[c@2 ASC], preserve_partitioning=[false]
-      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec on sorted input
-  case 0 default: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600], sorted by [a@0 ASC]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600], sorted by [a@0 ASC]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800], sorted by [a@0 ASC]; exact statistics; seed 0
-  plan of case 0:
-    SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
-      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec with fetch on sorted input
-  case 0 default: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600], sorted by [a@0 ASC]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600], sorted by [a@0 ASC]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800], sorted by [a@0 ASC]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[false], sort_prefix=[a@0 ASC]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
-[lint] B10 boundedness_holds at SortExec(TopK) (root) [cases: default]: rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+    [lint] boundedness_holds at SortExec(TopK) (root): rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec with preserve_partitioning
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    SortExec: expr=[a@0 ASC], preserve_partitioning=[true]
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortExec with preserve_partitioning and fetch
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[invariant] A8 partition_statistics_sum at SortExec(TopK) (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
-[invariant] B2 exact_statistics_hold at SortExec(TopK) (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: partition 2 statistics report num_rows Exact(10), but the output has Exact(0) rows
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 2 statistics are false: num_rows is Exact(10), but the output has 0 rows
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1:
+    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 2 statistics are false: num_rows is Exact(10), but the output has 0 rows
+  case seed 2:
+    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 2 statistics are false: num_rows is Exact(10), but the output has 0 rows
+  case 2 partitions:
+    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10] sum to 20
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 1 statistics are false: num_rows is Exact(10), but the output has 0 rows
+  case 5 partitions:
+    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10, 0, 10, 10] sum to 40
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 1 statistics are false: num_rows is Exact(10), but the output has 0 rows
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 3 statistics are false: num_rows is Exact(10), but the output has 0 rows
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 4 statistics are false: num_rows is Exact(10), but the output has 0 rows
+  case large input:
+    SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [invariant] partition_statistics_sum at SortExec(TopK) (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at SortExec(TopK) (root): the partition 2 statistics are false: num_rows is Exact(10), but the output has 0 rows
 
 ## SortPreservingMergeExec
-  case 0 default: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200], sorted by [a@0 ASC]; exact statistics; seed 0
-  plan of case 0:
-    SortPreservingMergeExec: [a@0 ASC]
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact, output_ordering=[a@0 ASC]
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## SortPreservingMergeExec with fetch
-  case 0 default: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400], sorted by [a@0 ASC]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87], sorted by [a@0 ASC]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200], sorted by [a@0 ASC]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     SortPreservingMergeExec: [a@0 ASC], fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact, output_ordering=[a@0 ASC]
-[lint] B10 boundedness_holds at SortPreservingMergeExec (root) [cases: default]: rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+    [lint] boundedness_holds at SortPreservingMergeExec (root): rebuilt with child 0 unbounded, the node reports Boundedness::Unbounded, but it has fetch Some(10) and otherwise passes every row through, so like GlobalLimitExec its output ends once the fetch is reached
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## RepartitionExec round robin
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[lint] F1 resources_released at RepartitionExec (root) [cases: default]: after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] resources_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## RepartitionExec hash
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     RepartitionExec: partitioning=Hash([a@0], 4), input_partitions=3
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[lint] F1 resources_released at RepartitionExec (root) [cases: default]: after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] resources_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## GlobalLimitExec
-  case 0 default: input 0 rows [600]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
-  plan of case 0:
-    GlobalLimitExec: skip=5, fetch=10
-      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## GlobalLimitExec without fetch
-  case 0 default: input 0 rows [600]; exact statistics; seed 0
-  case 1 inexact statistics: input 0 rows [600]; inexact statistics; seed 0
-  case 2 absent statistics: input 0 rows [600]; absent statistics; seed 0
-  case 3 empty input: input 0 rows [0]; exact statistics; seed 0
-  case 4 seed 1: input 0 rows [600]; exact statistics; seed 1000
-  case 5 seed 2: input 0 rows [600]; exact statistics; seed 2000
-  case 6 large input: input 0 rows [4800]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     GlobalLimitExec: skip=5, fetch=None
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
-[invariant] B10 boundedness_holds at GlobalLimitExec (root) [cases: default]: rebuilt with child 0 unbounded, the node reports Boundedness::Bounded, but its output did not end while the child kept delivering rows
+    [invariant] boundedness_holds at GlobalLimitExec (root): rebuilt with child 0 unbounded, the node reports Boundedness::Bounded, but its output did not end while the child kept delivering rows
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## LocalLimitExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
+  case default:
     LocalLimitExec: fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-[invariant] A8 partition_statistics_sum at LocalLimitExec (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
-[invariant] B2 exact_statistics_hold at LocalLimitExec (root) [cases: default, seed 1, seed 2, 2 partitions, 5 partitions, large input]: overall statistics report num_rows Exact(10), but the output has Exact(20) rows
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1:
+    LocalLimitExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+  case seed 2:
+    LocalLimitExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+  case 2 partitions:
+    LocalLimitExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10] sum to 20
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
+  case 5 partitions:
+    LocalLimitExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10, 0, 10, 10] sum to 40
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 40 rows
+  case large input:
+    LocalLimitExec: fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [invariant] partition_statistics_sum at LocalLimitExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
+    [invariant] exact_statistics_hold at LocalLimitExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
 
 ## UnionExec
-  case 0 default: input 0 rows [200, 0, 400]; input 1 rows [200, 0, 400]; exact statistics; seeds 0, 1
-  case 1 single partition: input 0 rows [600]; input 1 rows [600]; exact statistics; seeds 0, 1
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; input 1 rows [200, 0, 400]; inexact statistics; seeds 0, 1
-  case 3 absent statistics: input 0 rows [200, 0, 400]; input 1 rows [200, 0, 400]; absent statistics; seeds 0, 1
-  case 4 empty input: input 0 rows [0, 0, 0]; input 1 rows [0, 0, 0]; exact statistics; seeds 0, 1
-  case 5 seed 1: input 0 rows [200, 0, 400]; input 1 rows [200, 0, 400]; exact statistics; seeds 1000, 1001
-  case 6 seed 2: input 0 rows [200, 0, 400]; input 1 rows [200, 0, 400]; exact statistics; seeds 2000, 2001
-  case 7 2 partitions: input 0 rows [300, 300]; input 1 rows [300, 300]; exact statistics; seeds 0, 1
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; input 1 rows [171, 85, 0, 257, 87]; exact statistics; seeds 0, 1
-  case 9 large input: input 0 rows [1600, 0, 3200]; input 1 rows [1600, 0, 3200]; exact statistics; seeds 0, 1
-  plan of case 0:
-    UnionExec
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## BufferExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    BufferExec: capacity=1024
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## CooperativeExec
-  case 0 default: input 0 rows [200, 0, 400]; exact statistics; seed 0
-  case 1 single partition: input 0 rows [600]; exact statistics; seed 0
-  case 2 inexact statistics: input 0 rows [200, 0, 400]; inexact statistics; seed 0
-  case 3 absent statistics: input 0 rows [200, 0, 400]; absent statistics; seed 0
-  case 4 empty input: input 0 rows [0, 0, 0]; exact statistics; seed 0
-  case 5 seed 1: input 0 rows [200, 0, 400]; exact statistics; seed 1000
-  case 6 seed 2: input 0 rows [200, 0, 400]; exact statistics; seed 2000
-  case 7 2 partitions: input 0 rows [300, 300]; exact statistics; seed 0
-  case 8 5 partitions: input 0 rows [171, 85, 0, 257, 87]; exact statistics; seed 0
-  case 9 large input: input 0 rows [1600, 0, 3200]; exact statistics; seed 0
-  plan of case 0:
-    CooperativeExec
-      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-no findings
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations

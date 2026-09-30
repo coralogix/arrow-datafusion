@@ -15,94 +15,88 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! [`PlanCheck`] trait and the [`PlanChecker`] that runs checks over a plan.
+//! [`PlanCheck`] and the [`PlanChecker`] that runs checks over a plan.
 
-use std::collections::{BTreeSet, HashSet};
-use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use datafusion_common::{DataFusionError, Result};
-use datafusion_execution::TaskContext;
+use datafusion_common::Result;
 use datafusion_physical_plan::ExecutionPlan;
 
 use crate::checks;
-use crate::context::{CheckContext, ContextOptions};
-use crate::experiments::Experiment;
+use crate::context::{CheckContext, Gather, Timeouts};
+use crate::exec::runtime;
 use crate::report::{Finding, Report, Violation};
-use crate::variants::VariantKind;
 
-/// A single property that every [`ExecutionPlan`] node should satisfy.
+/// What a check reads, which decides what the [`PlanChecker`] gathers in the
+/// [`CheckContext`] before any check runs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckKind {
+    /// Reads only what the node reports about itself, without executing it
+    Static,
+    /// Reads the output of executing each node, [`CheckContext::output`]
+    Execution,
+    /// Also reads the runs of rewritten copies of each node, or of copies run
+    /// under other settings, [`CheckContext::variant_runs`]
+    Variant,
+    /// Also reads the stream experiments on each node,
+    /// [`CheckContext::stream_runs`]
+    Stream,
+}
+
+/// A property that every [`ExecutionPlan`] node should satisfy.
 ///
-/// Checks are run on one node at a time. A check may inspect the node's
-/// children (for example to compare statistics), but must only report problems
-/// with the node itself: the [`PlanChecker`] visits every node of the tree, so
-/// each child is checked separately.
-///
-/// Checks do not execute plans themselves. A check that needs a node's output
-/// returns true from [`Self::requires_execution`], and the [`PlanChecker`]
-/// executes every node of the plan before running checks and makes the output
-/// available through [`CheckContext::output`]. A check that needs to observe
-/// how a node drives its input streams lists the [`Experiment`]s it needs in
-/// [`Self::experiments`], and reads their results with
-/// [`CheckContext::stream_runs`]. A check that compares the node's output with
-/// the output of a rewritten copy, or of a run under other settings, lists the
-/// [`VariantKind`]s it needs in [`Self::variants`], and reads their results
-/// with [`CheckContext::variant_runs`].
+/// Checks run on one node at a time. A check may inspect the node's children
+/// (for example to compare statistics), but must only report problems with
+/// the node itself: the [`PlanChecker`] visits every node of the tree, so each
+/// child is checked separately. Checks do not execute plans themselves: they
+/// read what the [`PlanChecker`] gathered for their [`CheckKind`].
 ///
 /// See `CHECKS.md` in this crate for the catalog of checks.
-pub trait PlanCheck: Debug + Send + Sync {
-    /// Catalog code of the check, such as `A1`
-    fn code(&self) -> &'static str;
-
-    /// Stable, unique name of the check, such as `equal_cardinality_num_rows`.
-    /// Used to allow (skip) a check with [`PlanChecker::allow`].
-    fn name(&self) -> &'static str;
-
-    /// Whether the check reads the output of executing nodes from the
-    /// [`CheckContext`]
-    fn requires_execution(&self) -> bool {
-        false
-    }
-
-    /// The stream experiments whose results the check reads from the
-    /// [`CheckContext`]. The [`PlanChecker`] runs each experiment requested by
-    /// an enabled check on every node with children.
-    fn experiments(&self) -> &'static [Experiment] {
-        &[]
-    }
-
-    /// The variant runs whose outputs the check reads from the
-    /// [`CheckContext`]. The [`PlanChecker`] collects the variants of each
-    /// requested kind that apply to each node. Variant runs are compared with
-    /// normal outputs, so requesting any also executes every node, as
-    /// [`Self::requires_execution`] does.
-    fn variants(&self) -> &'static [VariantKind] {
-        &[]
-    }
-
-    /// Check a single node and return any problems found.
+///
+/// # Example
+/// ```
+/// use datafusion_physical_plan_checks::{CheckKind, Finding, PlanCheck, PlanChecker};
+///
+/// let no_empty_names = PlanCheck {
+///     name: "no_empty_names",
+///     kind: CheckKind::Static,
+///     check: |node, _context| {
+///         Ok(if node.name().is_empty() {
+///             vec![Finding::invariant("name() is empty")]
+///         } else {
+///             vec![]
+///         })
+///     },
+/// };
+/// let checker = PlanChecker::new().with_check(no_empty_names);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct PlanCheck {
+    /// Stable, unique name, such as `equal_cardinality_num_rows`, used in
+    /// reports and to skip the check with [`PlanChecker::allow`]
+    pub name: &'static str,
+    /// What the check reads
+    pub kind: CheckKind,
+    /// Check one node and return the problems found.
     ///
-    /// Returning an `Err` means the check itself could not run and aborts the
+    /// Returning an `Err` means the check itself could not run, and aborts the
     /// whole [`PlanChecker::check`] call. Problems with the plan, including
-    /// errors returned by the plan's own methods, should be reported as
-    /// [`Finding`]s instead.
-    fn check_node(
-        &self,
-        node: &Arc<dyn ExecutionPlan>,
-        context: &CheckContext,
-    ) -> Result<Vec<Finding>>;
+    /// errors returned by the plan's own methods, are [`Finding`]s.
+    pub check: fn(&Arc<dyn ExecutionPlan>, &CheckContext) -> Result<Vec<Finding>>,
 }
 
 /// Runs a set of [`PlanCheck`]s over every node of an [`ExecutionPlan`] tree.
 ///
-/// If any enabled check requires execution, every node of the plan is executed
-/// first, each on its own, and its output is collected. Stream experiments and
-/// variant runs requested by enabled checks run on every node too. Plans under
-/// test should
-/// therefore be built on inputs that can be executed repeatedly, such as
-/// [`MockSourceExec`]. Experiments that control how inputs behave only change
-/// `MockSourceExec` leaves.
+/// Unless every check is [`CheckKind::Static`], every node of the plan is
+/// executed first, each on its own, and so are the variant runs and stream
+/// experiments that the checks need (see [`CheckContext`]). Plans under test
+/// should therefore be built on inputs that can be executed repeatedly, such
+/// as [`MockSourceExec`]. Variants and experiments that change how inputs
+/// behave only change `MockSourceExec` leaves.
+///
+/// Plans are executed on a current-thread Tokio runtime, one run after
+/// another, so that reports are deterministic.
 ///
 /// # Example
 /// ```
@@ -125,11 +119,8 @@ pub trait PlanCheck: Debug + Send + Sync {
 /// [`MockSourceExec`]: crate::fixtures::MockSourceExec
 #[derive(Debug, Clone)]
 pub struct PlanChecker {
-    checks: Vec<Arc<dyn PlanCheck>>,
-    allowed: HashSet<String>,
-    task_context: Arc<TaskContext>,
-    timeout: Duration,
-    stream_timeout: Duration,
+    checks: Vec<PlanCheck>,
+    timeouts: Timeouts,
 }
 
 impl Default for PlanChecker {
@@ -144,43 +135,34 @@ impl PlanChecker {
         Self::with_checks(checks::all_checks())
     }
 
-    /// Create a checker with the built-in checks that do not execute the plan
-    pub fn static_only() -> Self {
-        Self::with_checks(checks::static_checks())
-    }
-
-    /// Create a checker with no checks. Add checks with [`Self::with_check`].
-    pub fn empty() -> Self {
-        Self::with_checks(vec![])
-    }
-
     /// Create a checker that runs `checks`
-    pub fn with_checks(checks: Vec<Arc<dyn PlanCheck>>) -> Self {
+    pub fn with_checks(checks: Vec<PlanCheck>) -> Self {
         Self {
             checks,
-            allowed: HashSet::new(),
-            task_context: Arc::new(TaskContext::default()),
-            timeout: Duration::from_secs(30),
-            stream_timeout: Duration::from_secs(2),
+            timeouts: Timeouts {
+                execution: Duration::from_secs(30),
+                stream: Duration::from_secs(2),
+            },
         }
     }
 
     /// Add a check, such as a check specific to a user defined plan
-    pub fn with_check(mut self, check: Arc<dyn PlanCheck>) -> Self {
+    pub fn with_check(mut self, check: PlanCheck) -> Self {
         self.checks.push(check);
         self
     }
 
-    /// Skip the check with the given [`PlanCheck::name`]
-    pub fn allow(mut self, check_name: impl Into<String>) -> Self {
-        self.allowed.insert(check_name.into());
-        self
-    }
-
-    /// Set the [`TaskContext`] used to execute plans, for example to change the
-    /// batch size
-    pub fn with_task_context(mut self, task_context: Arc<TaskContext>) -> Self {
-        self.task_context = task_context;
+    /// Skip the check named `name`.
+    ///
+    /// # Panics
+    ///
+    /// If the checker has no check named `name`, which is usually a typo.
+    pub fn allow(mut self, name: &str) -> Self {
+        assert!(
+            self.checks.iter().any(|check| check.name == name),
+            "the checker has no check named '{name}'"
+        );
+        self.checks.retain(|check| check.name != name);
         self
     }
 
@@ -189,7 +171,7 @@ impl PlanChecker {
     /// experiments on finite inputs, which should end like a normal execution,
     /// use it too. Defaults to 30 seconds.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.timeouts.execution = timeout;
         self
     }
 
@@ -200,119 +182,53 @@ impl PlanChecker {
     /// to be released ends early once no task is alive on the Tokio runtime,
     /// since nothing is left that could release them. Defaults to 2 seconds.
     pub fn with_stream_timeout(mut self, timeout: Duration) -> Self {
-        self.stream_timeout = timeout;
+        self.timeouts.stream = timeout;
         self
     }
 
-    /// The checks this checker runs, including allowed (skipped) checks
-    pub fn checks(&self) -> &[Arc<dyn PlanCheck>] {
-        &self.checks
-    }
-
     /// Keep only the checks for which `keep` returns true
-    pub(crate) fn retain_checks(
-        mut self,
-        keep: impl Fn(&Arc<dyn PlanCheck>) -> bool,
-    ) -> Self {
+    pub(crate) fn retain(mut self, keep: impl Fn(&PlanCheck) -> bool) -> Self {
         self.checks.retain(keep);
         self
     }
 
-    /// Run all checks that are not allowed against every node in `plan`.
+    /// Run every check against every node in `plan`.
     ///
-    /// If any check requires execution, this starts a Tokio runtime to execute
-    /// the plan, and so it panics if called from within a Tokio runtime. Use
-    /// [`Self::check_async`] in async code.
+    /// Starts a Tokio runtime to execute the plan, and so panics if called
+    /// from within a Tokio runtime. Use [`Self::check_async`] in async code.
     pub fn check(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<Report> {
-        if !self.requires_execution() {
-            return self.run_checks(plan, &CheckContext::default(), true);
-        }
-        let runtime = runtime()?;
-        runtime.block_on(self.check_async(plan))
+        runtime()?.block_on(self.check_async(plan))
     }
 
-    /// Run all checks that are not allowed against every node in `plan`,
-    /// executing the plan on the current Tokio runtime if needed
+    /// Run every check against every node in `plan`, executing the plan on
+    /// the current Tokio runtime if needed
     pub async fn check_async(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<Report> {
-        let context = self.context(plan).await;
-        self.run_checks(plan, &context, true)
-    }
-
-    /// Run all checks that are not allowed against the root node of `plan`
-    /// only, without reporting problems in its children
-    pub fn check_node(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<Report> {
-        if !self.requires_execution() {
-            return self.run_checks(plan, &CheckContext::default(), false);
-        }
-        let runtime = runtime()?;
-        runtime.block_on(async {
-            let context = self.context(plan).await;
-            self.run_checks(plan, &context, false)
-        })
-    }
-
-    fn active_checks(&self) -> impl Iterator<Item = &Arc<dyn PlanCheck>> {
-        self.checks
-            .iter()
-            .filter(|check| !self.allowed.contains(check.name()))
-    }
-
-    fn requires_execution(&self) -> bool {
-        self.active_checks().any(|check| {
-            check.requires_execution()
-                || !check.experiments().is_empty()
-                || !check.variants().is_empty()
-        })
-    }
-
-    async fn context(&self, plan: &Arc<dyn ExecutionPlan>) -> CheckContext {
-        if !self.requires_execution() {
-            return CheckContext::default();
-        }
-        let options = ContextOptions {
-            execute: self
-                .active_checks()
-                .any(|check| check.requires_execution() || !check.variants().is_empty()),
-            experiments: self
-                .active_checks()
-                .flat_map(|check| check.experiments().iter().copied())
-                .collect::<BTreeSet<_>>(),
-            variants: self
-                .active_checks()
-                .flat_map(|check| check.variants().iter().copied())
-                .collect::<BTreeSet<_>>(),
-            task_context: Arc::clone(&self.task_context),
-            timeout: self.timeout,
-            stream_timeout: self.stream_timeout,
+        let needs = |kind| self.checks.iter().any(|check| check.kind == kind);
+        let gather = Gather {
+            outputs: self
+                .checks
+                .iter()
+                .any(|check| check.kind != CheckKind::Static),
+            variants: needs(CheckKind::Variant),
+            experiments: needs(CheckKind::Stream),
         };
-        CheckContext::gather(plan, &options).await
-    }
-
-    fn run_checks(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        context: &CheckContext,
-        recursive: bool,
-    ) -> Result<Report> {
+        let context = CheckContext::gather(plan, gather, self.timeouts).await;
         let mut violations = vec![];
-        let mut path = vec![];
-        self.check_recursive(plan, context, recursive, &mut path, &mut violations)?;
-        Ok(Report::new(violations))
+        self.check_recursive(plan, &context, &mut vec![], &mut violations)?;
+        Ok(Report { violations })
     }
 
     fn check_recursive(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         context: &CheckContext,
-        recursive: bool,
         path: &mut Vec<usize>,
         violations: &mut Vec<Violation>,
     ) -> Result<()> {
-        for check in self.active_checks() {
-            for finding in check.check_node(plan, context)? {
+        for check in &self.checks {
+            for finding in (check.check)(plan, context)? {
                 violations.push(Violation {
-                    code: check.code(),
-                    check: check.name(),
+                    check: check.name,
                     severity: finding.severity,
                     node: plan.name().to_string(),
                     path: path.clone(),
@@ -320,22 +236,11 @@ impl PlanChecker {
                 });
             }
         }
-        if recursive {
-            for (i, child) in plan.children().into_iter().enumerate() {
-                path.push(i);
-                self.check_recursive(child, context, recursive, path, violations)?;
-                path.pop();
-            }
+        for (i, child) in plan.children().into_iter().enumerate() {
+            path.push(i);
+            self.check_recursive(child, context, path, violations)?;
+            path.pop();
         }
         Ok(())
     }
-}
-
-/// A runtime for executing plans from synchronous code
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .map_err(|e| DataFusionError::External(Box::new(e)))
 }

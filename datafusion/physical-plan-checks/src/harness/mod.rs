@@ -18,51 +18,299 @@
 //! Testing a plan from a description of how to build it.
 //!
 //! A [`PlanFactory`] says how to build the plan under test from its inputs.
-//! The [`PlanHarness`] generates the inputs, derives the cases worth testing
-//! by probing the plan's input requirements, runs a [`PlanChecker`] on the
-//! plan of every case, and returns a [`FactoryReport`] that groups the
-//! findings of all cases.
-//!
-//! For each [`Profile`], the harness lays out the inputs as the profile
-//! says, builds the plan, and reads what each node directly above an input
-//! requires of it (`required_input_ordering` and
-//! `input_distribution_requirements`). It then changes the inputs to meet
-//! the requirements: an input that must be sorted is sorted, one that must
-//! be hash partitioned is hash partitioned into the profile's number of
-//! partitions (the same number for every input), and one that must be a
-//! single partition gets one. A plan's requirements can depend on its
-//! inputs, so the harness builds the plan again and repeats until the
-//! requirements are met, at most [`MAX_PROBES`] times. A case whose
-//! requirements cannot be met is reported, not tested.
-//!
-//! [`PlanChecker`] remains the way to check a plan built by hand.
+//! For each [`Profile`], the [`PlanHarness`] generates the inputs as the
+//! profile lays them out, builds the plan, and reads what each node directly
+//! above an input requires of it (`required_input_ordering` and
+//! `input_distribution_requirements`). It then changes the inputs to meet the
+//! requirements: an input that must be sorted is sorted, one that must be hash
+//! partitioned is hash partitioned into the profile's number of partitions
+//! (the same number for every input), and one that must be a single partition
+//! gets one. A plan's requirements can depend on its inputs, so the harness
+//! builds the plan again and repeats until the requirements are met. The
+//! result is a [`Case`], and the harness runs a [`PlanChecker`] on the plan of
+//! every case.
 
-mod case;
-mod factory;
-mod profile;
-mod report;
+mod requirements;
 
-use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 
-use datafusion_common::{DataFusionError, Result, plan_err};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_common::Result;
+use datafusion_physical_plan::{ExecutionPlan, displayable};
 
-pub use case::{Case, MAX_PROBES, ROW_ID_RANGE};
-pub use factory::{AllowedCheck, PlanFactory};
-pub use profile::Profile;
-pub use report::{CaseFinding, CaseRun, FactoryReport, FindingGroup, HarnessProblem};
+use crate::exec::runtime;
+use crate::fixtures::{SourceSpec, StatisticsPrecision};
+use crate::{CheckKind, PlanChecker, Report};
 
-use crate::PlanChecker;
+/// Row ids of input `i` start at `i * ROW_ID_RANGE`
+pub const ROW_ID_RANGE: u64 = 1_000_000_000;
 
-/// Checks a [`PlanFactory`] on every case derived from its [`Profile`]s.
+/// The function a [`PlanFactory`] builds its plan with
+type CreateFn =
+    dyn Fn(Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> + Send + Sync;
+
+/// Describes a plan under test by how to build it from its inputs.
+///
+/// A factory has a name, one base [`SourceSpec`] per input, and a function
+/// that builds the plan from input plans. The [`PlanHarness`] generates the
+/// inputs for each case from the base specs, calls the function, and checks
+/// the plan it returns.
+///
+/// # The base specs
+///
+/// A base spec carries what only the author of the plan knows: the schema,
+/// the value distribution (for example few distinct values on join keys, so
+/// that the inputs of a join match), the number of rows, and optionally an
+/// ordering the plan should see, for example to exercise a sorted code path.
+/// The harness sets everything else for each case, replacing what the base
+/// spec says: the partition layout, hash partitioning, the batch layout, the
+/// statistics precision, the seed and the row ids (see [`Profile`]). It keeps
+/// the base ordering unless the plan requires another one.
+///
+/// # The function
+///
+/// `create` is called several times per case: to probe the plan's input
+/// requirements, and once more when they are met. It must be a pure function
+/// of its inputs, and must use the input plans it receives as they are (not
+/// copies), since the harness recognizes them by identity.
+///
+/// **Bind expressions to the schemas of the inputs it receives, by name**,
+/// for example `col("a", &inputs[0].schema())`, never by a hard-coded column
+/// index or a schema captured outside `create`. The harness appends a row id
+/// column ([`ROW_ID_COLUMN`]) to every input, so the input schemas have more
+/// columns than the base specs.
+///
+/// # Example
+/// ```
+/// # use std::sync::Arc;
+/// # use arrow::datatypes::{DataType, Field, Schema};
+/// # use datafusion_physical_expr::expressions::col;
+/// # use datafusion_physical_plan::ExecutionPlan;
+/// # use datafusion_physical_plan::filter::FilterExec;
+/// use datafusion_physical_plan_checks::fixtures::SourceSpec;
+/// use datafusion_physical_plan_checks::harness::{PlanFactory, PlanHarness};
+///
+/// let schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Boolean, false)]));
+/// let factory = PlanFactory::new("FilterExec", vec![SourceSpec::new(schema)], |inputs| {
+///     let input = Arc::clone(&inputs[0]);
+///     let predicate = col("b", &input.schema())?;
+///     Ok(Arc::new(FilterExec::try_new(predicate, input)?) as Arc<dyn ExecutionPlan>)
+/// });
+/// let report = PlanHarness::new().check(&factory)?;
+/// report.assert_no_invariant_violations();
+/// # Ok::<(), datafusion_common::DataFusionError>(())
+/// ```
+///
+/// [`ROW_ID_COLUMN`]: crate::fixtures::ROW_ID_COLUMN
+#[derive(Clone)]
+pub struct PlanFactory {
+    /// The name, used in reports
+    pub name: String,
+    /// The base spec of each input. A plan without inputs, such as
+    /// `EmptyExec`, has none.
+    pub inputs: Vec<SourceSpec>,
+    /// The name of each check skipped in every case, with the reason, which
+    /// the report shows
+    pub allowed: Vec<(String, String)>,
+    create: Arc<CreateFn>,
+}
+
+impl fmt::Debug for PlanFactory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlanFactory")
+            .field("name", &self.name)
+            .field("inputs", &self.inputs)
+            .field("allowed", &self.allowed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlanFactory {
+    /// A factory named `name` that builds its plan from one input per entry
+    /// of `inputs` with `create`
+    pub fn new<F>(name: impl Into<String>, inputs: Vec<SourceSpec>, create: F) -> Self
+    where
+        F: Fn(Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            name: name.into(),
+            inputs,
+            allowed: vec![],
+            create: Arc::new(create),
+        }
+    }
+
+    /// Skip the check named `check` in every case, because of `reason`,
+    /// which the report shows. Use it for a known limitation of the check,
+    /// not to hide a problem of the plan.
+    pub fn allow(mut self, check: impl Into<String>, reason: impl Into<String>) -> Self {
+        self.allowed.push((check.into(), reason.into()));
+        self
+    }
+
+    /// Build the plan under test on `inputs`
+    pub fn create(
+        &self,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        (self.create)(inputs)
+    }
+}
+
+/// How the [`PlanHarness`] lays out the inputs of a factory for one case.
+///
+/// A profile sets everything about an input that the plan's author does not
+/// need to know: how many partitions it has and how its rows are spread over
+/// them, the precision of its statistics and the seed. Rows are split into
+/// random batches of up to 16 rows, with empty batches. The size of each
+/// input is the number of rows of its base [`SourceSpec`] times
+/// [`Self::row_multiplier`]: only the author of the plan knows what size
+/// makes sense, since for example a cross join produces the product of its
+/// input sizes.
+#[derive(Debug, Clone)]
+pub struct Profile {
+    /// The name, used to refer to the case in reports
+    pub name: String,
+    /// Rows are spread over one partition per weight, in proportion to the
+    /// weights, and a weight of 0 gives an empty partition. An input that must
+    /// be hash partitioned gets as many partitions.
+    pub partition_weights: Vec<usize>,
+    /// Each input gets this many times the rows of its base spec. 0 gives
+    /// inputs without rows.
+    pub row_multiplier: usize,
+    /// The precision of the statistics the inputs report
+    pub statistics: StatisticsPrecision,
+    /// Input `i` is generated with seed `seed * 1000 + i`, so that inputs with
+    /// the same schema get different data
+    pub seed: u64,
+    /// Whether the [`CheckKind::Stream`] checks run. They depend on how a plan
+    /// drives its streams rather than on the shape of its data, and several of
+    /// them wait for timeouts, so only [`Self::default_profile`] runs them.
+    pub stream_checks: bool,
+}
+
+impl Profile {
+    /// A profile named `name` with three partitions, the second of them empty
+    /// and the third with twice the rows of the first, exact statistics and
+    /// seed 0, that does not run the stream checks
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            partition_weights: vec![1, 0, 2],
+            row_multiplier: 1,
+            statistics: StatisticsPrecision::Exact,
+            seed: 0,
+            stream_checks: false,
+        }
+    }
+
+    /// `default`: the layout of [`Self::new`], with every check
+    pub fn default_profile() -> Self {
+        Self {
+            stream_checks: true,
+            ..Self::new("default")
+        }
+    }
+
+    /// The profiles [`PlanHarness::new`] uses: [`Self::default_profile`],
+    /// then `single partition`, `inexact statistics`, `absent statistics` and
+    /// `empty input`
+    pub fn defaults() -> Vec<Self> {
+        vec![
+            Self::default_profile(),
+            Self {
+                partition_weights: vec![1],
+                ..Self::new("single partition")
+            },
+            Self {
+                statistics: StatisticsPrecision::Inexact,
+                ..Self::new("inexact statistics")
+            },
+            Self {
+                statistics: StatisticsPrecision::Absent,
+                ..Self::new("absent statistics")
+            },
+            Self {
+                row_multiplier: 0,
+                ..Self::new("empty input")
+            },
+        ]
+    }
+
+    /// [`Self::defaults`], followed by `seed 1` and `seed 2` (other data), `2
+    /// partitions` and `5 partitions` (the latter with an empty partition), and
+    /// `large input` (8 times the rows, so that operators with internal
+    /// buffers fill them several times). Used by the built-in audit with the
+    /// `extended_tests` feature.
+    pub fn extended() -> Vec<Self> {
+        let mut profiles = Self::defaults();
+        profiles.extend([
+            Self {
+                seed: 1,
+                ..Self::new("seed 1")
+            },
+            Self {
+                seed: 2,
+                ..Self::new("seed 2")
+            },
+            Self {
+                partition_weights: vec![1, 1],
+                ..Self::new("2 partitions")
+            },
+            Self {
+                partition_weights: vec![2, 1, 0, 3, 1],
+                ..Self::new("5 partitions")
+            },
+            Self {
+                row_multiplier: 8,
+                ..Self::new("large input")
+            },
+        ]);
+        profiles
+    }
+
+    /// The rows of each partition for an input of `num_rows` rows: in
+    /// proportion to the weights, with the rows that do not divide evenly in
+    /// the last partition with a non-zero weight
+    fn partition_rows(&self, num_rows: usize) -> Vec<usize> {
+        let total: usize = self.partition_weights.iter().sum();
+        if total == 0 {
+            return vec![0; self.partition_weights.len()];
+        }
+        let mut rows: Vec<usize> = self
+            .partition_weights
+            .iter()
+            .map(|weight| num_rows * weight / total)
+            .collect();
+        let remainder = num_rows - rows.iter().sum::<usize>();
+        if let Some(last) = self.partition_weights.iter().rposition(|w| *w > 0) {
+            rows[last] += remainder;
+        }
+        rows
+    }
+}
+
+/// One test of a [`PlanFactory`]: the inputs derived from its base specs for
+/// a [`Profile`] and the plan's input requirements, and the plan built on
+/// them. To reproduce a case by hand, build each of [`Self::inputs`] and call
+/// [`PlanFactory::create`] on them.
+#[derive(Debug, Clone)]
+pub struct Case {
+    /// The profile the case was derived from
+    pub profile: Profile,
+    /// The spec of each input
+    pub inputs: Vec<SourceSpec>,
+    /// The plan built on the inputs
+    pub plan: Arc<dyn ExecutionPlan>,
+}
+
+/// Checks a [`PlanFactory`] on one case per [`Profile`].
 ///
 /// See [`PlanFactory`] for an example, and the [module documentation](self)
 /// for how cases are derived.
-///
-/// Plans are executed on a current-thread Tokio runtime, one case after
-/// another, so that the findings are deterministic: some operators produce
-/// output that depends on how tasks interleave.
 #[derive(Debug, Clone)]
 pub struct PlanHarness {
     checker: PlanChecker,
@@ -86,38 +334,41 @@ impl PlanHarness {
     }
 
     /// Run the checks of `checker`, with its settings such as timeouts,
-    /// instead of every built-in check. The harness adds the checks allowed
-    /// by each factory, and leaves out checks that need stream experiments
-    /// in profiles that do not run them.
+    /// instead of every built-in check
     pub fn with_checker(mut self, checker: PlanChecker) -> Self {
         self.checker = checker;
         self
     }
 
-    /// Derive cases from `profiles` instead of [`Profile::defaults`], for
-    /// factories that do not set their own
+    /// Derive cases from `profiles` instead of [`Profile::defaults`]
     pub fn with_profiles(mut self, profiles: Vec<Profile>) -> Self {
         self.profiles = profiles;
         self
     }
 
-    /// The profiles cases are derived from, for factories that do not set
-    /// their own
-    pub fn profiles(&self) -> &[Profile] {
-        &self.profiles
-    }
-
-    /// The profiles for `factory`
-    fn profiles_for<'a>(&'a self, factory: &'a PlanFactory) -> &'a [Profile] {
-        factory.profiles().unwrap_or(&self.profiles)
-    }
-
-    /// The cases of `factory`, in order. Deriving them builds the plan, but
-    /// does not execute it.
-    pub fn cases(&self, factory: &PlanFactory) -> Vec<Case> {
-        case::derive_cases(factory, self.profiles_for(factory))
-            .into_iter()
-            .map(|(case, _)| case)
+    /// The cases of `factory`, one per profile, in order. A factory without
+    /// inputs has one case, for the first profile, since every profile gives
+    /// the same plan. Deriving the cases builds the plans, but does not
+    /// execute them.
+    ///
+    /// Returns an error if `create` fails, an input cannot be generated from
+    /// its spec, or the input requirements of the plan cannot be met.
+    pub fn cases(&self, factory: &PlanFactory) -> Result<Vec<Case>> {
+        let profiles = if factory.inputs.is_empty() {
+            &self.profiles[..self.profiles.len().min(1)]
+        } else {
+            &self.profiles
+        };
+        profiles
+            .iter()
+            .map(|profile| {
+                requirements::derive_case(factory, profile).map_err(|e| {
+                    e.context(format!(
+                        "deriving the '{}' case of '{}'",
+                        profile.name, factory.name
+                    ))
+                })
+            })
             .collect()
     }
 
@@ -127,120 +378,97 @@ impl PlanHarness {
     /// panics if called from within a Tokio runtime. Use
     /// [`Self::check_async`] in async code.
     ///
-    /// Returns an error if a check could not run (see [`PlanCheck::check_node`]).
-    /// Problems with the factory or its cases are reported in the
-    /// [`FactoryReport`].
+    /// Returns an error if the cases cannot be derived (see [`Self::cases`]),
+    /// or a check could not run (see [`PlanCheck::check`]).
     ///
-    /// [`PlanCheck::check_node`]: crate::PlanCheck::check_node
+    /// # Panics
+    ///
+    /// If `factory` allows a check that the checker does not have.
+    ///
+    /// [`PlanCheck::check`]: crate::PlanCheck::check
     pub fn check(&self, factory: &PlanFactory) -> Result<FactoryReport> {
         runtime()?.block_on(self.check_async(factory))
     }
 
     /// Check every case of `factory` on the current Tokio runtime
     pub async fn check_async(&self, factory: &PlanFactory) -> Result<FactoryReport> {
-        let mut runs = vec![];
-        for (case, plan) in case::derive_cases(factory, self.profiles_for(factory)) {
-            runs.push(self.run(factory, case, plan).await?);
+        let checker = factory
+            .allowed
+            .iter()
+            .fold(self.checker.clone(), |checker, (check, _)| {
+                checker.allow(check)
+            });
+        let mut cases = vec![];
+        for case in self.cases(factory)? {
+            let checker = checker.clone().retain(|check| {
+                case.profile.stream_checks || check.kind != CheckKind::Stream
+            });
+            let report = checker.check_async(&case.plan).await?;
+            cases.push((case, report));
         }
-        Ok(FactoryReport::new(
-            factory.name().to_string(),
-            factory.allowed().to_vec(),
-            self.factory_problems(factory),
-            runs,
-        ))
-    }
-
-    /// Derive the case of `factory` at `index` again and check it, for
-    /// example to reproduce a finding from a [`FactoryReport`]. See
-    /// [`Self::check`] for the runtime.
-    pub fn run_case(&self, factory: &PlanFactory, index: usize) -> Result<CaseRun> {
-        runtime()?.block_on(self.run_case_async(factory, index))
-    }
-
-    /// [`Self::run_case`] on the current Tokio runtime
-    pub async fn run_case_async(
-        &self,
-        factory: &PlanFactory,
-        index: usize,
-    ) -> Result<CaseRun> {
-        let mut cases = case::derive_cases(factory, self.profiles_for(factory));
-        if index >= cases.len() {
-            return plan_err!(
-                "factory '{}' has {} cases, there is no case {index}",
-                factory.name(),
-                cases.len()
-            );
-        }
-        let (case, plan) = cases.swap_remove(index);
-        self.run(factory, case, plan).await
-    }
-
-    /// Check the plan of `case`, if it has one
-    async fn run(
-        &self,
-        factory: &PlanFactory,
-        case: Case,
-        plan: Option<Arc<dyn ExecutionPlan>>,
-    ) -> Result<CaseRun> {
-        let plan = match plan {
-            Some(plan) if case.problem().is_none() => plan,
-            _ => {
-                return Ok(CaseRun {
-                    case,
-                    plan: None,
-                    report: None,
-                });
-            }
-        };
-        let report = self.checker_for(factory, &case).check_async(&plan).await?;
-        Ok(CaseRun {
-            case,
-            plan: Some(plan),
-            report: Some(report),
+        Ok(FactoryReport {
+            name: factory.name.clone(),
+            allowed: factory.allowed.clone(),
+            cases,
         })
-    }
-
-    /// The checker the harness runs on the plan of `case`: the harness's
-    /// checker without the checks that need stream experiments, unless the
-    /// case's profile runs them, and with the checks `factory` allows
-    /// skipped. Use it to check a case rebuilt by hand from its specs.
-    pub fn checker_for(&self, factory: &PlanFactory, case: &Case) -> PlanChecker {
-        let stream_experiments = case.profile().stream_experiments();
-        factory.allowed().iter().fold(
-            self.checker.clone().retain_checks(|check| {
-                stream_experiments || check.experiments().is_empty()
-            }),
-            |checker, allowed| checker.allow(allowed.check.clone()),
-        )
-    }
-
-    /// Problems of `factory` that do not depend on a case
-    fn factory_problems(&self, factory: &PlanFactory) -> Vec<HarnessProblem> {
-        let names: HashSet<&str> = self
-            .checker
-            .checks()
-            .iter()
-            .map(|check| check.name())
-            .collect();
-        factory
-            .allowed()
-            .iter()
-            .filter(|allowed| !names.contains(allowed.check.as_str()))
-            .map(|allowed| {
-                HarnessProblem::allowed(format!(
-                    "the factory allows '{}', but the checker has no check with that \
-                     name",
-                    allowed.check
-                ))
-            })
-            .collect()
     }
 }
 
-/// A current-thread runtime, so that execution is deterministic
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| DataFusionError::External(Box::new(e)))
+/// The result of checking every case of a [`PlanFactory`] with a
+/// [`PlanHarness`]. It displays every case, with its plan and violations if
+/// it has any.
+#[derive(Debug, Clone)]
+pub struct FactoryReport {
+    /// The name of the factory
+    pub name: String,
+    /// The checks skipped in every case, with the reasons
+    pub allowed: Vec<(String, String)>,
+    /// Each case, with the checker's report on its plan
+    pub cases: Vec<(Case, Report)>,
+}
+
+impl FactoryReport {
+    /// Panics if any case has a [`Severity::Invariant`] violation
+    ///
+    /// [`Severity::Invariant`]: crate::Severity::Invariant
+    pub fn assert_no_invariant_violations(&self) {
+        assert!(
+            !self
+                .cases
+                .iter()
+                .any(|(_, report)| report.has_invariant_violations()),
+            "ExecutionPlan invariant violations found:\n{self}"
+        );
+    }
+
+    /// Panics if any case has a violation, including lints
+    pub fn assert_clean(&self) {
+        assert!(
+            self.cases
+                .iter()
+                .all(|(_, report)| report.violations.is_empty()),
+            "ExecutionPlan check violations found:\n{self}"
+        );
+    }
+}
+
+impl fmt::Display for FactoryReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        for (check, reason) in &self.allowed {
+            write!(f, "\n  allowed {check}: {reason}")?;
+        }
+        for (case, report) in &self.cases {
+            write!(f, "\n  case {}:", case.profile.name)?;
+            if report.violations.is_empty() {
+                write!(f, " no violations")?;
+                continue;
+            }
+            let plan = displayable(case.plan.as_ref()).indent(true).to_string();
+            for line in plan.lines().chain(report.to_string().lines()) {
+                write!(f, "\n    {line}")?;
+            }
+        }
+        Ok(())
+    }
 }

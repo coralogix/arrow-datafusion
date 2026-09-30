@@ -21,11 +21,9 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{
-    ArrayRef, AsArray, Float64Array, RecordBatch, UInt32Array, new_null_array,
-};
+use arrow::array::{RecordBatch, UInt32Array, new_null_array};
 use arrow::compute::{concat_batches, take_record_batch};
-use arrow::datatypes::{DataType, Field, Float64Type, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{Result, Statistics, internal_err};
@@ -44,7 +42,7 @@ use datafusion_physical_plan::{
     StatisticsArgs,
 };
 use datafusion_physical_plan_checks::fixtures::{SourceSpec, StatisticsPrecision};
-use datafusion_physical_plan_checks::{Report, Severity};
+use datafusion_physical_plan_checks::{CheckKind, PlanChecker, Report, Severity, checks};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
@@ -215,9 +213,6 @@ pub struct ConfigurableExec {
     /// End each partition after as many rows as the session batch size, as a
     /// node that only emits its first output batch would
     pub stop_after_session_batch: bool,
-    /// Multiply the `Float64` values of the `k`-th batch of each partition,
-    /// counting from 1, by `1 + k * noise`
-    pub float_noise: Option<f64>,
     /// What to do when the input returns an error
     pub on_input_error: OnInputError,
     /// Where to keep input streams when the output stream is dropped
@@ -256,7 +251,6 @@ impl ConfigurableExec {
             skip: 0,
             coalesce: false,
             stop_after_session_batch: false,
-            float_noise: None,
             on_input_error: OnInputError::Propagate,
             hold_input: HoldInput::No,
             leak_memory: false,
@@ -527,15 +521,6 @@ impl ExecutionPlan for Built {
         });
         let transform = self.exec.transform;
         let mut stream = items.map(move |batch| transform.apply(batch?)).boxed();
-        if let Some(noise) = self.exec.float_noise {
-            let mut k = 0;
-            stream = stream
-                .map(move |batch| {
-                    k += 1;
-                    scale_floats(&batch?, 1.0 + k as f64 * noise)
-                })
-                .boxed();
-        }
 
         let fetch = self
             .exec
@@ -691,23 +676,6 @@ fn skip_and_limit(
     .boxed()
 }
 
-/// Multiply every `Float64` value of `batch` by `factor`
-fn scale_floats(batch: &RecordBatch, factor: f64) -> Result<RecordBatch> {
-    let columns = batch
-        .columns()
-        .iter()
-        .map(|column| match column.data_type() {
-            DataType::Float64 => {
-                let values: Float64Array =
-                    column.as_primitive::<Float64Type>().unary(|v| v * factor);
-                Arc::new(values) as ArrayRef
-            }
-            _ => Arc::clone(column),
-        })
-        .collect();
-    Ok(RecordBatch::try_new(batch.schema(), columns)?)
-}
-
 pub fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
 }
@@ -731,11 +699,40 @@ pub fn inexact_source(num_rows: usize) -> Arc<dyn ExecutionPlan> {
     source(&[num_rows], StatisticsPrecision::Inexact)
 }
 
+/// A checker with the built-in checks named `names`
+pub fn checker(names: &[&str]) -> PlanChecker {
+    let checks: Vec<_> = checks::all_checks()
+        .into_iter()
+        .filter(|check| names.contains(&check.name))
+        .collect();
+    assert_eq!(checks.len(), names.len(), "unknown check in {names:?}");
+    PlanChecker::with_checks(checks)
+}
+
+/// A checker with the built-in checks of the given kinds
+pub fn checker_of(kinds: &[CheckKind]) -> PlanChecker {
+    PlanChecker::with_checks(
+        checks::all_checks()
+            .into_iter()
+            .filter(|check| kinds.contains(&check.kind))
+            .collect(),
+    )
+}
+
 /// `(severity, check name)` of every violation in the report
 pub fn summary(report: &Report) -> Vec<(Severity, &'static str)> {
     report
-        .violations()
+        .violations
         .iter()
         .map(|v| (v.severity, v.check))
+        .collect()
+}
+
+/// Messages of every violation in the report
+pub fn messages(report: &Report) -> Vec<&str> {
+    report
+        .violations
+        .iter()
+        .map(|v| v.message.as_str())
         .collect()
 }
