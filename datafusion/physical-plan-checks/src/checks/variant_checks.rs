@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Checks that plans returned by rewrite hooks, and nodes rewritten the way
-//! optimizer rules rewrite them, produce what the original node promises.
+//! `CheckKind::Variant` checks: they compare the normal output of a node with
+//! the output of rewritten copies of it, which must produce what the node
+//! promises, and with its output under settings and input layouts that should
+//! not change it.
 
 use std::sync::Arc;
 
@@ -28,7 +30,7 @@ use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 
 use super::partition_count;
-use crate::{CheckContext, Finding, NodeOutput, Variant, oracle};
+use crate::{CheckContext, Finding, NodeOutput, Variant, VariantRun, oracle};
 
 /// What the output of a node must satisfy when at most `limit` rows per
 /// partition are wanted from it: the output of a node with a fetch, or of a
@@ -37,24 +39,24 @@ use crate::{CheckContext, Finding, NodeOutput, Variant, oracle};
 /// A fetch does not have to keep exactly `limit` rows per partition: the
 /// partitions of a TopK `SortExec` share one threshold and can keep fewer rows,
 /// and the `LimitPushdown` rule only relies on the total.
-pub(super) struct FetchExpectation<'a> {
+struct FetchExpectation<'a> {
     /// Largest number of rows allowed in each partition
-    pub limit: usize,
+    limit: usize,
     /// The whole output must have at least `min(limit, available_rows)` rows
-    pub available_rows: usize,
+    available_rows: usize,
     /// The output without the limit, if known. Every row must appear in it,
     /// and where `ordering` is set, the output must keep its first rows (see
     /// [`order_problem`]).
-    pub unlimited: Option<&'a NodeOutput>,
+    unlimited: Option<&'a NodeOutput>,
     /// The ordering the node reports, if any
-    pub ordering: Option<&'a LexOrdering>,
+    ordering: Option<&'a LexOrdering>,
 }
 
 impl FetchExpectation<'_> {
     /// The problems of `output`. Comparisons that cannot be computed, for
     /// example because the output does not match the schema (reported by
     /// `batch_schema`), are skipped.
-    pub(super) fn problems(&self, output: &NodeOutput) -> Vec<String> {
+    fn problems(&self, output: &NodeOutput) -> Vec<String> {
         let mut problems = vec![];
         let rows = output.partition_num_rows();
         if let Some((p, n)) = rows.iter().enumerate().find(|(_, n)| **n > self.limit) {
@@ -373,4 +375,156 @@ pub(super) fn limit_pushdown_equivalent(
         }
     }
     Ok(findings)
+}
+
+/// E1: results do not depend on the session batch size.
+pub(super) fn batch_size_invariance(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    Ok(check_invariance(node, context, |variant| {
+        matches!(variant, Variant::BatchSize(_))
+    }))
+}
+
+/// E2: results do not depend on how input rows are split into batches.
+pub(super) fn batch_boundary_invariance(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    Ok(check_invariance(node, context, |variant| {
+        matches!(variant, Variant::BatchLayout(_))
+    }))
+}
+
+/// Compare the output of `node` under each variant for which `compared`
+/// returns true with its normal output
+fn check_invariance(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+    compared: fn(&Variant) -> bool,
+) -> Vec<Finding> {
+    // A failing node is reported by `execution_succeeds`
+    let Some(normal) = context.output(node) else {
+        return vec![];
+    };
+    let mut findings = vec![];
+    for run in context.variant_runs(node) {
+        if !compared(&run.variant) || !inputs_unchanged(node, context, run.variant) {
+            continue;
+        }
+        match &run.output {
+            Ok(output) => {
+                for difference in differences(node, context, normal, output) {
+                    findings.push(Finding::invariant(format!(
+                        "with {}: {difference}",
+                        run.variant
+                    )));
+                }
+            }
+            Err(error) => findings.push(Finding::invariant(format!(
+                "with {}: executing the node failed: {error}",
+                run.variant
+            ))),
+        }
+    }
+    findings
+}
+
+/// Returns true if every child of `node` produced the same rows, in the same
+/// order and partitions, under `variant` as normally. The node then saw the
+/// same input, only split into batches differently.
+///
+/// Batch sizes and leaf layouts apply to the whole subtree, so a child can
+/// produce different results under a variant, either because it is broken
+/// (reported on the child) or legitimately, for example rows that tie on a
+/// sort key in another order, or rows interleaved differently by a
+/// repartition. A node whose output depends on the order of its input rows
+/// can then legitimately differ too, so it is not compared under that variant.
+fn inputs_unchanged(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+    variant: Variant,
+) -> bool {
+    node.children().into_iter().all(|child| {
+        let Some(normal) = context.output(child) else {
+            return false;
+        };
+        match context.variant_run(child, variant) {
+            // The variant does not apply to the child, which then runs as
+            // it does normally, such as a child with no `MockSourceExec` leaf
+            // to split differently
+            None => true,
+            Some(VariantRun {
+                output: Ok(output), ..
+            }) => {
+                output.partitions().len() == normal.partitions().len()
+                    && output.partitions().iter().zip(normal.partitions()).all(
+                        |(a, b)| matches!(oracle::same_rows_in_order(a, b), Ok(true)),
+                    )
+            }
+            Some(_) => false,
+        }
+    })
+}
+
+/// How the output of `node` under a variant differs from its normal output
+/// in ways the variant should not change
+fn differences(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+    normal: &NodeOutput,
+    output: &NodeOutput,
+) -> Vec<String> {
+    let mut differences = vec![];
+    if let Some(fetch) = node.fetch() {
+        // Which rows a fetch keeps can depend on timing and batch boundaries,
+        // such as how the partitions below a `CoalescePartitionsExec`
+        // interleave, so only compare what the fetch guarantees. With one
+        // output partition this includes the exact number of rows.
+        let unfetched = context.unfetched_output(node);
+        let expectation = FetchExpectation {
+            limit: fetch,
+            available_rows: unfetched.unwrap_or(normal).num_rows(),
+            unlimited: unfetched,
+            ordering: node.properties().output_ordering(),
+        };
+        differences.extend(expectation.problems(output));
+    } else if matches!(
+        oracle::same_rows(&output.batches(), &normal.batches()),
+        Ok(false)
+    ) {
+        let unmatched =
+            oracle::unmatched_rows(&output.batches(), &normal.batches()).unwrap_or(0);
+        differences.push(format!(
+            "the node produced {} rows, {unmatched} of which do not appear in the \
+             normal output, instead of the {} rows it produces normally",
+            output.num_rows(),
+            normal.num_rows()
+        ));
+    }
+    for ordering in node
+        .properties()
+        .equivalence_properties()
+        .oeq_class()
+        .iter()
+    {
+        for (p, batches) in output.partitions().iter().enumerate() {
+            // An ordering that does not hold normally is reported by
+            // `orderings_hold`
+            let sorted_normally = normal.partitions().get(p).is_some_and(|normal| {
+                matches!(oracle::first_unsorted_row(normal, ordering), Ok(None))
+            });
+            if sorted_normally
+                && let Ok(Some(row)) = oracle::first_unsorted_row(batches, ordering)
+            {
+                differences.push(format!(
+                    "partition {p} is not sorted by [{ordering}] at row {row}, although \
+                     the node reports that ordering and its normal output is sorted by it"
+                ));
+                break;
+            }
+        }
+    }
+    differences
 }

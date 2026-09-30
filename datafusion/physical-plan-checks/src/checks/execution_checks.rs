@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Checks that compare what a node reports with the output it produces.
+//! `CheckKind::Execution` checks: they compare what a node reports with the
+//! output it produces, and check that it releases the memory it reserves.
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -330,5 +331,30 @@ pub(super) fn cardinality_effect_holds(
             .collect(),
         _ => vec![],
     };
+    Ok(findings)
+}
+
+/// F1: memory reserved while executing a node to completion is released once
+/// its streams and the plan are dropped.
+pub(super) fn memory_released(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let mut findings = vec![];
+    // A child that leaks makes its parents leak too; report it on the child
+    let child_leaks = node.children().into_iter().any(|child| {
+        context
+            .memory_reserved_after_execution(child)
+            .is_some_and(|bytes| bytes > 0)
+    });
+    if let Some(reserved) = context.memory_reserved_after_execution(node)
+        && reserved > 0
+        && !child_leaks
+    {
+        findings.push(Finding::invariant(format!(
+            "after executing the node to completion and dropping its streams and the \
+             plan, {reserved} bytes are still reserved in the memory pool"
+        )));
+    }
     Ok(findings)
 }

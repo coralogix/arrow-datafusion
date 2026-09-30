@@ -462,11 +462,11 @@ fn case_inputs_follow_the_profile() {
     assert_eq!(cases[4].inputs[0].partition_rows(), Some(&[0, 0, 0][..]));
 
     // The extended profiles add more seeds, partition counts and rows
-    let cases = static_harness()
+    let extended = static_harness()
         .with_profiles(Profile::extended())
         .cases(&filter())
         .unwrap();
-    let partition_rows: Vec<&[usize]> = cases[5..]
+    let partition_rows: Vec<&[usize]> = extended
         .iter()
         .map(|case| case.inputs[0].partition_rows().unwrap())
         .collect();
@@ -480,8 +480,12 @@ fn case_inputs_follow_the_profile() {
             &[160, 0, 320]
         ]
     );
-    let data = |case: usize| cases[case].inputs[0].build().unwrap().partitions().to_vec();
-    assert_ne!(data(0), data(5), "seed 1 generates other data");
+    let data = |spec: &SourceSpec| spec.build().unwrap().partitions().to_vec();
+    assert_ne!(
+        data(&cases[0].inputs[0]),
+        data(&extended[0].inputs[0]),
+        "seed 1 generates other data"
+    );
 }
 
 #[test]

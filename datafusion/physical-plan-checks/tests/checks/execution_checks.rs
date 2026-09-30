@@ -339,6 +339,31 @@ fn lower_and_greater_equal_cardinality() {
 }
 
 #[test]
+fn memory_that_is_never_released() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["memory_released"]).check(plan).unwrap()
+    };
+    let mut exec = ConfigurableExec::new(exact_source(10));
+    exec.leak_memory = true;
+    let leaking = exec.build();
+    let report = check(&leaking);
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Invariant, "memory_released")]
+    );
+    assert!(
+        messages(&report)[0].contains("1024 bytes are still reserved"),
+        "{report}"
+    );
+
+    // The parent inherits the leak, and is not reported
+    let parent = ConfigurableExec::new(leaking).build();
+    let report = check(&parent);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
+}
+
+#[test]
 fn static_checks_do_not_execute() {
     // A plan that would hang is never executed when no enabled check needs it
     let mut exec = ConfigurableExec::new(exact_source(10));

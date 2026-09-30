@@ -60,8 +60,9 @@ Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
 In code, each check has a `CheckKind` that says what the checker gathers for
 it before checks run: nothing (`Static`, section A), the output of each node
-(`Execution`, B0 to B8), variant runs (`Variant`, sections D and E) or
-stream experiments (`Stream`, B10 to B12, F1 and F2).
+and the memory its execution left reserved (`Execution`, B0 to B8 and
+`memory_released` in F1), variant runs (`Variant`, sections D and E) or
+stream experiments (`Stream`, B10 to B12, `streams_released` in F1, and F2).
 
 Checks run on one node at a time, but the checker visits every node of a
 plan. Tests should build the plan under test on inputs generated with
@@ -168,7 +169,7 @@ one. Every input has a `__row_id` column, with ids in a separate range per
 input.
 
 Checks that need stream experiments (`boundedness_holds`,
-`emission_type_holds`, `lazy_evaluation_holds`, `resources_released` and
+`emission_type_holds`, `lazy_evaluation_holds`, `streams_released` and
 `errors_propagate`) only run in the `default` case: they depend on how the
 plan drives its streams rather than on the shape of its data, and several
 of them wait for the stream timeout. Every other check runs in every case.
@@ -943,27 +944,28 @@ the spill path.
 
 ## F. Lifecycle and robustness
 
-### F1 `resources_released`
+### F1 `memory_released` and `streams_released`
 
 - **Severity:** Invariant. Lint when input streams are only released when the
   plan is dropped.
-- **Requires execution** (the normal execution, and the `Cancellation`
-  experiment).
+- **Requires execution** (`memory_released`: the normal execution;
+  `streams_released`: the `Cancellation` experiment).
 - **What:**
-  - After executing the node to completion and dropping its streams and its
-    copy of the plan, the memory reserved during the run is released within
-    the stream timeout; the wait ends early once no task is alive on the
-    runtime (see [Stream experiments](#stream-experiments)). The checker tracks
-    reservations with a memory pool that wraps the configured one. A node
-    whose child also leaves memory reserved is not reported.
-  - The leaves stall after their first batch. The output is polled until each
-    partition produced a batch or ended, or for 20 milliseconds, and then
-    dropped. Every input stream the node created must be dropped within the
-    stream timeout; the wait ends early once no task is alive on the
-    runtime. If they are only dropped once the rebuilt node is dropped
-    as well, that is a lint: the plan keeps the input streams, or the tasks
-    that poll them, alive, for example in shared execution state. If they are
-    still alive after that, it is an invariant violation.
+  - `memory_released`: after executing the node to completion and dropping
+    its streams and its copy of the plan, the memory reserved during the run
+    is released within the stream timeout; the wait ends early once no task
+    is alive on the runtime (see [Stream experiments](#stream-experiments)).
+    The checker executes each node with a fresh `UnboundedMemoryPool` and
+    reads how many bytes are still reserved in it. A node whose child also
+    leaves memory reserved is not reported.
+  - `streams_released`: the leaves stall after their first batch. The output
+    is polled until each partition produced a batch or ended, or for 20
+    milliseconds, and then dropped. Every input stream the node created must
+    be dropped within the stream timeout; the wait ends early once no task is
+    alive on the runtime. If they are only dropped once the rebuilt node is
+    dropped as well, that is a lint: the plan keeps the input streams, or the
+    tasks that poll them, alive, for example in shared execution state. If
+    they are still alive after that, it is an invariant violation.
   - Planned: spill files are removed.
 - **Why:** a query that is cancelled, or whose consumer stops early (for
   example a limit above the node), must stop reading its inputs and return

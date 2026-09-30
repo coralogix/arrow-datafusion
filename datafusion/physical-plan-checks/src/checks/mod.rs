@@ -17,7 +17,7 @@
 
 //! Built-in [`PlanCheck`]s. See `CHECKS.md` for what each check verifies.
 //! Each check is a function named after the check, documented with its code
-//! in the catalog.
+//! in the catalog, and lives in the module for its [`CheckKind`].
 
 use std::sync::Arc;
 
@@ -26,29 +26,28 @@ use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext}
 
 use crate::{CheckContext, CheckKind, Finding, PlanCheck};
 
-mod cardinality;
-mod invariance;
-mod lifecycle;
-mod rewrite;
-mod runtime;
-mod statistics;
-mod stream;
-mod structure;
+mod execution_checks;
+mod static_checks;
+mod stream_checks;
+mod variant_checks;
 
-use cardinality::{
-    cardinality_effect_bounds_num_rows, equal_cardinality_num_rows,
-    fetch_bounds_num_rows, fetch_not_equal_cardinality,
-};
-use invariance::{batch_boundary_invariance, batch_size_invariance};
-use lifecycle::{errors_propagate, resources_released};
-use rewrite::{limit_pushdown_equivalent, with_fetch_equivalent};
-use runtime::{
+use execution_checks::{
     batch_schema, cardinality_effect_holds, exact_statistics_hold, execution_succeeds,
-    orderings_hold,
+    memory_released, orderings_hold,
 };
-use statistics::{partition_statistics_sum, statistics_ignore_inputs, statistics_shape};
-use stream::{boundedness_holds, emission_type_holds, lazy_evaluation_holds};
-use structure::{check_invariants, per_child_lengths};
+use static_checks::{
+    cardinality_effect_bounds_num_rows, check_invariants, equal_cardinality_num_rows,
+    fetch_bounds_num_rows, fetch_not_equal_cardinality, partition_statistics_sum,
+    per_child_lengths, statistics_ignore_inputs, statistics_shape,
+};
+use stream_checks::{
+    boundedness_holds, emission_type_holds, errors_propagate, lazy_evaluation_holds,
+    streams_released,
+};
+use variant_checks::{
+    batch_boundary_invariance, batch_size_invariance, limit_pushdown_equivalent,
+    with_fetch_equivalent,
+};
 
 type CheckFn = fn(&Arc<dyn ExecutionPlan>, &CheckContext) -> Result<Vec<Finding>>;
 
@@ -105,7 +104,8 @@ pub fn all_checks() -> Vec<PlanCheck> {
             Variant,
             batch_boundary_invariance,
         ),
-        check("resources_released", Stream, resources_released),
+        check("memory_released", Execution, memory_released),
+        check("streams_released", Stream, streams_released),
         check("errors_propagate", Stream, errors_propagate),
     ]
 }

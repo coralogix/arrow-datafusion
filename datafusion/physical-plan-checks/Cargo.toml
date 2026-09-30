@@ -37,7 +37,7 @@ workspace = true
 name = "datafusion_physical_plan_checks"
 
 [features]
-# Run the built-in audit on `Profile::extended`, with its own snapshots
+# Also run the built-in audit on `Profile::extended`, with its own snapshots
 extended_tests = []
 
 [dependencies]

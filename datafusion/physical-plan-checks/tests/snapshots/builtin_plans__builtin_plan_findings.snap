@@ -193,7 +193,7 @@ expression: output
   case default:
     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] resources_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -203,7 +203,7 @@ expression: output
   case default:
     RepartitionExec: partitioning=Hash([a@0], 4), input_partitions=3
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] resources_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at RepartitionExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations

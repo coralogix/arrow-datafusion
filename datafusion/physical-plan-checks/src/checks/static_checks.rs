@@ -15,15 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Checks that `cardinality_effect()` and `fetch()` agree with the reported
-//! statistics.
+//! `CheckKind::Static` checks: they compare the statistics, cardinality effect,
+//! fetch and per-child metadata a node reports with each other and with what
+//! its children report, without executing it.
 
 use std::sync::Arc;
 
 use datafusion_common::Result;
 use datafusion_common::stats::Precision;
-use datafusion_physical_plan::ExecutionPlan;
-use datafusion_physical_plan::execution_plan::CardinalityEffect;
+use datafusion_physical_plan::execution_plan::{CardinalityEffect, InvariantLevel};
+use datafusion_physical_plan::{ChildStats, ExecutionPlan};
 
 use super::{overall_statistics, partition_count, partition_statistics};
 use crate::{CheckContext, Finding};
@@ -216,4 +217,226 @@ pub(super) fn cardinality_effect_bounds_num_rows(
         CardinalityEffect::Equal | CardinalityEffect::Unknown => {}
     }
     Ok(findings)
+}
+
+/// A7: every method that returns one entry per child returns exactly
+/// `children().len()` entries.
+pub(super) fn per_child_lengths(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let children = node.children();
+    let wrong_len = |method: &str, actual: usize| {
+        (actual != children.len()).then(|| {
+            Finding::invariant(format!(
+                "{method} returned {actual} entries, but the node has {} children",
+                children.len()
+            ))
+        })
+    };
+    let distributions = node.input_distribution_requirements();
+    let mut findings: Vec<Finding> = [
+        (
+            "maintains_input_order()",
+            node.maintains_input_order().len(),
+        ),
+        (
+            "required_input_ordering()",
+            node.required_input_ordering().len(),
+        ),
+        (
+            "benefits_from_input_partitioning()",
+            node.benefits_from_input_partitioning().len(),
+        ),
+        (
+            "input_distribution_requirements()",
+            distributions.per_child_distributions().len(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(method, len)| wrong_len(method, len))
+    .collect();
+    let partitions = (0..partition_count(node.as_ref())).map(Some);
+    for partition in std::iter::once(None).chain(partitions) {
+        let method = format!("child_stats_requests({partition:?})");
+        let requests = node.child_stats_requests(partition);
+        findings.extend(wrong_len(&method, requests.len()));
+        for (i, (child, request)) in children.iter().zip(&requests).enumerate() {
+            if let ChildStats::At(Some(p)) = request {
+                let child_partitions = partition_count(child.as_ref());
+                if *p >= child_partitions {
+                    findings.push(Finding::invariant(format!(
+                        "{method} requested partition {p} of child {i}, which has \
+                         {child_partitions} partitions"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// A7: the node's own [`ExecutionPlan::check_invariants`] passes at
+/// [`InvariantLevel::Always`].
+pub(super) fn check_invariants(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    match node.check_invariants(InvariantLevel::Always) {
+        Ok(()) => Ok(vec![]),
+        Err(e) => Ok(vec![Finding::invariant(format!(
+            "check_invariants(Always) failed: {}",
+            e.strip_backtrace()
+        ))]),
+    }
+}
+
+/// A8: statistics can be computed, overall and for every partition, and have
+/// one column statistics entry per field.
+pub(super) fn statistics_shape(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    // Errors from a child are reported on the child, not again on its parent
+    let child_fails = || {
+        node.children().into_iter().any(|child| {
+            overall_statistics(child.as_ref()).is_err()
+                || (0..partition_count(child.as_ref()))
+                    .any(|p| partition_statistics(child.as_ref(), p).is_err())
+        })
+    };
+    let fields = node.schema().fields().len();
+    let partitions = (0..partition_count(node.as_ref())).map(Some);
+    let mut findings = vec![];
+    for partition in std::iter::once(None).chain(partitions) {
+        let (target, result) = match partition {
+            None => ("overall".to_string(), overall_statistics(node.as_ref())),
+            Some(p) => (
+                format!("partition {p}"),
+                partition_statistics(node.as_ref(), p),
+            ),
+        };
+        match result {
+            Ok(stats) => {
+                let columns = stats.column_statistics.len();
+                if columns != fields {
+                    findings.push(Finding::invariant(format!(
+                        "{target} statistics have {columns} column statistics \
+                         entries, but the schema has {fields} fields"
+                    )));
+                }
+            }
+            Err(e) if !child_fails() => findings.push(Finding::invariant(format!(
+                "computing {target} statistics returned an error: {}; return \
+                 Statistics::new_unknown when statistics are not available",
+                e.strip_backtrace()
+            ))),
+            Err(_) => {}
+        }
+    }
+    Ok(findings)
+}
+
+/// A8: per-partition row counts are consistent with the overall row count.
+pub(super) fn partition_statistics_sum(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let partitions = partition_count(node.as_ref());
+    if partitions == 0 {
+        return Ok(vec![]);
+    }
+    // Errors are reported by `statistics_shape`
+    let Ok(overall) = overall_statistics(node.as_ref()) else {
+        return Ok(vec![]);
+    };
+    let Ok(per_partition) = (0..partitions)
+        .map(|p| partition_statistics(node.as_ref(), p).map(|s| s.num_rows))
+        .collect::<Result<Vec<_>>>()
+    else {
+        return Ok(vec![]);
+    };
+
+    let overall_rows = overall.num_rows;
+    let exact_rows = per_partition
+        .iter()
+        .map(|rows| match rows {
+            Precision::Exact(n) => Some(*n),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+
+    let mut findings = vec![];
+    if let Some(exact_rows) = exact_rows {
+        let sum: usize = exact_rows.iter().sum();
+        match overall_rows {
+            Precision::Exact(n) if n != sum => {
+                findings.push(Finding::invariant(format!(
+                    "overall num_rows is {overall_rows}, but the exact per-partition \
+                     num_rows {exact_rows:?} sum to {sum}"
+                )));
+            }
+            Precision::Exact(_) => {}
+            Precision::Inexact(_) | Precision::Absent => {
+                findings.push(Finding::lint(format!(
+                    "every partition has an exact num_rows ({exact_rows:?}), but \
+                     overall num_rows is {overall_rows}; it could be Exact({sum})"
+                )));
+            }
+        }
+    } else if let Precision::Exact(n) = overall_rows {
+        for (p, rows) in per_partition.iter().enumerate() {
+            if let Precision::Exact(m) = rows
+                && *m > n
+            {
+                findings.push(Finding::invariant(format!(
+                    "partition {p} num_rows is {rows}, which is more than the overall \
+                     num_rows {overall_rows}"
+                )));
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// A9: a single-child `CardinalityEffect::Equal` node without a fetch whose
+/// input has a known row count also reports a row count.
+pub(super) fn statistics_ignore_inputs(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    if !matches!(node.cardinality_effect(), CardinalityEffect::Equal)
+        || node.fetch().is_some()
+    {
+        return Ok(vec![]);
+    }
+    let children = node.children();
+    let [child] = children.as_slice() else {
+        return Ok(vec![]);
+    };
+    let (Ok(input), Ok(output)) = (
+        overall_statistics(child.as_ref()),
+        overall_statistics(node.as_ref()),
+    ) else {
+        return Ok(vec![]);
+    };
+    if input.num_rows == Precision::Absent || output.num_rows != Precision::Absent {
+        return Ok(vec![]);
+    }
+
+    let hint = if node
+        .child_stats_requests(None)
+        .iter()
+        .all(|r| *r == ChildStats::Skip)
+    {
+        "; child_stats_requests() skips the input, so statistics_from_inputs only \
+         receives unknown input statistics"
+    } else {
+        ""
+    };
+    Ok(vec![Finding::lint(format!(
+        "cardinality_effect() is Equal and the input has num_rows {}, but the node \
+         reports Absent{hint}",
+        input.num_rows
+    ))])
 }

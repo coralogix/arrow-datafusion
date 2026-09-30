@@ -161,14 +161,15 @@ skips a check in every case and shows the reason in the report.
 inputs: partition weights, a row multiplier, a statistics precision, a seed,
 and whether the stream checks run. `Profile::defaults()` is a short curated
 list rather than a cross product: `default` (three partitions with weights 1,
-0 and 2, exact statistics, every check), `single partition`, `inexact statistics`, `absent statistics` and `empty input`. `Profile::extended()`
-adds two more seeds, 2 and 5 partitions and 8 times the rows; the audit uses
-it with the `extended_tests` feature, as the rest of the workspace gates
-slow tests, with its own snapshots. Every case splits rows into random
-batches of up to 16 rows, with empty batches. A case is the fully specified
-input specs derived from one profile, after the plan's requirements are
-applied, and the plan built on them. It can be rebuilt by hand from
-`Case::inputs` and `PlanFactory::create`.
+0 and 2, exact statistics, every check), `single partition`,
+`inexact statistics`, `absent statistics` and `empty input`.
+`Profile::extended()` has two other seeds, 2 and 5 partitions and 8 times the
+rows. With the `extended_tests` feature, as the rest of the workspace gates
+slow tests, the audit also checks these cases and records them in separate
+snapshots. Every case splits rows into random batches of up to 16 rows, with
+empty batches. A case is the fully specified input specs derived from one
+profile, after the plan's requirements are applied, and the plan built on
+them. It can be rebuilt by hand from `Case::inputs` and `PlanFactory::create`.
 
 **Requirements.** For each profile, the harness lays out the inputs, builds
 the plan, and reads what each node directly above an input requires of it:
@@ -205,7 +206,8 @@ problems, but each case can be read on its own.
 
 **Runtime.** Cases run one after another on a current-thread runtime. The
 default audit takes about 13 seconds for the three snapshot tests together,
-and the extended audit about 50 seconds.
+and with the `extended_tests` feature, which adds three tests on the
+extended profiles, about 39 seconds.
 
 Open questions:
 

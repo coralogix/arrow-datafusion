@@ -240,14 +240,13 @@ impl Profile {
         ]
     }
 
-    /// [`Self::defaults`], followed by `seed 1` and `seed 2` (other data), `2
-    /// partitions` and `5 partitions` (the latter with an empty partition), and
-    /// `large input` (8 times the rows, so that operators with internal
-    /// buffers fill them several times). Used by the built-in audit with the
-    /// `extended_tests` feature.
+    /// `seed 1` and `seed 2` (other data), `2 partitions` and `5 partitions`
+    /// (the latter with an empty partition), and `large input` (8 times the
+    /// rows, so that operators with internal buffers fill them several
+    /// times). The built-in audit uses them, in addition to
+    /// [`Self::defaults`], with the `extended_tests` feature.
     pub fn extended() -> Vec<Self> {
-        let mut profiles = Self::defaults();
-        profiles.extend([
+        vec![
             Self {
                 seed: 1,
                 ..Self::new("seed 1")
@@ -268,8 +267,7 @@ impl Profile {
                 row_multiplier: 8,
                 ..Self::new("large input")
             },
-        ]);
-        profiles
+        ]
     }
 
     /// The rows of each partition for an input of `num_rows` rows: in

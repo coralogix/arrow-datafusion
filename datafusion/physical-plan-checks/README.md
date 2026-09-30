@@ -79,9 +79,10 @@ report.assert_no_invariant_violations();
 - [DESIGN.md](DESIGN.md) describes how the crate is structured, including the
   harness, and where it is heading.
 
-To add a check, write a function in `src/checks/` that returns the findings
-for one node, add it to `checks::all_checks` with its name and `CheckKind`,
-and describe it in [CHECKS.md](CHECKS.md).
+To add a check, write a function that returns the findings for one node, in
+the file of `src/checks/` for the check's `CheckKind`, add it to
+`checks::all_checks` with its name and `CheckKind`, and describe it in
+[CHECKS.md](CHECKS.md).
 
 [apache arrow]: https://arrow.apache.org/
 [apache datafusion]: https://datafusion.apache.org/

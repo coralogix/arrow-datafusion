@@ -11,7 +11,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of l_v@1 is Exact(12), but the output has Exact(11); distinct_count of __row_id@2 is Exact(60), but the output has Exact(31); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53)); null_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(28)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(8); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of __row_id@2 is Exact(60), but the output has Exact(35); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(56)); null_count of r_k@3 is Exact(5), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(55)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -31,7 +31,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of l_v@1 is Exact(12), but the output has Exact(11); distinct_count of __row_id@2 is Exact(60), but the output has Exact(31); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53)); null_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(28)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of r_k@3 is Exact(5), but the output has Exact(25); null_count of r_v@4 is Exact(0), but the output has Exact(25); null_count of __row_id@5 is Exact(0), but the output has Exact(25); distinct_count of __row_id@5 is Exact(60), but the output has Exact(55)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Left, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -51,7 +51,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(2); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); null_count of l_v@1 is Exact(0), but the output has Exact(2); distinct_count of l_v@1 is Exact(12), but the output has Exact(11); null_count of __row_id@2 is Exact(0), but the output has Exact(2); distinct_count of __row_id@2 is Exact(60), but the output has Exact(31); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53))
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(5); distinct_count of l_k@0 is Exact(12), but the output has Exact(8); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); null_count of l_v@1 is Exact(0), but the output has Exact(5); null_count of __row_id@2 is Exact(0), but the output has Exact(5); distinct_count of __row_id@2 is Exact(60), but the output has Exact(35); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(56))
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Right, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -71,7 +71,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(2); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); null_count of l_v@1 is Exact(0), but the output has Exact(2); distinct_count of l_v@1 is Exact(12), but the output has Exact(11); null_count of __row_id@2 is Exact(0), but the output has Exact(2); distinct_count of __row_id@2 is Exact(60), but the output has Exact(31); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53))
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(14); null_count of l_v@1 is Exact(0), but the output has Exact(5); null_count of __row_id@2 is Exact(0), but the output has Exact(5); null_count of r_k@3 is Exact(5), but the output has Exact(30); null_count of r_v@4 is Exact(0), but the output has Exact(25); null_count of __row_id@5 is Exact(0), but the output has Exact(25)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -87,7 +87,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -98,7 +98,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -109,7 +109,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -120,7 +120,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -133,7 +133,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -144,7 +144,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=RightMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -159,7 +159,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(5); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of l_v@1 is Exact(12), but the output has Exact(7); max_value of l_v@1 is Exact(Int32(11)), but the output has Exact(Int32(6)); distinct_count of __row_id@2 is Exact(60), but the output has Exact(19); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53)); null_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of r_k@3 is Exact(7), but the output has Exact(5); distinct_count of r_v@4 is Exact(8), but the output has Exact(7); min_value of r_v@4 is Exact(Int32(0)), but the output has Exact(Int32(1)); distinct_count of __row_id@5 is Exact(30), but the output has Exact(18); min_value of __row_id@5 is Exact(UInt64(1000000000)), but the output has Exact(UInt64(1000000004))
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of l_v@1 is Exact(12), but the output has Exact(7); max_value of l_v@1 is Exact(Int32(11)), but the output has Exact(Int32(6)); distinct_count of __row_id@2 is Exact(60), but the output has Exact(19); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53)); null_count of r_k@3 is Exact(5), but the output has Exact(0); distinct_count of r_k@3 is Exact(8), but the output has Exact(7); distinct_count of r_v@4 is Exact(8), but the output has Exact(7); min_value of r_v@4 is Exact(Int32(0)), but the output has Exact(Int32(1)); distinct_count of __row_id@5 is Exact(60), but the output has Exact(27); min_value of __row_id@5 is Exact(UInt64(1000000030)), but the output has Exact(UInt64(1000000032)); max_value of __row_id@5 is Exact(UInt64(1000000089)), but the output has Exact(UInt64(1000000088))
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -179,7 +179,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(12); distinct_count of l_k@0 is Exact(12), but the output has Exact(5); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); null_count of l_v@1 is Exact(0), but the output has Exact(12); distinct_count of l_v@1 is Exact(12), but the output has Exact(7); max_value of l_v@1 is Exact(Int32(11)), but the output has Exact(Int32(6)); null_count of __row_id@2 is Exact(0), but the output has Exact(12); distinct_count of __row_id@2 is Exact(60), but the output has Exact(19); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(2)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(53))
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(42); null_count of l_v@1 is Exact(0), but the output has Exact(33); null_count of __row_id@2 is Exact(0), but the output has Exact(33); distinct_count of __row_id@2 is Exact(60), but the output has Exact(58); null_count of r_k@3 is Exact(5), but the output has Exact(44); null_count of r_v@4 is Exact(0), but the output has Exact(39); null_count of __row_id@5 is Exact(0), but the output has Exact(39)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -195,7 +195,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -206,7 +206,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -221,7 +221,7 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(18); distinct_count of l_k@0 is Exact(12), but the output has Exact(7); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of __row_id@2 is Exact(60), but the output has Exact(40); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(1)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(57)); null_count of r_k@3 is Exact(2), but the output has Exact(18)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(45); distinct_count of l_k@0 is Exact(12), but the output has Exact(8); max_value of l_k@0 is Exact(Int32(11)), but the output has Exact(Int32(7)); distinct_count of __row_id@2 is Exact(60), but the output has Exact(44); min_value of __row_id@2 is Exact(UInt64(0)), but the output has Exact(UInt64(1)); max_value of __row_id@2 is Exact(UInt64(59)), but the output has Exact(UInt64(57)); null_count of r_k@3 is Exact(5), but the output has Exact(45)
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition:
     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], NullsEqual: true
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
@@ -237,7 +237,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at HashJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -460,7 +460,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -472,7 +472,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -484,7 +484,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -495,7 +495,7 @@ expression: output
     NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -506,7 +506,7 @@ expression: output
     NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -517,7 +517,7 @@ expression: output
     NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
-    [lint] resources_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at NestedLoopJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -529,7 +529,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] exact_statistics_hold at CrossJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
-    [lint] resources_released at CrossJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at CrossJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -555,7 +555,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, output_ordering=[l_k@0 DESC]
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] emission_type_holds at PiecewiseMergeJoinExec (root): rebuilt with child 0 unbounded, the node reports EmissionType::Incremental, but it produced no rows before timing out while the child kept delivering rows; report EmissionType::Final if the node waits for the end of its input
-    [lint] resources_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -567,7 +567,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, output_ordering=[l_k@0 DESC]
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] emission_type_holds at PiecewiseMergeJoinExec (root): rebuilt with child 0 unbounded, the node reports EmissionType::Incremental, but it produced no rows before timing out while the child kept delivering rows; report EmissionType::Final if the node waits for the end of its input
-    [lint] resources_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -580,7 +580,7 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
     [invariant] emission_type_holds at PiecewiseMergeJoinExec (root): rebuilt with child 0 unbounded, the node reports EmissionType::Incremental, but it produced no rows before timing out while the child kept delivering rows; report EmissionType::Final if the node waits for the end of its input
     [invariant] lazy_evaluation_holds at PiecewiseMergeJoinExec (root): the node reports EvaluationType::Lazy, but polled partitions [0, 1, 2] of child 0 while its own output was not being polled, for example from a spawned task or in execute(); report EvaluationType::Eager
-    [lint] resources_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at PiecewiseMergeJoinExec (root): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations
@@ -591,7 +591,7 @@ expression: output
     AsOfJoinExec: on=[(l_k = r_k)], match=[l_v >= r_v]
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[20, 0, 40], statistics=Exact, output_ordering=[l_k@0 ASC, l_v@1 ASC]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[90], statistics=Exact, output_ordering=[r_k@0 ASC, r_v@1 ASC]
-    [lint] resources_released at AsOfJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 1 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
+    [lint] streams_released at AsOfJoinExec (root): after the output streams were dropped part way, the streams of partitions [0] of child 1 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
   case single partition: no violations
   case inexact statistics: no violations
   case absent statistics: no violations

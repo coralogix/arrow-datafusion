@@ -22,10 +22,10 @@
 //! Every plan is a `PlanFactory`: a function that builds the plan from its
 //! inputs. The `PlanHarness` generates the inputs, meets the plan's
 //! `required_input_ordering` and `input_distribution_requirements`, and
-//! checks every case of `Profile::defaults`, or of `Profile::extended` with
-//! the `extended_tests` feature, which records separate snapshots.
-//! Aggregates and joins are built the way the physical planner and the
-//! optimizer build them.
+//! checks every case of `Profile::defaults`. With the `extended_tests`
+//! feature, the cases of `Profile::extended` are also checked, and recorded
+//! in separate `_extended` snapshots. Aggregates and joins are built the way
+//! the physical planner and the optimizer build them.
 //!
 //! The snapshots are the list of known violations in the built-in plans. When
 //! a plan is fixed, or a new check finds a new problem, a snapshot changes
@@ -82,18 +82,13 @@ type Plan = Arc<dyn ExecutionPlan>;
 
 const FETCH: usize = 10;
 
-/// Check every factory and render the reports.
+/// Check every factory on the cases of `profiles` and render the reports.
 ///
 /// Runs on a current-thread runtime (see the tests) so that execution, and
 /// therefore the snapshot, is deterministic. Some plans, such as a
 /// partitioned TopK `SortExec`, produce output that depends on how partitions
 /// interleave.
-async fn audit(factories: Vec<PlanFactory>) -> Result<String> {
-    let profiles = if cfg!(feature = "extended_tests") {
-        Profile::extended()
-    } else {
-        Profile::defaults()
-    };
+async fn audit(factories: Vec<PlanFactory>, profiles: Vec<Profile>) -> Result<String> {
     let harness = PlanHarness::new().with_profiles(profiles);
     let mut output = String::new();
     for factory in factories {
@@ -101,17 +96,6 @@ async fn audit(factories: Vec<PlanFactory>) -> Result<String> {
         writeln!(output, "## {report}\n").unwrap();
     }
     Ok(output)
-}
-
-/// Record `output` in the snapshot `name`, or in `<name>_extended` with the
-/// `extended_tests` feature
-fn assert_snapshot(name: &str, output: &str) {
-    let name = if cfg!(feature = "extended_tests") {
-        format!("{name}_extended")
-    } else {
-        name.to_string()
-    };
-    insta::assert_snapshot!(name, output);
 }
 
 /// A factory for a plan with one input generated from `spec`
@@ -970,21 +954,51 @@ fn join_plans() -> Vec<PlanFactory> {
 
 #[tokio::test]
 async fn builtin_plan_findings() -> Result<()> {
-    let output = audit(builtin_plans()?).await?;
-    assert_snapshot("builtin_plan_findings", &output);
+    let output = audit(builtin_plans()?, Profile::defaults()).await?;
+    insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[tokio::test]
 async fn builtin_aggregate_findings() -> Result<()> {
-    let output = audit(aggregate_plans()?).await?;
-    assert_snapshot("builtin_aggregate_findings", &output);
+    let output = audit(aggregate_plans()?, Profile::defaults()).await?;
+    insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[tokio::test]
 async fn builtin_join_findings() -> Result<()> {
-    let output = audit(join_plans()).await?;
-    assert_snapshot("builtin_join_findings", &output);
+    let output = audit(join_plans(), Profile::defaults()).await?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[cfg(feature = "extended_tests")]
+#[tokio::test]
+async fn builtin_plan_findings_extended() -> Result<()> {
+    // A factory without inputs has a single case whatever the profiles, which
+    // `builtin_plan_findings` records
+    let factories = builtin_plans()?
+        .into_iter()
+        .filter(|factory| !factory.inputs.is_empty())
+        .collect();
+    let output = audit(factories, Profile::extended()).await?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[cfg(feature = "extended_tests")]
+#[tokio::test]
+async fn builtin_aggregate_findings_extended() -> Result<()> {
+    let output = audit(aggregate_plans()?, Profile::extended()).await?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[cfg(feature = "extended_tests")]
+#[tokio::test]
+async fn builtin_join_findings_extended() -> Result<()> {
+    let output = audit(join_plans(), Profile::extended()).await?;
+    insta::assert_snapshot!(output);
     Ok(())
 }

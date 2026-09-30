@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Checks that compare how a node reports its streams behave (boundedness,
-//! emission type, evaluation type) with how they behave in stream
-//! experiments.
+//! `CheckKind::Stream` checks: they compare how a node reports its streams
+//! behave (boundedness, emission type, evaluation type) with how they behave
+//! in stream experiments, and check that it releases its input streams and
+//! propagates errors.
 
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use datafusion_physical_plan::execution_plan::{
     Boundedness, CardinalityEffect, EmissionType, EvaluationType,
 };
 
-use crate::{CheckContext, Experiment, Finding, RunOutcome};
+use crate::{CheckContext, Experiment, Finding, PartitionObservation, RunOutcome};
 
 /// B10: a node that reports `Bounded` ends on unbounded input.
 pub(super) fn boundedness_holds(
@@ -159,6 +160,104 @@ pub(super) fn lazy_evaluation_holds(
                 )));
             }
         }
+    }
+    Ok(findings)
+}
+
+/// Partitions, per child, that still have live streams
+fn alive_partitions(inputs: &[Vec<PartitionObservation>]) -> Vec<(usize, Vec<usize>)> {
+    inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(child, partitions)| {
+            let alive: Vec<usize> = partitions
+                .iter()
+                .enumerate()
+                .filter(|(_, observation)| observation.streams_alive() > 0)
+                .map(|(p, _)| p)
+                .collect();
+            (!alive.is_empty()).then_some((child, alive))
+        })
+        .collect()
+}
+
+/// F1: the input streams of a node are released once its output streams are
+/// dropped part way.
+pub(super) fn streams_released(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let mut findings = vec![];
+    for run in context.stream_runs(node, Experiment::Cancellation) {
+        if matches!(run.outcome, RunOutcome::Failed(_) | RunOutcome::Panicked(_)) {
+            continue;
+        }
+        let alive = alive_partitions(&run.inputs);
+        if alive.is_empty() {
+            continue;
+        }
+        let after_plan = run
+            .inputs_after_plan_dropped
+            .as_deref()
+            .map(alive_partitions)
+            .unwrap_or_else(|| alive.clone());
+        if after_plan.is_empty() {
+            for (child, partitions) in alive {
+                findings.push(Finding::lint(format!(
+                    "after the output streams were dropped part way, the streams of \
+                     partitions {partitions:?} of child {child} were only dropped once \
+                     the plan itself was dropped; the plan keeps input streams, or tasks \
+                     that poll them, alive"
+                )));
+            }
+        } else {
+            for (child, partitions) in after_plan {
+                findings.push(Finding::invariant(format!(
+                    "after the output streams were dropped part way, and then the plan \
+                     itself, the streams of partitions {partitions:?} of child {child} \
+                     were still alive; tie spawned tasks and input streams to the output \
+                     stream"
+                )));
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// F2: an error from an input makes the output return an error.
+pub(super) fn errors_propagate(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let mut findings = vec![];
+    for run in context.stream_runs(node, Experiment::InputError) {
+        // An input error the node never received does not have to be
+        // returned. Neither does one received after the node had enough rows
+        // for its fetch: an eager node can read the error into a buffer while
+        // its output is still serving earlier batches.
+        let fetch_satisfied = run
+            .fetch
+            .is_some_and(|fetch| run.output.iter().any(|o| o.rows >= fetch));
+        if run.input_errors() == 0 || fetch_satisfied {
+            continue;
+        }
+        let message = match &run.outcome {
+            RunOutcome::Ended if run.output_errors() == 0 => {
+                "an input returned an error, but every output partition ended without \
+                 returning an error"
+                    .to_string()
+            }
+            RunOutcome::TimedOut if run.output_errors() == 0 => {
+                "an input returned an error, but the output neither returned an error \
+                 nor ended before timing out"
+                    .to_string()
+            }
+            RunOutcome::Panicked(panic) => {
+                format!("an input returned an error, and the node panicked: {panic}")
+            }
+            _ => continue,
+        };
+        findings.push(Finding::invariant(message));
     }
     Ok(findings)
 }

@@ -83,13 +83,14 @@ fn correct_plans_are_clean() {
         plans.push(limited.build());
     }
     // The fetch plan does not apply its fetch to its statistics, so only run
-    // the checks that use stream experiments
+    // the stream checks, `execution_succeeds` and `memory_released`
     let stream_checks = checker(&[
         "execution_succeeds",
         "boundedness_holds",
         "emission_type_holds",
         "lazy_evaluation_holds",
-        "resources_released",
+        "memory_released",
+        "streams_released",
         "errors_propagate",
     ]);
     for plan in plans {
@@ -200,11 +201,8 @@ fn input_streams_held_by_the_plan_are_a_lint() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::InPlan;
     let plan = exec.build();
-    let report = check_with("resources_released", &plan);
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Lint, "resources_released")]
-    );
+    let report = check_with("streams_released", &plan);
+    assert_eq!(summary(&report), vec![(Severity::Lint, "streams_released")]);
     assert!(
         messages(&report)[0].contains("only dropped once the plan itself was dropped"),
         "{report}"
@@ -216,10 +214,10 @@ fn input_streams_that_are_never_dropped() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::Forever;
     let plan = exec.build();
-    let report = check_with("resources_released", &plan);
+    let report = check_with("streams_released", &plan);
     assert_eq!(
         summary(&report),
-        vec![(Severity::Invariant, "resources_released")]
+        vec![(Severity::Invariant, "streams_released")]
     );
     assert!(
         messages(&report)[0].contains("partitions [0, 1, 2] of child 0 were still alive"),
@@ -234,29 +232,7 @@ fn input_streams_released_later_by_a_task_are_clean() {
     let mut exec = ConfigurableExec::new(multi_partition_source());
     exec.hold_input = HoldInput::InTask;
     let plan = exec.build();
-    check_with("resources_released", &plan).assert_clean();
-}
-
-#[test]
-fn memory_that_is_never_released() {
-    let mut exec = ConfigurableExec::new(exact_source(10));
-    exec.leak_memory = true;
-    let leaking = exec.build();
-    let report = check_with("resources_released", &leaking);
-    assert_eq!(
-        summary(&report),
-        vec![(Severity::Invariant, "resources_released")]
-    );
-    assert!(
-        messages(&report)[0].contains("1024 bytes are still reserved"),
-        "{report}"
-    );
-
-    // The parent inherits the leak, and is not reported
-    let parent = ConfigurableExec::new(leaking).build();
-    let report = check_with("resources_released", &parent);
-    assert_eq!(report.violations.len(), 1, "{report}");
-    assert_eq!(report.violations[0].path, vec![0]);
+    check_with("streams_released", &plan).assert_clean();
 }
 
 #[test]
