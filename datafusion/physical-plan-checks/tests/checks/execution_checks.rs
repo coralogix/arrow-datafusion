@@ -25,9 +25,12 @@ use datafusion_common::stats::Precision;
 use datafusion_physical_expr::expressions::col;
 use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan_checks::fixtures::{
     BatchLayout, SourceSpec, StatisticsPrecision,
 };
+use datafusion_physical_plan_checks::harness::ROW_ID_RANGE;
 use datafusion_physical_plan_checks::{CheckKind, PlanChecker, Report, Severity};
 
 use crate::common::{
@@ -42,11 +45,13 @@ fn execution_checker() -> PlanChecker {
 
 /// Run the checks that execute the plan. `Transform::DropHalf` keeps half of
 /// each batch, so its output depends on batch boundaries, which
-/// `batch_boundary_invariance` reports; that check is tested in
-/// `variant_checks.rs`.
+/// `batch_boundary_invariance` reports, and most plans pass their first rows
+/// through without supporting limit pushdown, which `limit_pushdown_missed`
+/// reports; those checks are tested in `variant_checks.rs`.
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
     execution_checker()
         .allow("batch_boundary_invariance")
+        .allow("limit_pushdown_missed")
         .check(plan)
         .unwrap()
 }
@@ -76,10 +81,100 @@ fn correct_passthrough_is_clean() {
         inexact_source(100),
         source(&[10, 0, 30], StatisticsPrecision::Exact),
         sorted_source(),
+        row_id_source(&[40, 0, 60]),
     ] {
-        let plan = ConfigurableExec::new(input).build();
-        PlanChecker::new().check(&plan).unwrap().assert_clean();
+        let mut exec = ConfigurableExec::new(input);
+        exec.limit_pushdown = true;
+        PlanChecker::new()
+            .check(&exec.build())
+            .unwrap()
+            .assert_clean();
     }
+}
+
+/// A source with one partition per entry of `rows` and a row id column
+fn row_id_source(rows: &[usize]) -> Arc<dyn ExecutionPlan> {
+    SourceSpec::new(schema())
+        .with_partition_rows(rows)
+        .with_row_ids(0)
+        .build_arc()
+        .unwrap()
+}
+
+#[test]
+fn order_that_is_kept_but_not_reported() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["maintains_input_order_missed"])
+            .check(plan)
+            .unwrap()
+    };
+    let unreported = |input| {
+        let mut exec = ConfigurableExec::new(input);
+        exec.maintains_order = Some(false);
+        exec
+    };
+    let report = check(&unreported(row_id_source(&[40, 0, 60])).build());
+    assert_eq!(
+        messages(&report),
+        vec![
+            "maintains_input_order()[0] is false, but every output partition only has \
+             rows of one partition of child 0, in the order of that partition; return \
+             true if the node never reorders the rows of this child, and keep the \
+             child's orderings in the output equivalence properties"
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Lint, "maintains_input_order_missed")]
+    );
+
+    // Not reported for a node that reorders rows, or over input it cannot
+    // track or that is already sorted, whether the node reports the input's
+    // ordering or not
+    let sorted = SourceSpec::new(schema())
+        .with_partition_rows(&[40, 0, 60])
+        .with_ordering(ordering_on_a())
+        .with_row_ids(0)
+        .build_arc()
+        .unwrap();
+    let mut without_ordering = unreported(Arc::clone(&sorted));
+    without_ordering.drop_ordering = true;
+    for exec in [
+        unreported(row_id_source(&[40, 0, 60])).transform(Transform::Reverse),
+        unreported(row_id_source(&[40, 0, 60])).transform(Transform::Duplicate),
+        unreported(source(&[40, 0, 60], StatisticsPrecision::Exact)),
+        unreported(sorted),
+        without_ordering,
+    ] {
+        check(&exec.build()).assert_clean();
+    }
+
+    // A coalesce keeps the order of a single input partition, and interleaves
+    // several
+    let coalesce =
+        |input| Arc::new(CoalescePartitionsExec::new(input)) as Arc<dyn ExecutionPlan>;
+    assert_eq!(
+        summary(&check(&coalesce(row_id_source(&[100])))),
+        vec![(Severity::Lint, "maintains_input_order_missed")]
+    );
+    check(&coalesce(row_id_source(&[40, 0, 60]))).assert_clean();
+
+    // The same partition of a coalesce with a fetch can have rows of one
+    // input partition only, which shows nothing about the others
+    let coalesce_with_fetch: Arc<dyn ExecutionPlan> = Arc::new(
+        CoalescePartitionsExec::new(row_id_source(&[40, 0, 60])).with_fetch(Some(5)),
+    );
+    check(&coalesce_with_fetch).assert_clean();
+
+    // Each partition of a union has rows of one input only
+    let other_input = SourceSpec::new(schema())
+        .with_partition_rows(&[30])
+        .with_row_ids(ROW_ID_RANGE)
+        .build_arc()
+        .unwrap();
+    let union =
+        UnionExec::try_new(vec![row_id_source(&[40, 0, 60]), other_input]).unwrap();
+    check(&union).assert_clean();
 }
 
 #[test]

@@ -94,10 +94,11 @@ unknown statistics, and repeats its data in a way that keeps its declared
 ordering and partitioning true.
 
 **Oracles** (`oracle/`). Reference computations of the true properties of a
-set of batches: exact statistics, sortedness, hash partition placement, and
-how the rows of two sets of batches compare (as multisets, in order, and as a
-prefix of a sorted sequence apart from rows that tie on the sort key). Rows
-are compared exactly in the arrow row format. The generated floating point
+set of batches: exact statistics, sortedness, hash partition placement, how
+the rows of two sets of batches compare (as multisets, in order, and as a
+prefix of a sorted sequence apart from rows that tie on the sort key), and
+where the rows of an input appear in an output, tracked by their row ids.
+Rows are compared exactly in the arrow row format. The generated floating point
 values are small multiples of 0.5, so sums of them do not depend on the order
 an operator adds them in. The sources use the oracles to validate themselves
 and the checks use them to judge plans. They are written for clarity rather
@@ -224,4 +225,5 @@ Open questions:
 - D8 `replace_children_consistent` can build the same node on different
   valid inputs by calling `create` on the inputs of two cases; C1
   `maintains_input_order_holds` can follow the `__row_id` columns, whose ids
-  come from a separate range (`input * ROW_ID_RANGE`) per input.
+  come from a separate range (`input * ROW_ID_RANGE`) per input, with
+  `oracle::input_order`, as A6 `maintains_input_order_missed` does.

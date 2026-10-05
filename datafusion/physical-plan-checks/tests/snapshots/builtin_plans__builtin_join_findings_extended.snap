@@ -175,11 +175,31 @@ expression: output
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(53), but the output has Exact(96); null_count of l_v@1 is Exact(0), but the output has Exact(43); null_count of __row_id@2 is Exact(0), but the output has Exact(43); null_count of r_k@3 is Exact(43), but the output has Exact(240); null_count of r_v@4 is Exact(0), but the output has Exact(197); null_count of __row_id@5 is Exact(0), but the output has Exact(197)
 
 ## HashJoinExec CollectLeft LeftSemi
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## HashJoinExec CollectLeft RightSemi
   case seed 1: no violations
@@ -189,11 +209,31 @@ expression: output
   case large input: no violations
 
 ## HashJoinExec CollectLeft LeftAnti
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## HashJoinExec CollectLeft RightAnti
   case seed 1: no violations
@@ -207,23 +247,27 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(5), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(5), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
   case seed 2:
     HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(11), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(11), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
   case 2 partitions:
     HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
   case 5 partitions:
     HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(9), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
@@ -232,6 +276,7 @@ expression: output
     HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(53), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(480), but the output has Exact(0)
     [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(53), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(480), but the output has Exact(0)
 
@@ -336,11 +381,31 @@ expression: output
   case large input: no violations
 
 ## HashJoinExec CollectLeft LeftAnti with filter
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## HashJoinExec CollectLeft Inner with nulls equal
   case seed 1:
@@ -390,7 +455,11 @@ expression: output
   case seed 2: no violations
   case 2 partitions: no violations
   case 5 partitions: no violations
-  case large input: no violations
+  case large input:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], fetch=10
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## HashJoinExec Partitioned Inner
   case seed 1:
@@ -517,11 +586,31 @@ expression: output
   case large input: no violations
 
 ## HashJoinExec Partitioned LeftMark
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    HashJoinExec: mode=Partitioned, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[15, 25, 20], statistics=Exact
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[18, 17, 55], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    HashJoinExec: mode=Partitioned, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[16, 20, 24], statistics=Exact
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[18, 23, 49], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    HashJoinExec: mode=Partitioned, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 2), partition_rows=[31, 29], statistics=Exact
+      MockSourceExec: partitioning=Hash([r_k@0], 2), partition_rows=[41, 49], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    HashJoinExec: mode=Partitioned, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 5), partition_rows=[21, 14, 0, 12, 13], statistics=Exact
+      MockSourceExec: partitioning=Hash([r_k@0], 5), partition_rows=[29, 16, 0, 28, 17], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    HashJoinExec: mode=Partitioned, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[124, 190, 166], statistics=Exact
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[157, 171, 392], statistics=Exact
+    [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## HashJoinExec Partitioned Full with filter
   case seed 1:
@@ -849,25 +938,85 @@ expression: output
     [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: null_count of l_k@0 is Exact(53), but the output has Exact(0); distinct_count of l_k@0 is Exact(12), but the output has Exact(0); distinct_count of l_v@1 is Exact(12), but the output has Exact(0); distinct_count of __row_id@2 is Exact(480), but the output has Exact(0)
 
 ## NestedLoopJoinExec RightSemi
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    NestedLoopJoinExec: join_type=RightSemi, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## NestedLoopJoinExec LeftAnti
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    NestedLoopJoinExec: join_type=LeftAnti, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## NestedLoopJoinExec RightMark
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    NestedLoopJoinExec: join_type=RightMark, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[480], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## CrossJoinExec
   case seed 1:
@@ -921,11 +1070,31 @@ expression: output
   case large input: no violations
 
 ## PiecewiseMergeJoinExec RightSemi
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
+  case seed 1:
+    PiecewiseMergeJoin: operator=Lt, join_type=RightSemi, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[20, 0, 40], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case seed 2:
+    PiecewiseMergeJoin: operator=Lt, join_type=RightSemi, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[20, 0, 40], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact
+    [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 2 partitions:
+    PiecewiseMergeJoin: operator=Lt, join_type=RightSemi, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[30, 30], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[45, 45], statistics=Exact
+    [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case 5 partitions:
+    PiecewiseMergeJoin: operator=Lt, join_type=RightSemi, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[17, 8, 0, 25, 10], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[25, 12, 0, 38, 15], statistics=Exact
+    [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
+  case large input:
+    PiecewiseMergeJoin: operator=Lt, join_type=RightSemi, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[160, 0, 320], statistics=Exact
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[240, 0, 480], statistics=Exact
+    [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
 
 ## AsOfJoinExec
   case seed 1: no violations

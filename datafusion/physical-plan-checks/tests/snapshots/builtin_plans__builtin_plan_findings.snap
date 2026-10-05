@@ -47,10 +47,22 @@ expression: output
   case empty input: no violations
 
 ## CoalesceBatchesExec
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
+  case default:
+    CoalesceBatchesExec: target_batch_size=8192
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case single partition:
+    CoalesceBatchesExec: target_batch_size=8192
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case inexact statistics:
+    CoalesceBatchesExec: target_batch_size=8192
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case absent statistics:
+    CoalesceBatchesExec: target_batch_size=8192
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Absent
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
   case empty input: no violations
 
 ## CoalesceBatchesExec with fetch
@@ -58,6 +70,7 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
@@ -66,16 +79,19 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
   case inexact statistics:
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
   case absent statistics:
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Absent
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
   case empty input:
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
@@ -84,7 +100,10 @@ expression: output
 
 ## CoalescePartitionsExec
   case default: no violations
-  case single partition: no violations
+  case single partition:
+    CoalescePartitionsExec
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] maintains_input_order_missed at CoalescePartitionsExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
@@ -100,6 +119,7 @@ expression: output
     CoalescePartitionsExec: fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalescePartitionsExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
+    [lint] maintains_input_order_missed at CoalescePartitionsExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
     [invariant] cardinality_effect_holds at CoalescePartitionsExec (root): cardinality_effect() is Equal, but the node produced 10 rows from 600 input rows
   case inexact statistics:
     CoalescePartitionsExec: fetch=10
@@ -245,10 +265,22 @@ expression: output
   case empty input: no violations
 
 ## BufferExec
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
+  case default:
+    BufferExec: capacity=1024
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case single partition:
+    BufferExec: capacity=1024
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case inexact statistics:
+    BufferExec: capacity=1024
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Inexact
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+  case absent statistics:
+    BufferExec: capacity=1024
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Absent
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
   case empty input: no violations
 
 ## CooperativeExec

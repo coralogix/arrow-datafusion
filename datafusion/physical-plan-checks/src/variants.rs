@@ -79,9 +79,10 @@ pub enum Variant {
     WithFetch(usize),
     /// The node rebuilt with every child limited to its first `n` rows per
     /// partition, for the same values as [`Self::WithFetch`], if the node has
-    /// children and `supports_limit_pushdown()` is true. A child with one
-    /// partition is limited with a `GlobalLimitExec`, and any other child with
-    /// a `LocalLimitExec`, as the `LimitPushdown` optimizer rule limits them.
+    /// children. A child with one partition is limited with a
+    /// `GlobalLimitExec`, and any other child with a `LocalLimitExec`, as the
+    /// `LimitPushdown` optimizer rule limits them when
+    /// `supports_limit_pushdown()` is true.
     LimitedInputs(usize),
     /// The node executed with the session batch size set to 1, 2, 7 and 8192
     BatchSize(usize),
@@ -150,7 +151,7 @@ pub(crate) async fn run(
 
     let mut variants: Vec<Variant> =
         limits.iter().map(|n| Variant::WithFetch(*n)).collect();
-    if node.supports_limit_pushdown() && !node.children().is_empty() {
+    if !node.children().is_empty() {
         variants.extend(limits.iter().map(|n| Variant::LimitedInputs(*n)));
     }
     variants.extend(BATCH_SIZES.map(Variant::BatchSize));

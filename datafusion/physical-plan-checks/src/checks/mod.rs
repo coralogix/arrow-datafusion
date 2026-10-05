@@ -33,12 +33,13 @@ mod variant_checks;
 
 use execution_checks::{
     batch_schema, cardinality_effect_holds, exact_statistics_hold, execution_succeeds,
-    memory_released, orderings_hold,
+    maintains_input_order_missed, memory_released, orderings_hold,
 };
 use static_checks::{
-    cardinality_effect_bounds_num_rows, check_invariants, equal_cardinality_num_rows,
+    cardinality_effect_bounds_num_rows, check_invariants, dynamic_expressions_reset,
+    dynamic_expressions_visited, equal_cardinality_num_rows, expression_column_refs,
     fetch_bounds_num_rows, fetch_not_equal_cardinality, partition_statistics_sum,
-    per_child_lengths, statistics_ignore_inputs, statistics_shape,
+    per_child_lengths, schema_consistency, statistics_ignore_inputs, statistics_shape,
 };
 use stream_checks::{
     boundedness_holds, emission_type_holds, errors_propagate, lazy_evaluation_holds,
@@ -46,7 +47,7 @@ use stream_checks::{
 };
 use variant_checks::{
     batch_boundary_invariance, batch_size_invariance, limit_pushdown_equivalent,
-    with_fetch_equivalent,
+    limit_pushdown_missed, with_fetch_equivalent,
 };
 
 type CheckFn = fn(&Arc<dyn ExecutionPlan>, &CheckContext) -> Result<Vec<Finding>>;
@@ -75,11 +76,29 @@ pub fn all_checks() -> Vec<PlanCheck> {
             Static,
             cardinality_effect_bounds_num_rows,
         ),
+        check("limit_pushdown_missed", Variant, limit_pushdown_missed),
+        check(
+            "maintains_input_order_missed",
+            Execution,
+            maintains_input_order_missed,
+        ),
         check("per_child_lengths", Static, per_child_lengths),
         check("check_invariants", Static, check_invariants),
         check("statistics_shape", Static, statistics_shape),
         check("partition_statistics_sum", Static, partition_statistics_sum),
         check("statistics_ignore_inputs", Static, statistics_ignore_inputs),
+        check("schema_consistency", Static, schema_consistency),
+        check("expression_column_refs", Static, expression_column_refs),
+        check(
+            "dynamic_expressions_visited",
+            Static,
+            dynamic_expressions_visited,
+        ),
+        check(
+            "dynamic_expressions_reset",
+            Static,
+            dynamic_expressions_reset,
+        ),
         check("execution_succeeds", Execution, execution_succeeds),
         check("batch_schema", Execution, batch_schema),
         check("exact_statistics_hold", Execution, exact_statistics_hold),

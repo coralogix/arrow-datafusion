@@ -26,6 +26,7 @@ use datafusion_common::Result;
 use datafusion_physical_expr::LexOrdering;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 
@@ -161,6 +162,101 @@ fn first_rows(output: &NodeOutput, n: usize) -> NodeOutput {
         })
         .collect();
     NodeOutput::new(partitions)
+}
+
+/// A5: a node that does not support limit pushdown, but produces the first
+/// rows of each output partition from the first rows of its inputs.
+pub(super) fn limit_pushdown_missed(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    if node.supports_limit_pushdown() || node.children().is_empty() {
+        return Ok(vec![]);
+    }
+    // Only a node that produces a row for each input row, without its fetch,
+    // can produce its first rows from the first rows of its inputs whatever
+    // their values. A node that can drop or merge rows, or a join, which
+    // combines rows of its inputs, needs later rows in general, and only looks
+    // prefix-closed when the generated data does not show it: a final
+    // aggregate whose input has each group once, or a mark join whose first
+    // input rows already have every key.
+    let effect = node.with_fetch(None).map_or_else(
+        || node.cardinality_effect(),
+        |plan| plan.cardinality_effect(),
+    );
+    if !matches!(
+        effect,
+        CardinalityEffect::Equal | CardinalityEffect::GreaterEqual
+    ) {
+        return Ok(vec![]);
+    }
+    // Input that is sorted by an ordering the node does not maintain can be in
+    // the order the node sorts it into: a sort passes such input through, as
+    // if it only needed its first rows
+    let maintains = node.maintains_input_order();
+    let sorted_input = node.children().iter().enumerate().any(|(i, child)| {
+        maintains.get(i) != Some(&true) && child.properties().output_ordering().is_some()
+    });
+    if sorted_input {
+        return Ok(vec![]);
+    }
+    let Some(normal) = context.output(node) else {
+        return Ok(vec![]);
+    };
+    let ordering = node.properties().output_ordering();
+    let mut limits = vec![];
+    let mut limited = false;
+    for run in context.variant_runs(node) {
+        let Variant::LimitedInputs(n) = run.variant else {
+            continue;
+        };
+        // A run that failed or produced other rows shows that the node needs
+        // more than the first rows of its inputs
+        let Ok(output) = &run.output else {
+            return Ok(vec![]);
+        };
+        if !keeps_first_rows(normal, output, n, ordering) {
+            return Ok(vec![]);
+        }
+        limited |= output.num_rows() < normal.num_rows();
+        limits.push(n);
+    }
+    // Only runs in which the limits removed output rows show anything
+    if !limited {
+        return Ok(vec![]);
+    }
+    Ok(vec![Finding::lint(format!(
+        "supports_limit_pushdown() is false, but with every child limited to its first \
+         n rows per partition, for n in {limits:?}, every output partition has the \
+         first n rows of the same partition of the normal output, so a limit above the \
+         node could be pushed to its children; return true from \
+         supports_limit_pushdown if this holds for every input"
+    ))])
+}
+
+/// Returns true if every partition of `output` has the first `n` rows of the
+/// same partition of `normal`, in the same order, apart from the order of rows
+/// that tie on `ordering`
+fn keeps_first_rows(
+    normal: &NodeOutput,
+    output: &NodeOutput,
+    n: usize,
+    ordering: Option<&LexOrdering>,
+) -> bool {
+    let first = first_rows(normal, n);
+    output.partitions().len() == normal.partitions().len()
+        && output.partition_num_rows() == first.partition_num_rows()
+        && output
+            .partitions()
+            .iter()
+            .zip(normal.partitions().iter().zip(first.partitions()))
+            .all(|(output, (normal, first))| match ordering {
+                Some(ordering) => matches!(
+                    oracle::first_non_prefix_row(normal, output, ordering),
+                    Ok(None)
+                ),
+                None => matches!(oracle::same_rows_in_order(output, first), Ok(true)),
+            })
 }
 
 /// D1: the plan returned by `with_fetch` produces a valid limit of the node's

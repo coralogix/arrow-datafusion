@@ -47,7 +47,8 @@ Every violation has a severity:
 Checks come in four kinds:
 
 - **Static** checks compare what a plan reports about itself, without running
-  it (section A).
+  it (section A). A5 and A6, which look for properties a plan could report
+  but does not, need its output too.
 - **Execution** checks run the plan and compare its output with what it
   reports (sections B and C).
 - **Differential** checks compare a plan with a rewritten version of itself,
@@ -59,10 +60,11 @@ Checks come in four kinds:
 Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
 In code, each check has a `CheckKind` that says what the checker gathers for
-it before checks run: nothing (`Static`, section A), the output of each node
-and the memory its execution left reserved (`Execution`, B0 to B8 and
-`memory_released` in F1), variant runs (`Variant`, sections D and E) or
-stream experiments (`Stream`, B10 to B12, `streams_released` in F1, and F2).
+it before checks run: nothing (`Static`, section A apart from A5 and A6), the
+output of each node and the memory its execution left reserved (`Execution`,
+A6, B0 to B8 and `memory_released` in F1), variant runs (`Variant`, A5,
+sections D and E) or stream experiments (`Stream`, B10 to B12,
+`streams_released` in F1, and F2).
 
 Checks run on one node at a time, but the checker visits every node of a
 plan. Tests should build the plan under test on inputs generated with
@@ -115,10 +117,10 @@ stream experiments only in the `default` case (see [Cases](#cases)).
 
 ### Variant runs
 
-The checks in sections D and E compare a node's output with the output of a
-**variant run** (`Variant`): a rewritten copy of the node, or the node run
-under other settings. When any of them is enabled, the checker runs every
-variant that applies to each node, after it has executed every node
+The checks in sections D and E, and A5, compare a node's output with the
+output of a **variant run** (`Variant`): a rewritten copy of the node, or the
+node run under other settings. When any of them is enabled, the checker runs
+every variant that applies to each node, after it has executed every node
 normally, so that their sizes can depend on the normal outputs:
 
 - Each run executes a fresh `reset_plan_states` copy of the node's subtree to
@@ -128,11 +130,11 @@ normally, so that their sizes can depend on the normal outputs:
   what the fetch kept. For a node without a fetch, the unfetched output is the
   normal output.
 - `WithFetch(n)` runs the plan returned by `with_fetch(Some(n))`, and
-  `LimitedInputs(n)` runs the node with every child limited to its first `n`
-  rows per partition, for `n` of 1, 7 and one more than the rows of the
-  node's output (with and without its fetch) and of each child's output. A
-  limit of 0 is not tried, since `LIMIT 0` is replaced by an empty relation
-  during logical optimization and never reaches a physical plan.
+  `LimitedInputs(n)` runs a node with children with every child limited to
+  its first `n` rows per partition, for `n` of 1, 7 and one more than the
+  rows of the node's output (with and without its fetch) and of each child's
+  output. A limit of 0 is not tried, since `LIMIT 0` is replaced by an empty
+  relation during logical optimization and never reaches a physical plan.
 - `BatchSize(n)` runs the node with the session batch size set to 1, 2, 7 and 8192.
 - `BatchLayout(layout)` rebuilds the node with the rows of each partition of
   its `MockSourceExec` leaves split into one row per batch, into random
@@ -193,15 +195,17 @@ that has any.
 
 ## A. Static checks
 
-These checks only call methods that describe the plan. They never call
-`execute`.
+These checks call the methods that describe the plan. A5 and A6 look for
+properties that a plan could report but does not, so they need its output
+too. The other checks never call `execute`.
 
 ### A1 `equal_cardinality_num_rows`
 
 - **Severity:** Invariant. Lint when only precision or an estimate is lost.
 - **What:** a single-child node with `cardinality_effect() == Equal` and no
-  fetch must report the same `num_rows` as its input, with the same
-  precision:
+  fetch must report the same `num_rows` as the input rows it is made of, with
+  the same precision, overall and for each partition whose input rows are
+  known:
   - Input `Exact(n)` requires output `Exact(n)`. Output `Exact(m)` with
     `m != n` is an invariant violation. Output `Inexact(_)` is a lint.
   - Input `Inexact(_)` or `Absent` with output `Exact(_)` is an invariant
@@ -209,6 +213,13 @@ These checks only call methods that describe the plan. They never call
     does.
   - Input `Inexact(n)` with output `Inexact(m)` and `m != n` is a lint.
   - Output `Absent` for a known input is reported by A9.
+- **Partitions:** the only partition of a node with one output partition has
+  every input row. Each partition of a node with several is compared with the
+  input partition that `child_stats_requests` requests for it
+  (`ChildStats::At(Some(q))`), as a node that keeps rows in their partitions
+  requests. A partition for which the node requests the overall input
+  statistics, as `RepartitionExec` does, can have rows of every input
+  partition, so it is not compared.
 - **Why:** `Equal` promises exactly one output row per input row.
   `PassthroughStatisticsProvider`, `sort_pushdown` and
   `limit_pushdown_past_window` all rely on this. A node whose statistics
@@ -256,9 +267,13 @@ These checks only call methods that describe the plan. They never call
 ### A4 `cardinality_effect_bounds_num_rows`
 
 - **Severity:** Invariant for exact row counts. Lint for estimates.
-- **What:**
+- **What:** overall and for each partition:
   - A single-child `LowerEqual` node must not report more rows than its input.
+    A partition has at most the rows of the input partition it is made of
+    (see A1), and in any case at most every input row.
   - A `GreaterEqual` node must not report fewer rows than any of its inputs.
+    A partition has at least the rows of each input partition it is made of,
+    as a partition of `UnionExec` has the rows of one partition of one input.
 - **Why:** the cardinality effect and the statistics are two descriptions of
   the same thing. If they disagree, one of them is wrong, and rules such as
   `topk_aggregation` that trust the cardinality effect may make the wrong
@@ -269,33 +284,73 @@ These checks only call methods that describe the plan. They never call
 ### A5 `limit_pushdown_missed`
 
 - **Severity:** Lint.
-- **Requires execution.**
-- **What:** a node for which `supports_limit_pushdown()` is false, but that
-  is **prefix-closed**: for random inputs and every `n`, running the node on
-  the first `n` rows of each input partition gives the first `n` rows of its
-  normal output.
+- **Requires execution** (the `LimitedInputs` variant, and the normal
+  output).
+- **What:** a node with children for which `supports_limit_pushdown()` is
+  false, but that is **prefix-closed**: running the node with every child
+  limited to its first `n` rows per partition gives the first `n` rows of
+  each partition of its normal output, for every `n` that the
+  `LimitedInputs` variant tries. Each output partition must have exactly
+  `min(n, rows)` rows, which are the first rows of the same partition of the
+  normal output, in the same order apart from rows that tie on the ordering
+  the node reports. Only reported if the limits removed output rows in at
+  least one run. Not checked:
+  - A node whose cardinality effect without its fetch (that of the plan
+    returned by `with_fetch(None)`) is not `Equal` or `GreaterEqual`. A node
+    that can drop or merge rows, or a join, which combines rows of its inputs,
+    needs later rows in general, and only looks prefix-closed when the
+    generated data does not show it: a final aggregate whose input has each
+    group once, or a mark join whose first input rows already have every key.
+  - A node over a child that reports an ordering that the node does not
+    maintain. A node that sorts its input, such as `SortExec`, passes input
+    that is already sorted through.
 - **Why:** a prefix-closed node can let a limit move below it, so its inputs
-  produce less data. Being `Equal` and order-preserving is not enough on its
-  own: `WindowAggExec` is both, but a window over a whole partition needs rows
-  after the first `n`, so it correctly does not support limit pushdown. This
-  check only reports nodes whose outputs have been shown to be prefix-closed.
+  produce less data. `LimitPushdown` stops at a node that does not support
+  limit pushdown: it gives the node the limit as a fetch, or adds a limit
+  above it (`limit_pushdown.rs:268-309`). Being `Equal` and order-preserving
+  is not enough on its own: `WindowAggExec` is both, but a window over a whole
+  partition needs rows after the first `n`, so it correctly does not support
+  limit pushdown. This check only reports nodes whose outputs have been shown
+  to be prefix-closed.
 - **Fix:** return true from `supports_limit_pushdown`. Allow this check if the
   node is only prefix-closed for the inputs the test generated.
-- **Candidates:** `BufferExec` (its `supports_limit_pushdown` returns the
-  child's value) and `RepartitionExec`.
+- **Found in:** `BufferExec` (its `supports_limit_pushdown` returns the
+  child's value) and `CoalesceBatchesExec`. `RepartitionExec`, also a
+  candidate when this entry was written, is not reported: its output
+  partitions have rows of several input partitions, in an order that depends
+  on timing.
 
 ### A6 `maintains_input_order_missed`
 
 - **Severity:** Lint.
-- **Requires execution.**
-- **What:** `maintains_input_order()[i]` is false, but the rows from child `i`
-  keep their relative order in the output for many random inputs (see C1 for
-  how order is tracked).
+- **Requires execution** (the normal output of the node and of its
+  children).
+- **What:** `maintains_input_order()[i]` is false, but the rows of child `i`
+  keep their relative order in the output. Rows are tracked by their row ids
+  (see C1): the child must have exactly one `__row_id` column, with unique
+  ids, and exactly one `__row_id` column of the output must have ids of the
+  child. The order is kept when every row of every output partition is a row
+  of the child, each output partition has rows of one partition of the child
+  only, and they appear in the order of that partition. A row can repeat, as
+  long as its copies are next to each other. Reported when some output
+  partition has at least two rows of the child, and, for a child with several
+  partitions, the output has rows of at least two of them, which shows that
+  the node keeps them apart. Not checked:
+  - A node that reports an output ordering. It orders its output itself, for
+    example by sorting it, which keeps rows that tie on its sort key in their
+    input order.
+  - A child that reports an ordering. Sorted input is not in a random order,
+    and can be in the order that the node sorts it into.
 - **Why:** `maintains_input_order` lets the optimizer avoid re-sorting. A
   false value that should be true costs an unnecessary sort.
 - **Fix:** return true for that child and make sure the output equivalence
   properties keep the child's ordering.
-- **Candidates:** `CoalescePartitionsExec` with a single input partition.
+- **Found in:** `CoalescePartitionsExec` with a single input partition, the
+  build side of `HashJoinExec` `LeftSemi`, `LeftAnti` and `LeftMark` and of
+  `NestedLoopJoinExec` `LeftAnti`, which emit the rows of the build side in
+  its order once the probe side ends, and the probe side of
+  `NestedLoopJoinExec` `RightSemi` and `RightMark` and of
+  `PiecewiseMergeJoinExec` `RightSemi`.
 
 ### A7 `per_child_lengths` and `check_invariants`
 
@@ -308,10 +363,20 @@ These checks only call methods that describe the plan. They never call
     `ChildStats::At(Some(p))` request names a partition that exists on that
     child.
   - `check_invariants`: `check_invariants(InvariantLevel::Always)` succeeds.
+    When the children meet the node's input requirements as
+    `SanityCheckPlan` checks them (the first alternative of each ordering
+    requirement, hard or soft, and each distribution requirement, allowing a
+    subset of the keys), and are co-partitioned where required,
+    `check_invariants(InvariantLevel::Executable)` succeeds too. A plan whose
+    requirements are not met cannot be executed, so it may fail the
+    executable invariants for a reason that is not the node's.
 - **Why:** optimizer rules index these vectors by child position. A wrong
   length makes them panic, skip a child, or apply one child's requirement to
   another. `check_invariants` can be overridden, so a plan that replaces the
   default implementation may skip the default length checks.
+  `SanityCheckPlan` calls `check_invariants(Executable)` once the requirements
+  are met, so a node that fails it there is rejected although its inputs are
+  valid.
 - **Fix:** return one entry per child, in the same order as `children()`.
   Default `check_invariants` already checks some lengths, so a single mistake
   can be reported by both checks.
@@ -343,9 +408,6 @@ These checks only call methods that describe the plan. They never call
     treats the fetch as a global limit and undercounts. Compute the overall
     count from per-partition counts, or report it as `Inexact` when it cannot
     be proven.
-- **Planned addition:** `statistics_invalid_partition`: calling
-  `statistics_from_inputs` directly with a partition index at or past the
-  partition count returns an error rather than panicking.
 
 ### A9 `statistics_ignore_inputs`
 
@@ -362,15 +424,24 @@ These checks only call methods that describe the plan. They never call
 
 ### A10 `schema_consistency` and `expression_column_refs`
 
-- **Severity:** Invariant.
+- **Severity:** Invariant. Lint for a difference in metadata only
+  (`schema_consistency`).
 - **What:**
   - `schema_consistency`: `schema()` equals the schema of
-    `properties().eq_properties`.
+    `properties().eq_properties`: the same fields, with the same names, data
+    types and nullability, and the same field and schema metadata. A node
+    whose child's two schemas differ is not reported, since it can inherit
+    the difference.
   - `expression_column_refs`: every `Column` in the output orderings,
-    equivalence classes, constants and output partitioning has an index
-    inside `schema()` and the name of the field at that index. For
-    single-child nodes, every `Column` in `apply_expressions` refers to a
-    valid field of the input schema in the same way.
+    equivalence classes, constants (equivalence classes with a constant
+    value) and output partitioning (the hash expressions, and the ordering of
+    a range partitioning) has an index inside `schema()` and the name of the
+    field at that index. For single-child nodes, every `Column` in the
+    expressions visited by `apply_expressions` refers to a field of the input
+    schema in the same way. An `AggregateExec` that merges partial states,
+    such as a `Final` aggregate, binds its aggregate expressions to the input
+    of the partial aggregate (`AggregateExec::input_schema`), so a column that
+    refers to a field of that schema is accepted.
 - **Why:** stale column indexes are a common result of projection pushdown
   and child replacement. They make ordering and partitioning checks refer to
   the wrong column, which can remove a needed sort or repartition.
@@ -385,7 +456,12 @@ These checks only call methods that describe the plan. They never call
     `dynamic_expressions_produced()` has an expression id, and that id appears
     somewhere in the expressions visited by `apply_expressions`.
   - `dynamic_expressions_reset`: after `reset_state`, the node's dynamic
-    filters are back in their initial state.
+    filters are back in their initial state: the node produces none of the
+    dynamic expressions it produced before. They are compared by expression
+    id, which identifies the state of a dynamic filter: copies made with
+    `with_new_children` share the state and keep the id, and a new filter
+    gets a new id. An expression that keeps its id after the reset still has
+    the values that executing the node set.
 - **Why:** `apply_expressions` is documented to visit expressions a node
   updates dynamically. Rules that find or rewrite dynamic filters depend on
   it. A dynamic filter that survives `reset_state` makes re-execution (such as

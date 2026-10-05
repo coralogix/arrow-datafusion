@@ -23,14 +23,111 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
+use arrow::datatypes::{DataType, Schema};
 use datafusion_common::stats::Precision;
 use datafusion_common::{Result, Statistics};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 
-use super::{overall_statistics, partition_statistics};
-use crate::{CheckContext, Finding, oracle};
+use super::{overall_statistics, partition_count, partition_statistics};
+use crate::fixtures::ROW_ID_COLUMN;
+use crate::oracle::InputOrder;
+use crate::{CheckContext, Finding, NodeOutput, oracle};
+
+/// A6: the rows of a child for which `maintains_input_order()` is false keep
+/// their relative order in the output, as tracked by their row ids.
+pub(super) fn maintains_input_order_missed(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    // A node that reports an ordering of its own orders its output, for
+    // example by sorting it, which keeps input rows that tie on the sort key
+    // in their input order without maintaining the order of every input
+    if node.properties().output_ordering().is_some() {
+        return Ok(vec![]);
+    }
+    let Some(output) = context.output(node) else {
+        return Ok(vec![]);
+    };
+    let schema = node.schema();
+    let maintains = node.maintains_input_order();
+    let mut findings = vec![];
+    for (i, child) in node.children().into_iter().enumerate() {
+        // Input that is sorted is not in a random order: its order can be the
+        // order the node sorts it into
+        if maintains.get(i) != Some(&false)
+            || child.properties().output_ordering().is_some()
+        {
+            continue;
+        }
+        let Some(child_output) = context.output(child) else {
+            continue;
+        };
+        let Some(InputOrder::Kept {
+            input_partitions,
+            max_partition_rows,
+        }) = tracked_order(&schema, output, &child.schema(), child_output)
+        else {
+            continue;
+        };
+        // The order of a single row cannot be seen, and a node over a child
+        // with several partitions must be seen to keep them apart
+        if max_partition_rows < 2
+            || (partition_count(child.as_ref()) > 1 && input_partitions < 2)
+        {
+            continue;
+        }
+        findings.push(Finding::lint(format!(
+            "maintains_input_order()[{i}] is false, but every output partition only has \
+             rows of one partition of child {i}, in the order of that partition; return \
+             true if the node never reorders the rows of this child, and keep the \
+             child's orderings in the output equivalence properties"
+        )));
+    }
+    Ok(findings)
+}
+
+/// Where the rows of a child appear in the output of a node, tracked by the
+/// [`ROW_ID_COLUMN`] of the child and the one row id column of the output
+/// that has its ids. `None` if the child does not have exactly one row id
+/// column, the output has no row id column or several with its ids, or the
+/// batches do not match the schemas, which `batch_schema` reports.
+fn tracked_order(
+    schema: &Schema,
+    output: &NodeOutput,
+    child_schema: &Schema,
+    child_output: &NodeOutput,
+) -> Option<InputOrder> {
+    let row_id_columns = |schema: &Schema| -> Vec<usize> {
+        schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| {
+                field.name() == ROW_ID_COLUMN && field.data_type() == &DataType::UInt64
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let [child_column] = row_id_columns(child_schema)[..] else {
+        return None;
+    };
+    let mut tracked = vec![];
+    for column in row_id_columns(schema) {
+        let order = oracle::input_order(
+            child_output.partitions(),
+            child_column,
+            output.partitions(),
+            column,
+        )
+        .ok()?;
+        if order != InputOrder::Untracked {
+            tracked.push(order);
+        }
+    }
+    let [order] = <[InputOrder; 1]>::try_from(tracked).ok()?;
+    Some(order)
+}
 
 /// B0: a node executes without errors, panics or timeouts.
 pub(super) fn execution_succeeds(

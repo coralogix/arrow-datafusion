@@ -91,21 +91,94 @@ fn correct_nodes_are_clean() {
         rows_source(&[40, 0, 60]),
         sorted_rows_source(&[50, 0, 70]),
     ] {
-        let mut plans = vec![
-            ConfigurableExec::new(Arc::clone(&input)).build(),
-            fetching(Arc::clone(&input), None).build(),
-            fetching(Arc::clone(&input), Some(5)).build(),
+        // Nodes that pass their first rows through, and so support limit
+        // pushdown
+        let plans = [
+            ConfigurableExec::new(Arc::clone(&input)),
+            fetching(Arc::clone(&input), None),
+            fetching(Arc::clone(&input), Some(5)),
         ];
-        let mut pushdown = ConfigurableExec::new(Arc::clone(&input));
-        pushdown.limit_pushdown = true;
-        plans.push(pushdown.build());
-        for plan in plans {
+        for mut exec in plans {
+            exec.limit_pushdown = true;
             checker_of(&[CheckKind::Variant])
-                .check(&plan)
+                .check(&exec.build())
                 .unwrap()
                 .assert_clean();
         }
     }
+}
+
+#[test]
+fn prefix_closed_node_without_limit_pushdown() {
+    let report = check_with(
+        "limit_pushdown_missed",
+        &ConfigurableExec::new(rows_source(&[40, 0, 60])).build(),
+    );
+    assert_eq!(
+        messages(&report),
+        vec![
+            "supports_limit_pushdown() is false, but with every child limited to its \
+             first n rows per partition, for n in [1, 7, 101], every output partition \
+             has the first n rows of the same partition of the normal output, so a \
+             limit above the node could be pushed to its children; return true from \
+             supports_limit_pushdown if this holds for every input"
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Lint, "limit_pushdown_missed")]
+    );
+
+    // A node whose fetch is the only thing that drops rows, over input sorted
+    // by an ordering it maintains
+    let mut exec = fetching(sorted_rows_source(&[50, 0, 70]), Some(10));
+    exec.effect_without_fetch = Some(Effect::Equal);
+    assert_eq!(
+        summary(&check_with("limit_pushdown_missed", &exec.build())),
+        vec![(Severity::Lint, "limit_pushdown_missed")]
+    );
+}
+
+#[test]
+fn nodes_that_need_more_than_their_first_input_rows() {
+    // The first nodes report cardinality_effect() Equal, falsely for most of
+    // them, so that only their output shows that they are not prefix-closed
+    let mut skipping = ConfigurableExec::new(rows_source(&[100]));
+    skipping.skip = 5;
+    let sort_on = |input| {
+        Arc::new(SortExec::new(ordering_on_a(), input).with_preserve_partitioning(true))
+            as Arc<dyn ExecutionPlan>
+    };
+    let plans = vec![
+        // Keeps half of each batch, so with every partition limited to its first
+        // n rows, a partition keeps fewer than the first n rows of its output
+        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+            .transform(Transform::DropHalf)
+            .build(),
+        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+            .transform(Transform::Duplicate)
+            .build(),
+        skipping.build(),
+        sort_on(rows_source(&[40, 0, 60])),
+        // Sorting input that is already sorted passes it through
+        sort_on(sorted_rows_source(&[40, 0, 60])),
+        // Pass every row through, but report that they can drop or combine
+        // rows, like a final aggregate whose input has each group once, or a
+        // join
+        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+            .effect(Effect::LowerEqual)
+            .build(),
+        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+            .effect(Effect::Unknown)
+            .build(),
+    ];
+    for plan in plans {
+        check_with("limit_pushdown_missed", &plan).assert_clean();
+    }
+
+    // Limits that remove no rows show nothing
+    let plan = ConfigurableExec::new(rows_source(&[1, 0, 1])).build();
+    check_with("limit_pushdown_missed", &plan).assert_clean();
 }
 
 #[test]
