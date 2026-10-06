@@ -185,6 +185,7 @@ expression: output
       RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=3
         AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[max(v)], lim=[5]
           MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] exact_statistics_hold at AggregateExec (root): with the false exact statistics of its children replaced by the true values, the overall statistics are false: distinct_count of g@0 is Exact(20), but the output has Exact(19)
     [lint] streams_released at RepartitionExec (root/0): after the output streams were dropped part way, the streams of partitions [0, 1, 2] of child 0 were only dropped once the plan itself was dropped; the plan keeps input streams, or tasks that poll them, alive
     [invariant] exact_statistics_hold at AggregateExec (root/0/0): the overall statistics are false: distinct_count of g@0 is Exact(450), but the output has Exact(20); min_value of g@0 is Exact(Int32(1)), but the output has Exact(Int32(38)); max_value of g@0 is Exact(Int32(996)), but the output has Exact(Int32(935))
     [invariant] exact_statistics_hold at AggregateExec (root/0/0): the partition 0 statistics are false: distinct_count of g@0 is Exact(178), but the output has Exact(10); min_value of g@0 is Exact(Int32(1)), but the output has Exact(Int32(38)); max_value of g@0 is Exact(Int32(996)), but the output has Exact(Int32(835))

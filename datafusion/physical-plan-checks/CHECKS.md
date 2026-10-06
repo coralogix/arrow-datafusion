@@ -508,22 +508,30 @@ what the plan reports.
 - **Severity:** Invariant.
 - **What:** every exact statistic is true for the actual output, overall and
   for each partition: `num_rows`, and for each column `min_value`,
-  `max_value`, `null_count` and `distinct_count`. An exact minimum or maximum
-  is not checked when the output has no non-null values in that column, since
-  there is nothing to contradict it. `sum_value`, byte sizes and
-  `total_byte_size` are not checked. The harness runs it with input
-  statistics marked exact, marked inexact and absent, to catch nodes that
-  turn estimates into exact values.
+  `max_value`, `null_count`, `distinct_count` and `sum_value`. An exact
+  minimum, maximum or sum is not checked when the output has no non-null
+  values in that column, since there is nothing to contradict it. A sum is
+  compared by value, whatever its type: integer sums may be kept in the
+  column's type or in the wider type of SQL `SUM`, and adding decimals
+  increases their precision. Only the sums of integer and decimal columns
+  are checked, since the exact sum of floating point values depends on the
+  order in which they are added, and sums that overflow the type of SQL
+  `SUM` are not checked. Byte sizes and `total_byte_size` are not checked.
+  The harness runs it with input statistics marked exact, marked inexact and
+  absent, to catch nodes that turn estimates into exact values.
 - **Attribution:** a node computes its statistics from its children's, so a
   child with a false exact statistic can make the node's false too, even
   when the node passes statistics through unchanged, as `RepartitionExec`
-  does. A node with such a child is not reported, since which of its
-  statistics depend on which of the child's is not known; the child is
-  reported instead. A node that makes false claims of its own over such a
-  child is only reported once the child is fixed.
+  does. The child is reported for those. The statistics of a node with such
+  a child are computed again with `statistics_from_inputs`, from the child
+  statistics that `child_stats_requests` asks for with every false exact
+  statistic replaced by the true value of the child's output, and the node
+  is reported for the exact statistics that are still false: with true
+  inputs, they are the node's own.
 - **Reporting:** one finding for the overall statistics and one for each
   partition that has a false exact statistic, listing every false statistic
-  with its claimed and actual values, by column in schema order.
+  with its claimed and actual values, by column in schema order. A finding
+  for statistics computed from corrected child statistics says so.
 - **Why:** exact statistics are used to prove things, for example to remove a
   limit or to answer an aggregate without reading data.
 - **Fix:** report `Inexact` for anything that cannot be proven.

@@ -21,9 +21,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::{Array, AsArray, RecordBatch};
+use arrow::array::{
+    Array, AsArray, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+};
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit, UInt64Type};
+use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::expressions::col;
@@ -138,6 +141,62 @@ fn distinct_values() {
         stats.column_statistics[0].distinct_count,
         Precision::Exact(3)
     );
+}
+
+#[test]
+fn sums_of_integer_and_decimal_columns() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("i", DataType::Int32, true),
+        Field::new("d", DataType::Decimal128(10, 2), false),
+        Field::new("f", DataType::Float64, false),
+        Field::new("big", DataType::Int64, false),
+        Field::new("nulls", DataType::Int32, true),
+    ]));
+    let batch = |i: Vec<Option<i32>>, d: Vec<i128>, f: Vec<f64>, big: Vec<i64>| {
+        let rows = i.len();
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(i)),
+                Arc::new(
+                    Decimal128Array::from(d)
+                        .with_precision_and_scale(10, 2)
+                        .unwrap(),
+                ),
+                Arc::new(Float64Array::from(f)),
+                Arc::new(Int64Array::from(big)),
+                Arc::new(Int32Array::from(vec![None; rows])),
+            ],
+        )
+        .unwrap()
+    };
+    let batches = [
+        batch(
+            vec![Some(1), None],
+            vec![150, 250],
+            vec![0.5, 1.5],
+            vec![i64::MAX, 0],
+        ),
+        batch(vec![Some(2)], vec![100], vec![2.0], vec![1]),
+    ];
+    let stats = oracle::exact_statistics(&schema, &batches).unwrap();
+    let sums: Vec<_> = stats
+        .column_statistics
+        .iter()
+        .map(|column| column.sum_value.clone())
+        .collect();
+    // Integers are summed in the wider type of SQL `SUM`, and the precision of
+    // a decimal sum grows with each addition. Floating point sums, sums that
+    // overflow, and sums of columns without non-null values are not known.
+    assert_eq!(sums[0], Precision::Exact(ScalarValue::Int64(Some(3))));
+    assert!(
+        matches!(
+            sums[1],
+            Precision::Exact(ScalarValue::Decimal128(Some(500), _, 2))
+        ),
+        "{sums:?}"
+    );
+    assert_eq!(sums[2..], vec![Precision::Absent; 3]);
 }
 
 #[test]

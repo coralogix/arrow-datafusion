@@ -21,12 +21,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_physical_expr::expressions::col;
 use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
-use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::union::UnionExec;
+use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 use datafusion_physical_plan_checks::fixtures::{
     BatchLayout, SourceSpec, StatisticsPrecision,
 };
@@ -352,6 +353,69 @@ fn false_exact_statistics_are_reported_on_the_node_that_makes_them() {
     assert_eq!(report.violations.len(), 2, "{report}");
     assert!(
         report.violations.iter().all(|v| v.path.is_empty()),
+        "{report}"
+    );
+
+    // A node that makes a false claim of its own over a child with false
+    // statistics is reported too, with its statistics computed from the true
+    // statistics of the child
+    let lying_child = ConfigurableExec::new(exact_source(100))
+        .num_rows(Precision::Exact(50))
+        .build();
+    let lying = ConfigurableExec::new(lying_child)
+        .num_rows(Precision::Exact(70))
+        .build();
+    let report = check(&lying);
+    let on_node: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.path.is_empty())
+        .map(|v| v.message.as_str())
+        .collect();
+    assert_eq!(
+        on_node,
+        vec![
+            "with the false exact statistics of its children replaced by the true \
+             values, the overall statistics are false: num_rows is Exact(70), but the \
+             output has 100 rows",
+            "with the false exact statistics of its children replaced by the true \
+             values, the partition 0 statistics are false: num_rows is Exact(70), but \
+             the output has 100 rows",
+        ],
+        "{report}"
+    );
+    assert_eq!(report.violations.len(), 4, "{report}");
+}
+
+#[test]
+fn false_exact_sum() {
+    // Every row is repeated, but the input statistics are passed through
+    let input = exact_source(100);
+    let sum = match &StatisticsContext::new()
+        .compute(input.as_ref(), &StatisticsArgs::new())
+        .unwrap()
+        .column_statistics[0]
+        .sum_value
+    {
+        Precision::Exact(ScalarValue::Int64(Some(sum))) => *sum,
+        other => panic!("the source reports the sum {other}"),
+    };
+    let plan = ConfigurableExec::new(input)
+        .effect(Effect::GreaterEqual)
+        .transform(Transform::Duplicate)
+        .build();
+    let report = checker(&["exact_statistics_hold"]).check(&plan).unwrap();
+    let false_statistics = format!(
+        "num_rows is Exact(100), but the output has 200 rows; sum_value of a@0 is \
+         Exact(Int64({sum})), but the output has Exact(Int64({}))",
+        2 * sum
+    );
+    assert_eq!(
+        messages(&report),
+        vec![
+            format!("the overall statistics are false: {false_statistics}"),
+            format!("the partition 0 statistics are false: {false_statistics}"),
+        ],
         "{report}"
     );
 }

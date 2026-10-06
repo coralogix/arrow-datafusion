@@ -25,9 +25,9 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use datafusion_common::stats::Precision;
-use datafusion_common::{Result, Statistics};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_common::{Result, Statistics, internal_err};
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
+use datafusion_physical_plan::{ChildStats, ExecutionPlan, StatisticsArgs};
 
 use super::{overall_statistics, partition_count, partition_statistics};
 use crate::fixtures::ROW_ID_COLUMN;
@@ -239,95 +239,150 @@ pub(super) fn exact_statistics_hold(
     node: &Arc<dyn ExecutionPlan>,
     context: &CheckContext,
 ) -> Result<Vec<Finding>> {
-    let claims = false_claims(node, context)?;
-    if claims.is_empty() {
-        return Ok(vec![]);
-    }
-    // A node computes its statistics from its children's, so a child with a
-    // false exact statistic can make the node's false too, even for a node
-    // that passes statistics through unchanged, such as a repartition. Report
-    // it on the child. Which of the node's statistics depend on which of the
-    // child's is not known, so the node is not reported at all.
-    for child in node.children() {
-        if !false_claims(child, context)?.is_empty() {
-            return Ok(vec![]);
-        }
-    }
-    Ok(claims.into_iter().map(Finding::invariant).collect())
-}
-
-/// For the overall statistics of `node` and then for those of each partition,
-/// the exact statistics its output contradicts, if any. Empty if the node was
-/// not executed or failed.
-fn false_claims(
-    node: &Arc<dyn ExecutionPlan>,
-    context: &CheckContext,
-) -> Result<Vec<String>> {
     let Some(output) = context.output(node) else {
         return Ok(vec![]);
     };
     let schema = node.schema();
-    // Output that does not match the schema is reported by `batch_schema`
-    let batches = output.batches();
+    let mut findings = vec![];
+    let targets = std::iter::once(None).chain((0..output.partitions().len()).map(Some));
+    for partition in targets {
+        // Output that does not match the schema is reported by `batch_schema`
+        let Some(actual) = actual_statistics(&schema, output, partition)? else {
+            return Ok(vec![]);
+        };
+        // Errors computing statistics are reported by `statistics_shape`
+        let Ok((claimed, corrected_inputs)) =
+            statistics_from_true_inputs(node, partition, context)
+        else {
+            continue;
+        };
+        let mismatches = correct(&schema, &mut claimed.as_ref().clone(), &actual);
+        if mismatches.is_empty() {
+            continue;
+        }
+        let target = match partition {
+            None => "overall".to_string(),
+            Some(p) => format!("partition {p}"),
+        };
+        // The statistics of the child are false too, and reported on the
+        // child; these are false because of the node
+        let prefix = if corrected_inputs {
+            "with the false exact statistics of its children replaced by the true \
+             values, "
+        } else {
+            ""
+        };
+        findings.push(Finding::invariant(format!(
+            "{prefix}the {target} statistics are false: {}",
+            mismatches.join("; ")
+        )));
+    }
+    Ok(findings)
+}
+
+/// The statistics `node` reports overall (`partition` is `None`) or for one
+/// partition, computed with `statistics_from_inputs` from the statistics of
+/// its children with every exact statistic that the output of a child
+/// contradicts replaced by the true value, and whether any was replaced. A
+/// node computes its statistics from its children's, so a child with a false
+/// exact statistic can make the node's false too, even for a node that passes
+/// statistics through unchanged, such as a repartition; with true inputs, a
+/// false statistic is the node's own.
+fn statistics_from_true_inputs(
+    node: &Arc<dyn ExecutionPlan>,
+    partition: Option<usize>,
+    context: &CheckContext,
+) -> Result<(Arc<Statistics>, bool)> {
+    let children = node.children();
+    let requests = node.child_stats_requests(partition);
+    if requests.len() != children.len() {
+        return internal_err!(
+            "child_stats_requests returned {} entries for {} children",
+            requests.len(),
+            children.len()
+        );
+    }
+    let mut corrected = false;
+    let mut inputs = vec![];
+    for (child, request) in children.into_iter().zip(requests) {
+        let ChildStats::At(p) = request else {
+            inputs.push(Arc::new(Statistics::new_unknown(&child.schema())));
+            continue;
+        };
+        let claimed = match p {
+            None => overall_statistics(child.as_ref())?,
+            Some(p) => partition_statistics(child.as_ref(), p)?,
+        };
+        let schema = child.schema();
+        let actual = match context.output(child) {
+            Some(output) => actual_statistics(&schema, output, p)?,
+            None => None,
+        };
+        let mut statistics = claimed.as_ref().clone();
+        match actual {
+            Some(actual) if !correct(&schema, &mut statistics, &actual).is_empty() => {
+                corrected = true;
+                inputs.push(Arc::new(statistics));
+            }
+            _ => inputs.push(claimed),
+        }
+    }
+    let args = StatisticsArgs::new().with_partition(partition);
+    Ok((node.statistics_from_inputs(&inputs, &args)?, corrected))
+}
+
+/// The exact statistics of the output of a node with `schema`, overall
+/// (`partition` is `None`) or of one partition. `None` if the partition does
+/// not exist, or a batch does not have a column for each field.
+fn actual_statistics(
+    schema: &Schema,
+    output: &NodeOutput,
+    partition: Option<usize>,
+) -> Result<Option<Statistics>> {
+    let batches = match partition {
+        None => output.batches(),
+        Some(p) => match output.partitions().get(p) {
+            Some(batches) => batches.clone(),
+            None => return Ok(None),
+        },
+    };
     if batches
         .iter()
         .any(|batch| batch.num_columns() != schema.fields().len())
     {
-        return Ok(vec![]);
+        return Ok(None);
     }
-    let targets = std::iter::once((None, batches)).chain(
-        output
-            .partitions()
-            .iter()
-            .enumerate()
-            .map(|(p, batches)| (Some(p), batches.clone())),
-    );
-    let mut claims = vec![];
-    for (partition, batches) in targets {
-        let (target, claimed) = match partition {
-            None => ("overall".to_string(), overall_statistics(node.as_ref())),
-            Some(p) => (
-                format!("partition {p}"),
-                partition_statistics(node.as_ref(), p),
-            ),
-        };
-        // Errors computing statistics are reported by `statistics_shape`
-        let Ok(claimed) = claimed else {
-            continue;
-        };
-        let actual = oracle::exact_statistics(&schema, &batches)?;
-        let mismatches = mismatches(&schema, &claimed, &actual);
-        if !mismatches.is_empty() {
-            claims.push(format!(
-                "the {target} statistics are false: {}",
-                mismatches.join("; ")
-            ));
-        }
-    }
-    Ok(claims)
+    oracle::exact_statistics(schema, &batches).map(Some)
 }
 
-/// Each exact statistic in `claimed` that `actual` contradicts, such as
-/// `null_count of l_k@0 is Exact(9), but the output has Exact(0)`. An exact
-/// minimum or maximum cannot be contradicted by a column without non-null
-/// values, which has neither.
-fn mismatches(schema: &Schema, claimed: &Statistics, actual: &Statistics) -> Vec<String> {
+/// Replaces each exact statistic in `claimed` that `actual` contradicts with
+/// the actual value, and describes each, such as `null_count of l_k@0 is
+/// Exact(9), but the output has Exact(0)`. An exact minimum, maximum or sum
+/// cannot be contradicted by a column without non-null values, which has
+/// none, and only the sum of an integer or decimal column is known (see
+/// [`oracle::exact_statistics`]).
+fn correct(
+    schema: &Schema,
+    claimed: &mut Statistics,
+    actual: &Statistics,
+) -> Vec<String> {
     let mut mismatches = vec![];
-    if let (Precision::Exact(claimed), Precision::Exact(actual)) =
+    if let (Precision::Exact(claimed_rows), Precision::Exact(actual_rows)) =
         (claimed.num_rows, actual.num_rows)
-        && claimed != actual
+        && claimed_rows != actual_rows
     {
         mismatches.push(format!(
-            "num_rows is Exact({claimed}), but the output has {actual} rows"
+            "num_rows is Exact({claimed_rows}), but the output has {actual_rows} rows"
         ));
+        claimed.num_rows = actual.num_rows;
     }
     let columns = claimed
         .column_statistics
-        .iter()
+        .iter_mut()
         .zip(&actual.column_statistics);
     for (i, (claimed, actual)) in columns.enumerate() {
         let column = format!("{}@{i}", schema.field(i).name());
-        let mut compare = |statistic, claimed: &dyn Display, actual: &dyn Display| {
+        let mut describe = |statistic, claimed: &dyn Display, actual: &dyn Display| {
             mismatches.push(format!(
                 "{statistic} of {column} is {claimed}, but the output has {actual}"
             ));
@@ -335,28 +390,54 @@ fn mismatches(schema: &Schema, claimed: &Statistics, actual: &Statistics) -> Vec
         if claimed.null_count.is_exact() == Some(true)
             && claimed.null_count != actual.null_count
         {
-            compare("null_count", &claimed.null_count, &actual.null_count);
+            describe("null_count", &claimed.null_count, &actual.null_count);
+            claimed.null_count = actual.null_count;
         }
         if claimed.distinct_count.is_exact() == Some(true)
             && claimed.distinct_count != actual.distinct_count
         {
-            compare(
+            describe(
                 "distinct_count",
                 &claimed.distinct_count,
                 &actual.distinct_count,
             );
+            claimed.distinct_count = actual.distinct_count;
         }
-        if claimed.min_value.is_exact() == Some(true)
-            && actual.min_value.is_exact() == Some(true)
-            && claimed.min_value != actual.min_value
-        {
-            compare("min_value", &claimed.min_value, &actual.min_value);
-        }
-        if claimed.max_value.is_exact() == Some(true)
-            && actual.max_value.is_exact() == Some(true)
-            && claimed.max_value != actual.max_value
-        {
-            compare("max_value", &claimed.max_value, &actual.max_value);
+        // A sum is compared by value: it may be kept in the type of the column
+        // rather than the wider type of SQL `SUM`, and adding decimals
+        // increases their precision, so its type depends on how it was added
+        let values = [
+            (
+                "min_value",
+                false,
+                &mut claimed.min_value,
+                &actual.min_value,
+            ),
+            (
+                "max_value",
+                false,
+                &mut claimed.max_value,
+                &actual.max_value,
+            ),
+            ("sum_value", true, &mut claimed.sum_value, &actual.sum_value),
+        ];
+        for (statistic, by_value, claimed, actual) in values {
+            let (Precision::Exact(claimed_value), Precision::Exact(actual_value)) =
+                (&*claimed, actual)
+            else {
+                continue;
+            };
+            let equal = if by_value {
+                claimed_value
+                    .cast_to(&actual_value.data_type())
+                    .is_ok_and(|value| value == *actual_value)
+            } else {
+                claimed_value == actual_value
+            };
+            if !equal {
+                describe(statistic, &*claimed, actual);
+                *claimed = actual.clone();
+            }
         }
     }
     mismatches
