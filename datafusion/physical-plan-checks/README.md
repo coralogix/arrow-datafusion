@@ -52,7 +52,7 @@ report.assert_no_invariant_violations();
 The harness generates the inputs, sorts, hash partitions or merges them into
 one partition as the plan requires, and checks the plan on several cases:
 several partitions with an empty one, a single partition, inexact and absent
-statistics, and empty input. The report lists every case, with the plan and
+statistics, empty input, and constant columns. The report lists every case, with the plan and
 the findings of each case that has any.
 
 To check a plan built by hand, use `PlanChecker` on inputs generated with

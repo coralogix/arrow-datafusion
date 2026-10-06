@@ -29,7 +29,10 @@ use datafusion_common::{Result, Statistics, internal_err};
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::{ChildStats, ExecutionPlan, StatisticsArgs};
 
-use super::{overall_statistics, partition_count, partition_statistics};
+use super::static_checks::stale_columns;
+use super::{
+    overall_statistics, partition_count, partition_statistics, reports_sorted_output,
+};
 use crate::fixtures::ROW_ID_COLUMN;
 use crate::oracle::InputOrder;
 use crate::{CheckContext, Finding, NodeOutput, oracle};
@@ -53,11 +56,9 @@ pub(super) fn maintains_input_order_missed(
     let maintains = node.maintains_input_order();
     let mut findings = vec![];
     for (i, child) in node.children().into_iter().enumerate() {
-        // Input that is sorted is not in a random order: its order can be the
-        // order the node sorts it into
-        if maintains.get(i) != Some(&false)
-            || child.properties().output_ordering().is_some()
-        {
+        // Input that is sorted, or has a constant, is not in a random order:
+        // its order can be the order the node sorts it into
+        if maintains.get(i) != Some(&false) || reports_sorted_output(child.as_ref()) {
             continue;
         }
         let Some(child_output) = context.output(child) else {
@@ -465,6 +466,38 @@ pub(super) fn orderings_hold(
                 )));
             }
         }
+    }
+    Ok(findings)
+}
+
+/// B4: every constant in the node's equivalence properties has a single value
+/// within each output partition, and, if it is uniform across partitions, the
+/// same value in every partition: the given value, if there is one.
+pub(super) fn constants_hold(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let Some(output) = context.output(node) else {
+        return Ok(vec![]);
+    };
+    let schema = node.schema();
+    let mut findings = vec![];
+    for constant in node.properties().equivalence_properties().constants() {
+        let expr = &constant.expr;
+        // A constant that refers to a column by a wrong index or name is
+        // reported by `expression_column_refs`
+        if !stale_columns("", [expr], &schema, "")?.is_empty() {
+            continue;
+        }
+        // An expression that cannot be evaluated on the output points to a
+        // schema mismatch, which `batch_schema` reports
+        let Ok(violations) = oracle::constant_violations(output.partitions(), &constant)
+        else {
+            continue;
+        };
+        findings.extend(violations.into_iter().map(|violation| {
+            Finding::invariant(format!("the node reports that {violation}"))
+        }));
     }
     Ok(findings)
 }

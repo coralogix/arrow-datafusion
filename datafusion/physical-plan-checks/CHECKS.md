@@ -158,7 +158,11 @@ each a fully specified set of inputs. `Profile::defaults()` gives:
   statistics;
 - `single partition`;
 - `inexact statistics` and `absent statistics`, with the default layout;
-- `empty input`: every partition empty.
+- `empty input`: every partition empty;
+- `uniform constants` and `constants per partition`: every column of every
+  input other than the row id is constant, with one value in every
+  partition, or one value per partition, and the inputs declare the
+  constants.
 
 Every case splits the rows of each partition into random batches of up to 16
 rows, including empty batches.
@@ -301,9 +305,11 @@ too. The other checks never call `execute`.
     needs later rows in general, and only looks prefix-closed when the
     generated data does not show it: a final aggregate whose input has each
     group once, or a mark join whose first input rows already have every key.
-  - A node over a child that reports an ordering that the node does not
-    maintain. A node that sorts its input, such as `SortExec`, passes input
-    that is already sorted through.
+  - A node over a child that reports an ordering or a constant, and whose
+    order the node does not maintain. A node that sorts its input, such as
+    `SortExec`, passes input that is already sorted through, and input
+    sorted on a constant keeps its order. The equivalence properties of a
+    sort on a constant report no ordering, so the constant is what shows it.
 - **Why:** a prefix-closed node can let a limit move below it, so its inputs
   produce less data. `LimitPushdown` stops at a node that does not support
   limit pushdown: it gives the node the limit as a fetch, or adds a limit
@@ -339,8 +345,9 @@ too. The other checks never call `execute`.
   - A node that reports an output ordering. It orders its output itself, for
     example by sorting it, which keeps rows that tie on its sort key in their
     input order.
-  - A child that reports an ordering. Sorted input is not in a random order,
-    and can be in the order that the node sorts it into.
+  - A child that reports an ordering or a constant. Sorted input is not in a
+    random order, and can be in the order that the node sorts it into, as
+    can input sorted on a constant, for which a sort reports no ordering.
 - **Why:** `maintains_input_order` lets the optimizer avoid re-sorting. A
   false value that should be true costs an unnecessary sort.
 - **Fix:** return true for that child and make sure the output equivalence
@@ -550,9 +557,18 @@ what the plan reports.
 ### B4 `constants_hold`
 
 - **Severity:** Invariant.
-- **What:** each constant expression has a single value within each
-  partition. If the constant is marked uniform across partitions, it has the
-  same given value in every partition.
+- **What:** each constant expression (every expression of an equivalence
+  class with a constant value) has a single value within each partition. If
+  the constant is marked uniform across partitions, it has the same value in
+  every partition, and that value is the given one if there is one. Null is
+  a value, so a column of nulls is constant. A given value is compared by
+  value, after casting it to the type of the expression. Partitions without
+  rows have no value to check. A constant that refers to a column by a wrong
+  index or name is not checked, since `expression_column_refs` reports it.
+- **Reporting:** one finding for each partition with several values, giving
+  two of them, and one for each partition whose value differs from the given
+  value, or for a uniform constant without a given value, from the value of
+  the first partition with rows.
 - **Why:** constants let the optimizer drop sort keys and grouping columns.
 - **Fix:** only mark an expression constant when the node guarantees it.
 

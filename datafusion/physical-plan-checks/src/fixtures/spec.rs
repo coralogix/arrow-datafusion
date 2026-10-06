@@ -21,13 +21,16 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions, UInt64Array};
 use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion_common::{Result, plan_err};
-use datafusion_physical_expr::{LexOrdering, Partitioning, PhysicalExpr};
+use datafusion_common::{Result, ScalarValue, plan_err};
+use datafusion_physical_expr::expressions::Column;
+use datafusion_physical_expr::{
+    AcrossPartitions, ConstExpr, LexOrdering, Partitioning, PhysicalExpr,
+};
 use datafusion_physical_plan::ExecutionPlan;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use super::values::{ValueOptions, random_array};
+use super::values::{ValueOptions, constant_array, random_array};
 use super::{MockSourceExec, StatisticsPrecision};
 use crate::oracle;
 
@@ -106,6 +109,27 @@ pub(crate) fn split_rows(
     batches
 }
 
+/// How [`SourceSpec::with_constant`] chooses the values of a constant column
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstantValues {
+    /// One non-null value from the column's domain in every partition,
+    /// declared `AcrossPartitions::Uniform` with the value
+    Uniform,
+    /// A non-null value from the column's domain for each partition, a
+    /// different one in each partition as far as the domain allows, declared
+    /// `AcrossPartitions::Heterogeneous`
+    PerPartition,
+}
+
+/// A column made constant with [`SourceSpec::with_constant`]
+struct ConstantColumn {
+    /// The index of the column in the base schema
+    column: usize,
+    /// The index of the value of partition 0 in the column's domain
+    first_key: u64,
+    values: ConstantValues,
+}
+
 /// How rows are assigned to partitions
 #[derive(Debug, Clone)]
 enum PartitionLayout {
@@ -158,6 +182,8 @@ pub struct SourceSpec {
     batch_layout: BatchLayout,
     values: ValueOptions,
     ordering: Option<LexOrdering>,
+    /// The columns of the base schema that are constant, by name
+    constants: Vec<(String, ConstantValues)>,
     precision: StatisticsPrecision,
     /// The first row id, if the source has a row id column
     first_row_id: Option<u64>,
@@ -178,6 +204,7 @@ impl SourceSpec {
                 distinct_values: 16,
             },
             ordering: None,
+            constants: vec![],
             precision: StatisticsPrecision::Exact,
             first_row_id: None,
             seed: 0,
@@ -239,6 +266,24 @@ impl SourceSpec {
     /// ordering
     pub fn with_ordering(mut self, ordering: LexOrdering) -> Self {
         self.ordering = Some(ordering);
+        self
+    }
+
+    /// Make the column `name` of the schema passed to [`Self::new`] constant,
+    /// with values chosen as `values` says, and declare it as a constant.
+    /// Replaces what an earlier call said for the same column.
+    ///
+    /// With [`Self::with_hash_partitioning`], the column is made constant
+    /// before the rows are hash partitioned, so that they stay in the
+    /// partitions their hash says, and every partition has the same value.
+    pub fn with_constant(
+        mut self,
+        name: impl Into<String>,
+        values: ConstantValues,
+    ) -> Self {
+        let name = name.into();
+        self.constants.retain(|(constant, _)| *constant != name);
+        self.constants.push((name, values));
         self
     }
 
@@ -323,12 +368,17 @@ impl SourceSpec {
     /// Generate the data and build the source
     pub fn build(&self) -> Result<MockSourceExec> {
         let mut rng = StdRng::seed_from_u64(self.seed);
+        let constants = self.constant_columns(&mut rng)?;
 
         // One batch per partition, holding all of the partition's rows
         let mut partitions = match &self.layout {
             PartitionLayout::Rows(rows) => rows
                 .iter()
-                .map(|n| self.random_batch(*n, &mut rng))
+                .enumerate()
+                .map(|(p, n)| {
+                    let batch = self.random_batch(*n, &mut rng)?;
+                    self.make_constant(batch, &constants, p)
+                })
                 .collect::<Result<Vec<_>>>()?,
             PartitionLayout::Hash {
                 exprs,
@@ -339,6 +389,7 @@ impl SourceSpec {
                     return plan_err!("SourceSpec hash partitioning needs a partition");
                 }
                 let batch = self.random_batch(*num_rows, &mut rng)?;
+                let batch = self.make_constant(batch, &constants, 0)?;
                 oracle::hash_partition(&[batch], exprs, *partitions)?
                     .iter()
                     .map(|batches| concat_batches(&self.schema, batches))
@@ -389,12 +440,81 @@ impl SourceSpec {
             source = source
                 .try_with_partitioning(Partitioning::Hash(exprs.clone(), *partitions))?;
         }
+        if !constants.is_empty() {
+            let declared = constants
+                .iter()
+                .map(|constant| {
+                    let field = self.schema.field(constant.column);
+                    let expr = Arc::new(Column::new(field.name(), constant.column));
+                    let across_partitions = match constant.values {
+                        ConstantValues::Uniform => {
+                            let value = constant_array(field, constant.first_key, 1)?;
+                            let value = ScalarValue::try_from_array(&value, 0)?;
+                            AcrossPartitions::Uniform(Some(value))
+                        }
+                        ConstantValues::PerPartition => AcrossPartitions::Heterogeneous,
+                    };
+                    Ok(ConstExpr::new(expr, across_partitions))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            source = source.try_with_constants(declared)?;
+        }
         Ok(source)
     }
 
     /// Generate the data and build the source as an `Arc<dyn ExecutionPlan>`
     pub fn build_arc(&self) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(self.build()?))
+    }
+
+    /// The constant columns, each with the index of its value in partition 0
+    /// in the column's domain
+    fn constant_columns(&self, rng: &mut StdRng) -> Result<Vec<ConstantColumn>> {
+        self.constants
+            .iter()
+            .map(|(name, values)| {
+                Ok(ConstantColumn {
+                    column: self.schema.index_of(name)?,
+                    first_key: rng.random_range(0..self.domain_size()),
+                    values: *values,
+                })
+            })
+            .collect()
+    }
+
+    /// `batch`, a batch of partition `partition`, with the values of the
+    /// constant columns replaced by their value in that partition
+    fn make_constant(
+        &self,
+        batch: RecordBatch,
+        constants: &[ConstantColumn],
+        partition: usize,
+    ) -> Result<RecordBatch> {
+        if constants.is_empty() {
+            return Ok(batch);
+        }
+        let mut columns = batch.columns().to_vec();
+        for constant in constants {
+            let key = match constant.values {
+                ConstantValues::Uniform => constant.first_key,
+                ConstantValues::PerPartition => {
+                    (constant.first_key + partition as u64) % self.domain_size()
+                }
+            };
+            let field = self.schema.field(constant.column);
+            columns[constant.column] = constant_array(field, key, batch.num_rows())?;
+        }
+        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        Ok(RecordBatch::try_new_with_options(
+            batch.schema(),
+            columns,
+            &options,
+        )?)
+    }
+
+    /// The number of distinct non-null values a column draws from
+    fn domain_size(&self) -> u64 {
+        self.values.distinct_values.max(1) as u64
     }
 
     /// A batch of `rows` random rows with the base schema

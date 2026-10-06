@@ -26,7 +26,9 @@ use datafusion_common::{
     Result, Statistics, exec_datafusion_err, internal_err, not_impl_err, plan_err,
 };
 use datafusion_execution::TaskContext;
-use datafusion_physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion_physical_expr::{
+    ConstExpr, EquivalenceProperties, LexOrdering, PhysicalExpr,
+};
 use datafusion_physical_plan::coop::make_cooperative;
 use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
@@ -117,6 +119,9 @@ impl fmt::Display for StreamBehavior {
 ///   [`Self::with_statistics_precision`].
 /// - An output ordering set with [`Self::try_with_output_ordering`] is
 ///   rejected unless every partition is sorted by it.
+/// - Constants set with [`Self::try_with_constants`] are rejected unless the
+///   data has a single value for each in every partition, the same value in
+///   every partition for a uniform one.
 /// - Hash partitioning set with [`Self::try_with_partitioning`] is rejected
 ///   unless every row is in the partition `RepartitionExec` would send it to.
 /// - [`Self::try_with_stream_behavior`] makes the streams stall, fail or never
@@ -133,6 +138,7 @@ pub struct MockSourceExec {
     partitions: Vec<Vec<RecordBatch>>,
     partitioning: Partitioning,
     output_ordering: Option<LexOrdering>,
+    constants: Vec<ConstExpr>,
     precision: StatisticsPrecision,
     behavior: StreamBehavior,
     /// Exact statistics of all partitions, before `precision` is applied
@@ -166,12 +172,14 @@ impl MockSourceExec {
             .collect::<Result<Vec<_>>>()?;
         let partitioning = Partitioning::UnknownPartitioning(partitions.len());
         let behavior = StreamBehavior::Finite;
-        let cache = Self::compute_properties(&schema, &partitioning, None, behavior);
+        let cache =
+            Self::compute_properties(&schema, &partitioning, None, &[], behavior)?;
         Ok(Self {
             schema,
             partitions,
             partitioning,
             output_ordering: None,
+            constants: vec![],
             precision: StatisticsPrecision::Exact,
             behavior,
             statistics,
@@ -201,12 +209,7 @@ impl MockSourceExec {
         // Keep the same properties when they do not change, so that plans
         // rebuilt on this source can reuse their own properties
         if boundedness_changed {
-            self.cache = Self::compute_properties(
-                &self.schema,
-                &self.partitioning,
-                self.output_ordering.as_ref(),
-                behavior,
-            );
+            self.cache = self.recompute_properties()?;
         }
         Ok(self)
     }
@@ -255,12 +258,26 @@ impl MockSourceExec {
             }
         }
         self.output_ordering = Some(ordering);
-        self.cache = Self::compute_properties(
-            &self.schema,
-            &self.partitioning,
-            self.output_ordering.as_ref(),
-            self.behavior,
-        );
+        self.cache = self.recompute_properties()?;
+        Ok(self)
+    }
+
+    /// Declare that each of `constants` is constant: within every partition,
+    /// and across partitions as its `across_partitions` says. Replaces the
+    /// constants declared before.
+    ///
+    /// Returns an error if the data contradicts a constant (see
+    /// [`oracle::constant_violations`]).
+    pub fn try_with_constants(mut self, constants: Vec<ConstExpr>) -> Result<Self> {
+        for constant in &constants {
+            if let Some(violation) =
+                oracle::constant_violations(&self.partitions, constant)?.first()
+            {
+                return plan_err!("MockSourceExec constant does not hold: {violation}");
+            }
+        }
+        self.constants = constants;
+        self.cache = self.recompute_properties()?;
         Ok(self)
     }
 
@@ -299,13 +316,8 @@ impl MockSourceExec {
             }
             Partitioning::RoundRobinBatch(_) | Partitioning::UnknownPartitioning(_) => {}
         }
-        self.cache = Self::compute_properties(
-            &self.schema,
-            &partitioning,
-            self.output_ordering.as_ref(),
-            self.behavior,
-        );
         self.partitioning = partitioning;
+        self.cache = self.recompute_properties()?;
         Ok(self)
     }
 
@@ -314,31 +326,43 @@ impl MockSourceExec {
         &self.partitions
     }
 
+    fn recompute_properties(&self) -> Result<Arc<PlanProperties>> {
+        Self::compute_properties(
+            &self.schema,
+            &self.partitioning,
+            self.output_ordering.as_ref(),
+            &self.constants,
+            self.behavior,
+        )
+    }
+
     fn compute_properties(
         schema: &SchemaRef,
         partitioning: &Partitioning,
         output_ordering: Option<&LexOrdering>,
+        constants: &[ConstExpr],
         behavior: StreamBehavior,
-    ) -> Arc<PlanProperties> {
-        let eq_properties = match output_ordering {
+    ) -> Result<Arc<PlanProperties>> {
+        let mut eq_properties = match output_ordering {
             Some(ordering) => EquivalenceProperties::new_with_orderings(
                 Arc::clone(schema),
                 [ordering.clone()],
             ),
             None => EquivalenceProperties::new(Arc::clone(schema)),
         };
+        eq_properties.add_constants(constants.iter().cloned())?;
         let boundedness = match behavior {
             StreamBehavior::Unbounded { .. } => Boundedness::Unbounded {
                 requires_infinite_memory: false,
             },
             _ => Boundedness::Bounded,
         };
-        Arc::new(PlanProperties::new(
+        Ok(Arc::new(PlanProperties::new(
             eq_properties,
             partitioning.clone(),
             EmissionType::Incremental,
             boundedness,
-        ))
+        )))
     }
 
     /// The batches of a partition, followed by what `self.behavior` adds
@@ -415,6 +439,13 @@ impl DisplayAs for MockSourceExec {
                 )?;
                 if let Some(ordering) = &self.output_ordering {
                     write!(f, ", output_ordering=[{ordering}]")?;
+                }
+                if !self.constants.is_empty() {
+                    write!(
+                        f,
+                        ", constants=[{}]",
+                        ConstExpr::format_list(&self.constants)
+                    )?;
                 }
                 if self.behavior != StreamBehavior::Finite {
                     write!(f, ", stream={}", self.behavior)?;

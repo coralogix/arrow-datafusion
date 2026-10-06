@@ -30,15 +30,17 @@ use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::expressions::col;
-use datafusion_physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr};
+use datafusion_physical_expr::{
+    AcrossPartitions, ConstExpr, LexOrdering, Partitioning, PhysicalSortExpr,
+};
 use datafusion_physical_plan::execution_plan::Boundedness;
 use datafusion_physical_plan::{
     ExecutionPlan, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
     displayable,
 };
 use datafusion_physical_plan_checks::fixtures::{
-    BatchLayout, MockSourceExec, ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
-    StreamBehavior,
+    BatchLayout, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
+    StatisticsPrecision, StreamBehavior,
 };
 use datafusion_physical_plan_checks::{PlanChecker, oracle};
 use futures::StreamExt;
@@ -334,6 +336,13 @@ fn generated_sources_pass_every_check() {
             .with_partition_rows(&[10, 10])
             .with_row_ids(0)
             .with_statistics_precision(StatisticsPrecision::Inexact),
+        SourceSpec::new(Arc::clone(&schema))
+            .with_partition_rows(&[10, 0, 20])
+            .with_constant("a", ConstantValues::Uniform)
+            .with_constant("c", ConstantValues::PerPartition),
+        SourceSpec::new(Arc::clone(&schema))
+            .with_hash_partitioning(vec![col("a", &schema).unwrap()], 3, 100)
+            .with_constant("a", ConstantValues::PerPartition),
     ];
     for spec in specs {
         let source = spec.build_arc().unwrap();
@@ -390,6 +399,72 @@ fn unsupported_type_is_an_error() {
 }
 
 #[test]
+fn constant_columns() {
+    let source = SourceSpec::new(schema())
+        .with_partition_rows(&[10, 0, 20, 5])
+        .with_constant("a", ConstantValues::Uniform)
+        .with_constant("c", ConstantValues::PerPartition)
+        .build()
+        .unwrap();
+    let a = col("a", &schema()).unwrap();
+    let c = col("c", &schema()).unwrap();
+    let values = |expr| {
+        source
+            .partitions()
+            .iter()
+            .map(|batches| oracle::distinct_values(batches, expr).unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    // `a` has one value in every partition with rows, and declares it
+    let a_values = values(&a);
+    let value = a_values[0][0].clone();
+    assert_eq!(
+        a_values,
+        vec![
+            vec![value.clone()],
+            vec![],
+            vec![value.clone()],
+            vec![value.clone()]
+        ]
+    );
+    // `c` is nullable, but has no nulls, and a different value in each
+    // partition with rows
+    let c_values = values(&c);
+    assert!(
+        c_values.iter().all(|values| values.len() <= 1),
+        "{c_values:?}"
+    );
+    assert!(c_values.iter().flatten().all(|value| !value.is_null()));
+    assert_ne!(c_values[0], c_values[2]);
+    assert_ne!(c_values[2], c_values[3]);
+    assert_eq!(
+        source.properties().equivalence_properties().constants(),
+        vec![
+            ConstExpr::new(a, AcrossPartitions::Uniform(Some(value))),
+            ConstExpr::new(c, AcrossPartitions::Heterogeneous),
+        ]
+    );
+
+    // Hash partitioned on a constant column, every row is in one partition
+    let source = SourceSpec::new(schema())
+        .with_hash_partitioning(vec![col("a", &schema()).unwrap()], 3, 60)
+        .with_constant("a", ConstantValues::PerPartition)
+        .build()
+        .unwrap();
+    let mut rows = rows_per_partition(&source);
+    rows.sort_unstable();
+    assert_eq!(rows, vec![0, 0, 60]);
+
+    // An unknown column is an error
+    let error = SourceSpec::new(schema())
+        .with_constant("x", ConstantValues::Uniform)
+        .build()
+        .unwrap_err();
+    assert!(error.to_string().contains("\"x\""), "{error}");
+}
+
+#[test]
 fn false_claims_are_rejected() {
     let schema = schema();
     let unsorted = SourceSpec::new(Arc::clone(&schema))
@@ -412,9 +487,20 @@ fn false_claims_are_rejected() {
     assert!(error.to_string().contains("do not belong"), "{error}");
 
     let error = unsorted
+        .clone()
         .try_with_partitioning(Partitioning::UnknownPartitioning(3))
         .unwrap_err();
     assert!(error.to_string().contains("has 3"), "{error}");
+
+    let constant =
+        ConstExpr::new(col("a", &schema).unwrap(), AcrossPartitions::Heterogeneous);
+    let error = unsorted.try_with_constants(vec![constant]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("a@0 is constant, but partition 0 has"),
+        "{error}"
+    );
 
     let other_schema =
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));

@@ -30,7 +30,7 @@ use datafusion_physical_plan::distribution_requirements::ChildSatisfactionOption
 use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use super::{Case, PlanFactory, Profile, ROW_ID_RANGE};
-use crate::fixtures::{BatchLayout, SourceSpec};
+use crate::fixtures::{BatchLayout, ROW_ID_COLUMN, SourceSpec};
 
 /// How many times the harness builds a plan to find inputs that meet its
 /// requirements, which can change with the inputs
@@ -50,8 +50,15 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
         .enumerate()
         .map(|(i, base)| {
             let rows = base.num_rows() * profile.row_multiplier;
-            base.clone()
-                .with_partition_rows(&profile.partition_rows(rows))
+            let mut spec = base.clone();
+            if let Some(values) = profile.constants {
+                for field in base.schema().fields() {
+                    if field.name() != ROW_ID_COLUMN {
+                        spec = spec.with_constant(field.name(), values);
+                    }
+                }
+            }
+            spec.with_partition_rows(&profile.partition_rows(rows))
                 .with_batch_layout(BATCH_LAYOUT)
                 .with_statistics_precision(profile.statistics)
                 .with_seed(profile.seed.wrapping_mul(1000).wrapping_add(i as u64))

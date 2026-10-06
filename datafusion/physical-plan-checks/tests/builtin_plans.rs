@@ -165,6 +165,14 @@ fn builtin_plans() -> Result<Vec<PlanFactory>> {
                 input,
             )?))
         }),
+        one_input("ProjectionExec with a literal", spec(), |input| {
+            let a = col("a", &input.schema())?;
+            let one = Arc::new(Literal::new(ScalarValue::Int64(Some(1))));
+            Ok(Arc::new(ProjectionExec::try_new(
+                vec![(a, "a".to_string()), (one, "one".to_string())],
+                input,
+            )?))
+        }),
         one_input("FilterExec", spec(), |input| {
             let b = col("b", &input.schema())?;
             Ok(Arc::new(FilterExec::try_new(b, input)?))
@@ -173,6 +181,19 @@ fn builtin_plans() -> Result<Vec<PlanFactory>> {
             let b = col("b", &input.schema())?;
             with_fetch(&FilterExec::try_new(b, input)?, FETCH)
         }),
+        // Makes `a` a constant with the value 3 in every partition
+        one_input("FilterExec on an equality", spec(), |input| {
+            let a = col("a", &input.schema())?;
+            let three = Arc::new(Literal::new(ScalarValue::Int32(Some(3))));
+            let predicate = Arc::new(BinaryExpr::new(a, Operator::Eq, three));
+            Ok(Arc::new(FilterExec::try_new(predicate, input)?))
+        })
+        .allow(
+            "emission_type_holds",
+            "the filter keeps one row in 16 and emits batches of 8192 rows \
+             (filter.rs:81), so it needs about 131072 rows per input partition \
+             before it emits, more than the unbounded input delivers (65536)",
+        ),
         one_input("CoalesceBatchesExec", spec(), |input| {
             Ok(coalesce_batches(input, None))
         }),

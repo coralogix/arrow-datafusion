@@ -39,7 +39,7 @@ use datafusion_common::Result;
 use datafusion_physical_plan::{ExecutionPlan, displayable};
 
 use crate::exec::runtime;
-use crate::fixtures::{SourceSpec, StatisticsPrecision};
+use crate::fixtures::{ConstantValues, SourceSpec, StatisticsPrecision};
 use crate::{CheckKind, PlanChecker, Report};
 
 /// Row ids of input `i` start at `i * ROW_ID_RANGE`
@@ -64,8 +64,9 @@ type CreateFn =
 /// ordering the plan should see, for example to exercise a sorted code path.
 /// The harness sets everything else for each case, replacing what the base
 /// spec says: the partition layout, hash partitioning, the batch layout, the
-/// statistics precision, the seed and the row ids (see [`Profile`]). It keeps
-/// the base ordering unless the plan requires another one.
+/// statistics precision, the seed and the row ids, and in some cases makes
+/// every column constant (see [`Profile`]). It keeps the base ordering unless
+/// the plan requires another one.
 ///
 /// # The function
 ///
@@ -164,7 +165,8 @@ impl PlanFactory {
 ///
 /// A profile sets everything about an input that the plan's author does not
 /// need to know: how many partitions it has and how its rows are spread over
-/// them, the precision of its statistics and the seed. Rows are split into
+/// them, the precision of its statistics, the seed, and whether its columns
+/// are constant. Rows are split into
 /// random batches of up to 16 rows, with empty batches. The size of each
 /// input is the number of rows of its base [`SourceSpec`] times
 /// [`Self::row_multiplier`]: only the author of the plan knows what size
@@ -186,6 +188,10 @@ pub struct Profile {
     /// Input `i` is generated with seed `seed * 1000 + i`, so that inputs with
     /// the same schema get different data
     pub seed: u64,
+    /// If set, every column of every input is constant, with values chosen
+    /// this way, and the inputs declare the constants (see
+    /// [`SourceSpec::with_constant`]). The row id column is not constant.
+    pub constants: Option<ConstantValues>,
     /// Whether the [`CheckKind::Stream`] checks run. They depend on how a plan
     /// drives its streams rather than on the shape of its data, and several of
     /// them wait for timeouts, so only [`Self::default_profile`] runs them.
@@ -194,8 +200,8 @@ pub struct Profile {
 
 impl Profile {
     /// A profile named `name` with three partitions, the second of them empty
-    /// and the third with twice the rows of the first, exact statistics and
-    /// seed 0, that does not run the stream checks
+    /// and the third with twice the rows of the first, exact statistics, seed
+    /// 0 and no constant columns, that does not run the stream checks
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -203,6 +209,7 @@ impl Profile {
             row_multiplier: 1,
             statistics: StatisticsPrecision::Exact,
             seed: 0,
+            constants: None,
             stream_checks: false,
         }
     }
@@ -216,8 +223,10 @@ impl Profile {
     }
 
     /// The profiles [`PlanHarness::new`] uses: [`Self::default_profile`],
-    /// then `single partition`, `inexact statistics`, `absent statistics` and
-    /// `empty input`
+    /// then `single partition`, `inexact statistics`, `absent statistics`,
+    /// `empty input`, `uniform constants` (every column has the same value in
+    /// every partition) and `constants per partition` (every column has one
+    /// value per partition)
     pub fn defaults() -> Vec<Self> {
         vec![
             Self::default_profile(),
@@ -236,6 +245,14 @@ impl Profile {
             Self {
                 row_multiplier: 0,
                 ..Self::new("empty input")
+            },
+            Self {
+                constants: Some(ConstantValues::Uniform),
+                ..Self::new("uniform constants")
+            },
+            Self {
+                constants: Some(ConstantValues::PerPartition),
+                ..Self::new("constants per partition")
             },
         ]
     }

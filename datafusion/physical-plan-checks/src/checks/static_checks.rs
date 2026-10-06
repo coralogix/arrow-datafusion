@@ -752,7 +752,7 @@ pub(super) fn expression_column_refs(
 /// An invariant finding for each column in `exprs` that does not refer to a
 /// field of `schema`, called `name` in the message, by index and name, such as
 /// `{what} refers to column 'a'@3, but schema() has 2 fields`
-fn stale_columns<'a>(
+pub(super) fn stale_columns<'a>(
     what: &str,
     exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
     schema: &Schema,

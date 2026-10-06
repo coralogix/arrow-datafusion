@@ -64,7 +64,18 @@ pub(crate) fn random_array(
             }
         })
         .collect();
+    array_of_keys(field, &keys)
+}
 
+/// `rows` copies of the value with index `key` for `field`
+pub(crate) fn constant_array(field: &Field, key: u64, rows: usize) -> Result<ArrayRef> {
+    array_of_keys(field, &vec![Some(key); rows])
+}
+
+/// The value with each index of `keys` for `field`, or null for `None`.
+/// Different indexes give different values, except for types with fewer
+/// values than the index, such as `Boolean`.
+fn array_of_keys(field: &Field, keys: &[Option<u64>]) -> Result<ArrayRef> {
     macro_rules! build {
         ($array:ty, $f:expr) => {
             Arc::new(keys.iter().map(|k| k.map($f)).collect::<$array>()) as ArrayRef

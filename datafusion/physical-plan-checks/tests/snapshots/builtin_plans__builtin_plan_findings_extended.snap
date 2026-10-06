@@ -9,6 +9,25 @@ expression: output
   case 5 partitions: no violations
   case large input: no violations
 
+## ProjectionExec with a literal
+  case seed 1:
+    ProjectionExec: expr=[a@0 as a, 1 as one]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] exact_statistics_hold at ProjectionExec (root): the partition 1 statistics are false: distinct_count of one@1 is Exact(1), but the output has Exact(0)
+  case seed 2:
+    ProjectionExec: expr=[a@0 as a, 1 as one]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
+    [invariant] exact_statistics_hold at ProjectionExec (root): the partition 1 statistics are false: distinct_count of one@1 is Exact(1), but the output has Exact(0)
+  case 2 partitions: no violations
+  case 5 partitions:
+    ProjectionExec: expr=[a@0 as a, 1 as one]
+      MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
+    [invariant] exact_statistics_hold at ProjectionExec (root): the partition 2 statistics are false: distinct_count of one@1 is Exact(1), but the output has Exact(0)
+  case large input:
+    ProjectionExec: expr=[a@0 as a, 1 as one]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
+    [invariant] exact_statistics_hold at ProjectionExec (root): the partition 1 statistics are false: distinct_count of one@1 is Exact(1), but the output has Exact(0)
+
 ## FilterExec
   case seed 1: no violations
   case seed 2: no violations
@@ -49,6 +68,14 @@ expression: output
     [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(960) is more than the fetch allows (30)
     [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 0 num_rows estimate Inexact(320) is more than the fetch allows (10)
     [lint] fetch_bounds_num_rows at FilterExec (root): fetch() is Some(10), but the partition 2 num_rows estimate Inexact(640) is more than the fetch allows (10)
+
+## FilterExec on an equality
+  allowed emission_type_holds: the filter keeps one row in 16 and emits batches of 8192 rows (filter.rs:81), so it needs about 131072 rows per input partition before it emits, more than the unbounded input delivers (65536)
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
 
 ## CoalesceBatchesExec
   case seed 1:

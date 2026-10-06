@@ -251,9 +251,21 @@ fn ordering_requirement_sorts_the_input() {
         )))
     });
     let cases = static_harness().cases(&factory).unwrap();
-    assert_eq!(cases.len(), 5);
+    assert_eq!(cases.len(), Profile::defaults().len());
     for case in &cases {
-        assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "a@0 ASC");
+        let ordering = case.inputs[0].ordering().map(ToString::to_string);
+        if case.profile.constants.is_some() {
+            // A constant column meets any ordering on it, so the input is
+            // not sorted
+            assert_eq!(ordering, None, "{}", case.profile.name);
+        } else {
+            assert_eq!(
+                ordering.as_deref(),
+                Some("a@0 ASC"),
+                "{}",
+                case.profile.name
+            );
+        }
     }
     // The input keeps the profile's partitions
     assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[20, 0, 40][..]));
@@ -303,7 +315,7 @@ fn single_partition_requirement() {
         Ok(Arc::new(GlobalLimitExec::new(input, 0, Some(5))))
     });
     let cases = static_harness().cases(&factory).unwrap();
-    assert_eq!(cases.len(), 5);
+    assert_eq!(cases.len(), Profile::defaults().len());
     for case in &cases {
         assert_eq!(case.inputs[0].partition_count(), 1, "{}", case.profile.name);
     }
@@ -575,7 +587,10 @@ fn findings_are_reported_per_case() {
     let report = PlanHarness::new()
         .check(&fetch_with_equal_effect())
         .unwrap();
-    assert_eq!(cases_with(&report, "fetch_not_equal_cardinality").len(), 5);
+    assert_eq!(
+        cases_with(&report, "fetch_not_equal_cardinality").len(),
+        Profile::defaults().len()
+    );
     assert_eq!(
         cases_with(&report, "exact_statistics_hold"),
         ["empty input"],

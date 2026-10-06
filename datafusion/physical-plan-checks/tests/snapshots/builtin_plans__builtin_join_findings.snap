@@ -21,6 +21,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of r_v@4 is Exact(2), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft Left
   case default:
@@ -41,6 +57,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(2), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(2), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft Right
   case default:
@@ -61,6 +93,26 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Right, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(90); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(90); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(60); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(60); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Right, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(90); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(90); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(60); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(60); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft Full
   case default:
@@ -81,6 +133,28 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); null_count of l_v@1 is Exact(0), but the output has Exact(60); null_count of __row_id@2 is Exact(0), but the output has Exact(60); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 0 has the value NULL
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); null_count of l_v@1 is Exact(0), but the output has Exact(60); null_count of __row_id@2 is Exact(0), but the output has Exact(60); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
 
 ## HashJoinExec CollectLeft LeftSemi
   case default:
@@ -105,6 +179,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft RightSemi
   case default:
@@ -116,6 +192,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft LeftAnti
   case default:
@@ -140,6 +218,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft RightAnti
   case default:
@@ -151,6 +231,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft LeftMark
   case default:
@@ -177,6 +259,18 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=LeftMark, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft RightMark
   case default:
@@ -188,6 +282,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft Inner with filter
   case default:
@@ -208,6 +304,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of r_v@4 is Exact(2), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft Full with filter
   case default:
@@ -228,6 +340,28 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); null_count of l_v@1 is Exact(0), but the output has Exact(60); null_count of __row_id@2 is Exact(0), but the output has Exact(60); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 0 has the value NULL
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(30); distinct_count of l_k@0 is Exact(1), but the output has Exact(0); null_count of l_v@1 is Exact(0), but the output has Exact(30); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); null_count of __row_id@2 is Exact(0), but the output has Exact(30); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(60); null_count of l_v@1 is Exact(0), but the output has Exact(60); null_count of __row_id@2 is Exact(0), but the output has Exact(60); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
 
 ## HashJoinExec CollectLeft RightSemi with filter
   case default:
@@ -239,6 +373,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft LeftAnti with filter
   case default:
@@ -263,6 +399,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec CollectLeft Inner with nulls equal
   case default:
@@ -283,6 +421,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], NullsEqual: true
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_k@0, r_k@0)], NullsEqual: true
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(2), but the output has Exact(0); distinct_count of r_v@4 is Exact(2), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 0 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(30), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(60), but the output has Exact(0)
 
 ## HashJoinExec CollectLeft Inner with fetch
   case default:
@@ -294,6 +448,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec Partitioned Inner
   case default:
@@ -313,6 +469,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
 
 ## HashJoinExec Partitioned Left
   case default:
@@ -332,6 +502,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=Partitioned, join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+  case constants per partition:
+    HashJoinExec: mode=Partitioned, join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
 
 ## HashJoinExec Partitioned Full
   case default:
@@ -351,6 +535,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=Partitioned, join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition:
+    HashJoinExec: mode=Partitioned, join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
 
 ## HashJoinExec Partitioned RightAnti
   case default: no violations
@@ -358,6 +558,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec Partitioned LeftMark
   case default:
@@ -381,6 +583,8 @@ expression: output
       MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[20, 24, 46], statistics=Absent
     [lint] maintains_input_order_missed at HashJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## HashJoinExec Partitioned Full with filter
   case default:
@@ -400,6 +604,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    HashJoinExec: mode=Partitioned, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at HashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition:
+    HashJoinExec: mode=Partitioned, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at HashJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at HashJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
 
 ## SortMergeJoinExec Inner
   case default:
@@ -419,6 +639,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    SortMergeJoinExec: join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+  case constants per partition:
+    SortMergeJoinExec: join_type=Inner, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
 
 ## SortMergeJoinExec Left
   case default:
@@ -438,6 +672,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    SortMergeJoinExec: join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+  case constants per partition:
+    SortMergeJoinExec: join_type=Left, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); null_count of r_v@4 is Exact(0), but the output has Exact(60); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); null_count of __row_id@5 is Exact(0), but the output has Exact(60); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
 
 ## SortMergeJoinExec Full
   case default:
@@ -457,6 +705,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    SortMergeJoinExec: join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
+    [invariant] constants_hold at SortMergeJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at SortMergeJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition:
+    SortMergeJoinExec: join_type=Full, on=[(l_k@0, r_k@0)]
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
 
 ## SortMergeJoinExec LeftSemi
   case default: no violations
@@ -464,6 +728,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## SortMergeJoinExec RightAnti
   case default: no violations
@@ -471,6 +737,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## SortMergeJoinExec LeftMark
   case default: no violations
@@ -478,6 +746,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## SortMergeJoinExec Inner with filter
   case default:
@@ -497,6 +767,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    SortMergeJoinExec: join_type=Inner, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+  case constants per partition:
+    SortMergeJoinExec: join_type=Inner, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0); distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: distinct_count of r_k@3 is Exact(1), but the output has Exact(0); distinct_count of r_v@4 is Exact(1), but the output has Exact(0); distinct_count of __row_id@5 is Exact(90), but the output has Exact(0)
 
 ## SortMergeJoinExec Full with filter
   case default:
@@ -520,6 +804,22 @@ expression: output
       MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[20, 24, 46], statistics=Absent, output_ordering=[r_k@0 ASC]
     [invariant] execution_succeeds at SortMergeJoinExec (root): executing the node failed: Arrow error: Invalid argument error: Column 'r_v' is declared as non-nullable but contains null values
   case empty input: no violations
+  case uniform constants:
+    SortMergeJoinExec: join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
+    [invariant] constants_hold at SortMergeJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at SortMergeJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition:
+    SortMergeJoinExec: join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the overall statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90); null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 1 statistics are false: null_count of r_k@3 is Exact(0), but the output has Exact(60); null_count of r_v@4 is Exact(0), but the output has Exact(60); null_count of __row_id@5 is Exact(0), but the output has Exact(60)
+    [invariant] exact_statistics_hold at SortMergeJoinExec (root): the partition 2 statistics are false: null_count of l_k@0 is Exact(0), but the output has Exact(90); null_count of l_v@1 is Exact(0), but the output has Exact(90); null_count of __row_id@2 is Exact(0), but the output has Exact(90)
 
 ## SortMergeJoinExec LeftAnti with filter
   case default: no violations
@@ -527,6 +827,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## NestedLoopJoinExec Inner
   case default:
@@ -539,6 +841,16 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    NestedLoopJoinExec: join_type=Inner, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    NestedLoopJoinExec: join_type=Inner, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
 
 ## NestedLoopJoinExec Left
   case default:
@@ -551,6 +863,16 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    NestedLoopJoinExec: join_type=Left, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    NestedLoopJoinExec: join_type=Left, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
 
 ## NestedLoopJoinExec Full
   case default:
@@ -563,6 +885,22 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    NestedLoopJoinExec: join_type=Full, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 0 has the value NULL
+  case constants per partition:
+    NestedLoopJoinExec: join_type=Full, filter=l_k@0 < r_k@1
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at NestedLoopJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at NestedLoopJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
 
 ## NestedLoopJoinExec RightSemi
   case default:
@@ -587,6 +925,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## NestedLoopJoinExec LeftAnti
   case default:
@@ -611,6 +951,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[0] is false, but every output partition only has rows of one partition of child 0, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## NestedLoopJoinExec RightMark
   case default:
@@ -635,6 +977,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at NestedLoopJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## CrossJoinExec
   case default:
@@ -647,6 +991,16 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    CrossJoinExec
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] exact_statistics_hold at CrossJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
+  case constants per partition:
+    CrossJoinExec
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] exact_statistics_hold at CrossJoinExec (root): the partition 1 statistics are false: distinct_count of l_k@0 is Exact(1), but the output has Exact(0); distinct_count of l_v@1 is Exact(1), but the output has Exact(0); distinct_count of __row_id@2 is Exact(60), but the output has Exact(0)
 
 ## SymmetricHashJoinExec SinglePartition Inner
   case default: no violations
@@ -654,6 +1008,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## SymmetricHashJoinExec Partitioned Full with filter
   case default: no violations
@@ -661,6 +1017,13 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    SymmetricHashJoinExec: mode=Partitioned, join_type=Full, on=[(l_k@0, r_k@0)], filter=l_v@0 < r_v@1
+      MockSourceExec: partitioning=Hash([l_k@0], 3), partition_rows=[0, 60, 0], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=Hash([r_k@0], 3), partition_rows=[0, 0, 90], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] constants_hold at SymmetricHashJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 2 has the value NULL
+    [invariant] constants_hold at SymmetricHashJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 2 has the value NULL
+  case constants per partition: no violations
 
 ## PiecewiseMergeJoinExec Inner
   case default:
@@ -673,6 +1036,8 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## PiecewiseMergeJoinExec Full
   case default:
@@ -685,6 +1050,20 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants:
+    PiecewiseMergeJoin: operator=Lt, join_type=Full, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(uniform: 8),l_v@1(uniform: 9)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(uniform: 7),r_v@1(uniform: 5)]
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_k@0 is constant with the value 8 in every partition, but partition 0 has the value NULL
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_v@1 is constant with the value 9 in every partition, but partition 0 has the value NULL
+  case constants per partition:
+    PiecewiseMergeJoin: operator=Lt, join_type=Full, on=(l_k < r_k)
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[60], statistics=Exact, constants=[l_k@0(heterogeneous),l_v@1(heterogeneous)]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Exact, constants=[r_k@0(heterogeneous),r_v@1(heterogeneous)]
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_k@0 is constant, but partition 2 has 2 distinct values, such as NULL and 8
+    [invariant] constants_hold at PiecewiseMergeJoinExec (root): the node reports that l_v@1 is constant, but partition 2 has 2 distinct values, such as NULL and 9
 
 ## PiecewiseMergeJoinExec RightSemi
   case default:
@@ -711,6 +1090,8 @@ expression: output
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[30, 0, 60], statistics=Absent
     [lint] maintains_input_order_missed at PiecewiseMergeJoinExec (root): maintains_input_order()[1] is false, but every output partition only has rows of one partition of child 1, in the order of that partition; return true if the node never reorders the rows of this child, and keep the child's orderings in the output equivalence properties
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
 
 ## AsOfJoinExec
   case default:
@@ -722,3 +1103,5 @@ expression: output
   case inexact statistics: no violations
   case absent statistics: no violations
   case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations

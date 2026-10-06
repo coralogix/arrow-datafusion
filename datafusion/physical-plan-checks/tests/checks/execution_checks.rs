@@ -21,15 +21,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow::array::{Int32Array, RecordBatch};
+use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
-use datafusion_physical_expr::expressions::col;
-use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion_expr::Operator;
+use datafusion_physical_expr::expressions::{BinaryExpr, Column, col, lit};
+use datafusion_physical_expr::{
+    AcrossPartitions, ConstExpr, EquivalenceProperties, LexOrdering, PhysicalExpr,
+    PhysicalSortExpr,
+};
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion_physical_plan::filter::FilterExec;
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 use datafusion_physical_plan_checks::fixtures::{
-    BatchLayout, SourceSpec, StatisticsPrecision,
+    BatchLayout, MockSourceExec, SourceSpec, StatisticsPrecision,
 };
 use datafusion_physical_plan_checks::harness::ROW_ID_RANGE;
 use datafusion_physical_plan_checks::{CheckKind, PlanChecker, Report, Severity};
@@ -453,6 +460,152 @@ fn ordering_that_does_not_hold() {
     assert_eq!(
         summary(&check(&plan)),
         vec![(Severity::Invariant, "orderings_hold")]
+    );
+}
+
+/// A source with a nullable column `a` and one partition per entry of
+/// `partitions`, with these values
+fn values_source(partitions: &[&[Option<i32>]]) -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+    let partitions = partitions
+        .iter()
+        .map(|values| {
+            let column = Arc::new(Int32Array::from(values.to_vec()));
+            vec![RecordBatch::try_new(Arc::clone(&schema), vec![column]).unwrap()]
+        })
+        .collect();
+    Arc::new(MockSourceExec::try_new(schema, partitions).unwrap())
+}
+
+/// A node that passes `input` through, and reports `expr` as a constant
+fn claiming_constant(
+    input: &Arc<dyn ExecutionPlan>,
+    expr: Arc<dyn PhysicalExpr>,
+    across_partitions: AcrossPartitions,
+) -> Arc<dyn ExecutionPlan> {
+    let mut eq_properties = EquivalenceProperties::new(input.schema());
+    eq_properties
+        .add_constants([ConstExpr::new(expr, across_partitions)])
+        .unwrap();
+    let mut exec = ConfigurableExec::new(Arc::clone(input));
+    exec.claimed_eq_properties = Some(eq_properties);
+    exec.build()
+}
+
+#[test]
+fn constants_that_hold() {
+    // A filter on `a = 3` makes `a` a constant with the value 3 in every
+    // partition
+    let a = col("a", &schema()).unwrap();
+    let predicate = Arc::new(BinaryExpr::new(Arc::clone(&a), Operator::Eq, lit(3)));
+    let input = source(&[40, 0, 60], StatisticsPrecision::Exact);
+    let filter: Arc<dyn ExecutionPlan> =
+        Arc::new(FilterExec::try_new(predicate, input).unwrap());
+    let constants = filter.properties().equivalence_properties().constants();
+    assert!(
+        constants.contains(&ConstExpr::new(
+            a,
+            AcrossPartitions::Uniform(Some(ScalarValue::Int32(Some(3))))
+        )),
+        "{constants:?}"
+    );
+    checker(&["constants_hold"])
+        .check(&filter)
+        .unwrap()
+        .assert_clean();
+}
+
+#[test]
+fn constants_that_do_not_hold() {
+    let check = |plan: Arc<dyn ExecutionPlan>| {
+        let report = checker(&["constants_hold"]).check(&plan).unwrap();
+        messages(&report)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let a = || col("a", &schema()).unwrap();
+    let uniform = |value: ScalarValue| AcrossPartitions::Uniform(Some(value));
+
+    // Several values within a partition. Null is a value.
+    let input =
+        values_source(&[&[Some(1), Some(1)], &[], &[Some(2), None, Some(2), Some(3)]]);
+    assert_eq!(
+        check(claiming_constant(
+            &input,
+            a(),
+            AcrossPartitions::Heterogeneous
+        )),
+        vec![
+            "the node reports that a@0 is constant, but partition 2 has 3 distinct \
+             values, such as 2 and NULL"
+        ]
+    );
+    // A constant that refers to a column by a wrong name is not checked; it is
+    // reported by `expression_column_refs`
+    let wrong_name = Arc::new(Column::new("b", 0));
+    assert!(
+        check(claiming_constant(
+            &input,
+            wrong_name,
+            AcrossPartitions::Heterogeneous
+        ))
+        .is_empty()
+    );
+
+    // A single value within each partition, but not the same in every one
+    let input = values_source(&[&[Some(1), Some(1)], &[], &[Some(2)], &[Some(1)]]);
+    assert!(
+        check(claiming_constant(
+            &input,
+            a(),
+            AcrossPartitions::Heterogeneous
+        ))
+        .is_empty()
+    );
+    assert_eq!(
+        check(claiming_constant(
+            &input,
+            a(),
+            AcrossPartitions::Uniform(None)
+        )),
+        vec![
+            "the node reports that a@0 is constant with the same value in every \
+             partition, but partition 0 has the value 1 and partition 2 has the value 2"
+        ]
+    );
+    // A given value is compared by value, also when its type is wider than
+    // the type of the expression
+    for value in [ScalarValue::Int32(Some(1)), ScalarValue::Int64(Some(1))] {
+        assert_eq!(
+            check(claiming_constant(&input, a(), uniform(value))),
+            vec![
+                "the node reports that a@0 is constant with the value 1 in every \
+                 partition, but partition 2 has the value 2"
+            ]
+        );
+    }
+
+    // A column of nulls is constant, with the value null
+    let input = values_source(&[&[None, None], &[None]]);
+    for across_partitions in [
+        AcrossPartitions::Uniform(None),
+        uniform(ScalarValue::Int32(None)),
+    ] {
+        assert!(check(claiming_constant(&input, a(), across_partitions)).is_empty());
+    }
+    assert_eq!(
+        check(claiming_constant(
+            &input,
+            a(),
+            uniform(ScalarValue::Int32(Some(0)))
+        )),
+        vec![
+            "the node reports that a@0 is constant with the value 0 in every \
+             partition, but partition 0 has the value NULL",
+            "the node reports that a@0 is constant with the value 0 in every \
+             partition, but partition 1 has the value NULL",
+        ]
     );
 }
 

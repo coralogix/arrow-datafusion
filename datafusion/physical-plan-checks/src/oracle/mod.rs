@@ -17,8 +17,10 @@
 
 //! Reference implementations that compute the true properties of a set of
 //! batches: their statistics, whether they are sorted, which hash partition
-//! each row belongs to, how their rows compare with the rows of another set of
-//! batches, and where the rows of an input appear in an output.
+//! each row belongs to, the distinct values of an expression and whether it is
+//! constant, how their rows
+//! compare with the rows of another set of batches, and where the rows of an
+//! input appear in an output.
 //!
 //! Both [`MockSourceExec`] (to validate what it reports) and the execution
 //! checks (to compare a plan's claims against its output) use these, so they
@@ -32,9 +34,11 @@ mod partitioning;
 mod row_ids;
 mod rows;
 mod statistics;
+mod values;
 
 pub use ordering::{first_unsorted_row, sort_rows};
 pub use partitioning::{hash_partition, rows_outside_hash_partition};
 pub use row_ids::{InputOrder, input_order};
 pub use rows::{first_non_prefix_row, same_rows, same_rows_in_order, unmatched_rows};
 pub use statistics::exact_statistics;
+pub use values::{constant_violations, distinct_values};

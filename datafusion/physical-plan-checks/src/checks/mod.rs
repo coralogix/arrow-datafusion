@@ -32,8 +32,8 @@ mod stream_checks;
 mod variant_checks;
 
 use execution_checks::{
-    batch_schema, cardinality_effect_holds, exact_statistics_hold, execution_succeeds,
-    maintains_input_order_missed, memory_released, orderings_hold,
+    batch_schema, cardinality_effect_holds, constants_hold, exact_statistics_hold,
+    execution_succeeds, maintains_input_order_missed, memory_released, orderings_hold,
 };
 use static_checks::{
     cardinality_effect_bounds_num_rows, check_invariants, dynamic_expressions_reset,
@@ -103,6 +103,7 @@ pub fn all_checks() -> Vec<PlanCheck> {
         check("batch_schema", Execution, batch_schema),
         check("exact_statistics_hold", Execution, exact_statistics_hold),
         check("orderings_hold", Execution, orderings_hold),
+        check("constants_hold", Execution, constants_hold),
         check(
             "cardinality_effect_holds",
             Execution,
@@ -143,6 +144,16 @@ fn partition_statistics(
 ) -> Result<Arc<Statistics>> {
     StatisticsContext::new()
         .compute(plan, &StatisticsArgs::new().with_partition(Some(partition)))
+}
+
+/// Whether `plan` reports that its partitions can already be in the order a
+/// node sorts them into: it reports an ordering, or a constant. Sorting on a
+/// constant keeps rows in their order, and the equivalence properties of a
+/// sort on a constant report no ordering.
+fn reports_sorted_output(plan: &dyn ExecutionPlan) -> bool {
+    let properties = plan.properties();
+    properties.output_ordering().is_some()
+        || !properties.equivalence_properties().constants().is_empty()
 }
 
 /// Number of output partitions of `plan`

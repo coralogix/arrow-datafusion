@@ -30,7 +30,7 @@ use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 
-use super::partition_count;
+use super::{partition_count, reports_sorted_output};
 use crate::{CheckContext, Finding, NodeOutput, Variant, VariantRun, oracle};
 
 /// What the output of a node must satisfy when at most `limit` rows per
@@ -190,12 +190,12 @@ pub(super) fn limit_pushdown_missed(
     ) {
         return Ok(vec![]);
     }
-    // Input that is sorted by an ordering the node does not maintain can be in
-    // the order the node sorts it into: a sort passes such input through, as
-    // if it only needed its first rows
+    // Input that is sorted by an ordering the node does not maintain, or has a
+    // constant, can be in the order the node sorts it into: a sort passes such
+    // input through, as if it only needed its first rows
     let maintains = node.maintains_input_order();
     let sorted_input = node.children().iter().enumerate().any(|(i, child)| {
-        maintains.get(i) != Some(&true) && child.properties().output_ordering().is_some()
+        maintains.get(i) != Some(&true) && reports_sorted_output(child.as_ref())
     });
     if sorted_input {
         return Ok(vec![]);
