@@ -26,6 +26,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use datafusion_common::stats::Precision;
 use datafusion_common::{Result, Statistics, internal_err};
+use datafusion_physical_expr::expressions::Literal;
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::{ChildStats, ExecutionPlan, StatisticsArgs};
 
@@ -498,6 +499,51 @@ pub(super) fn constants_hold(
         findings.extend(violations.into_iter().map(|violation| {
             Finding::invariant(format!("the node reports that {violation}"))
         }));
+    }
+    Ok(findings)
+}
+
+/// B5: the expressions of each equivalence class of the node are equal on
+/// every output row.
+pub(super) fn equivalence_classes_hold(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let Some(output) = context.output(node) else {
+        return Ok(vec![]);
+    };
+    let schema = node.schema();
+    let mut findings = vec![];
+    let eq_properties = node.properties().equivalence_properties();
+    for class in eq_properties.eq_group().iter() {
+        // A literal makes the class constant, which `constants_hold` checks,
+        // and an expression that refers to a column by a wrong index or name
+        // is reported by `expression_column_refs`
+        let mut exprs = vec![];
+        for expr in class.iter() {
+            if expr.downcast_ref::<Literal>().is_none()
+                && stale_columns("", [expr], &schema, "")?.is_empty()
+            {
+                exprs.push(expr);
+            }
+        }
+        let Some((first, others)) = exprs.split_first() else {
+            continue;
+        };
+        for other in others {
+            for (p, batches) in output.partitions().iter().enumerate() {
+                // An expression that cannot be evaluated on the output points
+                // to a schema mismatch, which `batch_schema` reports
+                if let Ok(Some((row, left, right))) =
+                    oracle::first_unequal_row(batches, first, other)
+                {
+                    findings.push(Finding::invariant(format!(
+                        "the node reports that {first} and {other} are equal, but row \
+                         {row} of partition {p} has {left} and {right}"
+                    )));
+                }
+            }
+        }
     }
     Ok(findings)
 }

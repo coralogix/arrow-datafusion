@@ -18,7 +18,8 @@
 //! Inputs for the plans under test.
 //!
 //! [`MockSourceExec`] is a leaf plan that serves fixed batches and reports
-//! properties (statistics, ordering, partitioning, constants) that are
+//! properties (statistics, ordering, partitioning, constants, equalities) that
+//! are
 //! verified against
 //! those batches. Checks treat what it reports as the truth. Its
 //! [`StreamBehavior`] controls what its streams do after serving their
@@ -36,5 +37,5 @@ mod spec;
 mod values;
 
 pub(crate) use source::map_mock_leaves;
-pub use source::{MockSourceExec, StatisticsPrecision, StreamBehavior};
-pub use spec::{BatchLayout, ConstantValues, ROW_ID_COLUMN, SourceSpec};
+pub use source::{Equality, MockSourceExec, StatisticsPrecision, StreamBehavior};
+pub use spec::{BatchLayout, COPY_SUFFIX, ConstantValues, ROW_ID_COLUMN, SourceSpec};

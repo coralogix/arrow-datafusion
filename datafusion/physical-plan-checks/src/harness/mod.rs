@@ -65,8 +65,8 @@ type CreateFn =
 /// The harness sets everything else for each case, replacing what the base
 /// spec says: the partition layout, hash partitioning, the batch layout, the
 /// statistics precision, the seed and the row ids, and in some cases makes
-/// every column constant (see [`Profile`]). It keeps the base ordering unless
-/// the plan requires another one.
+/// every column constant or adds a copy of every column (see [`Profile`]). It
+/// keeps the base ordering unless the plan requires another one.
 ///
 /// # The function
 ///
@@ -78,7 +78,8 @@ type CreateFn =
 /// **Bind expressions to the schemas of the inputs it receives, by name**,
 /// for example `col("a", &inputs[0].schema())`, never by a hard-coded column
 /// index or a schema captured outside `create`. The harness appends a row id
-/// column ([`ROW_ID_COLUMN`]) to every input, so the input schemas have more
+/// column ([`ROW_ID_COLUMN`]) to every input, and in some cases a copy of
+/// every column (named with [`COPY_SUFFIX`]), so the input schemas have more
 /// columns than the base specs.
 ///
 /// # Example
@@ -103,6 +104,7 @@ type CreateFn =
 /// ```
 ///
 /// [`ROW_ID_COLUMN`]: crate::fixtures::ROW_ID_COLUMN
+/// [`COPY_SUFFIX`]: crate::fixtures::COPY_SUFFIX
 #[derive(Clone)]
 pub struct PlanFactory {
     /// The name, used in reports
@@ -166,7 +168,7 @@ impl PlanFactory {
 /// A profile sets everything about an input that the plan's author does not
 /// need to know: how many partitions it has and how its rows are spread over
 /// them, the precision of its statistics, the seed, and whether its columns
-/// are constant. Rows are split into
+/// are constant or have copies. Rows are split into
 /// random batches of up to 16 rows, with empty batches. The size of each
 /// input is the number of rows of its base [`SourceSpec`] times
 /// [`Self::row_multiplier`]: only the author of the plan knows what size
@@ -192,6 +194,10 @@ pub struct Profile {
     /// this way, and the inputs declare the constants (see
     /// [`SourceSpec::with_constant`]). The row id column is not constant.
     pub constants: Option<ConstantValues>,
+    /// Whether every column of every input has a copy, which the input
+    /// declares equal to it (see [`SourceSpec::with_copy`]). The row id column
+    /// has none.
+    pub copies: bool,
     /// Whether the [`CheckKind::Stream`] checks run. They depend on how a plan
     /// drives its streams rather than on the shape of its data, and several of
     /// them wait for timeouts, so only [`Self::default_profile`] runs them.
@@ -201,7 +207,8 @@ pub struct Profile {
 impl Profile {
     /// A profile named `name` with three partitions, the second of them empty
     /// and the third with twice the rows of the first, exact statistics, seed
-    /// 0 and no constant columns, that does not run the stream checks
+    /// 0, and no constant or copied columns, that does not run the stream
+    /// checks
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -210,6 +217,7 @@ impl Profile {
             statistics: StatisticsPrecision::Exact,
             seed: 0,
             constants: None,
+            copies: false,
             stream_checks: false,
         }
     }
@@ -225,8 +233,9 @@ impl Profile {
     /// The profiles [`PlanHarness::new`] uses: [`Self::default_profile`],
     /// then `single partition`, `inexact statistics`, `absent statistics`,
     /// `empty input`, `uniform constants` (every column has the same value in
-    /// every partition) and `constants per partition` (every column has one
-    /// value per partition)
+    /// every partition), `constants per partition` (every column has one
+    /// value per partition) and `copied columns` (every column has a copy
+    /// that the input declares equal to it)
     pub fn defaults() -> Vec<Self> {
         vec![
             Self::default_profile(),
@@ -253,6 +262,10 @@ impl Profile {
             Self {
                 constants: Some(ConstantValues::PerPartition),
                 ..Self::new("constants per partition")
+            },
+            Self {
+                copies: true,
+                ..Self::new("copied columns")
             },
         ]
     }

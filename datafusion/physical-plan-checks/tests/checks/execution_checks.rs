@@ -609,6 +609,103 @@ fn constants_that_do_not_hold() {
     );
 }
 
+/// A source with nullable columns `a` and `b` and one partition per entry of
+/// `partitions`, with these rows
+fn pairs_source(partitions: &[&[(Option<i32>, Option<i32>)]]) -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("b", DataType::Int32, true),
+    ]));
+    let partitions = partitions
+        .iter()
+        .map(|rows| {
+            let a = Arc::new(Int32Array::from_iter(rows.iter().map(|row| row.0)));
+            let b = Arc::new(Int32Array::from_iter(rows.iter().map(|row| row.1)));
+            vec![RecordBatch::try_new(Arc::clone(&schema), vec![a, b]).unwrap()]
+        })
+        .collect();
+    Arc::new(MockSourceExec::try_new(schema, partitions).unwrap())
+}
+
+/// A node that passes `input` through, and reports that `left` and `right`
+/// are equal
+fn claiming_equality(
+    input: &Arc<dyn ExecutionPlan>,
+    left: Arc<dyn PhysicalExpr>,
+    right: Arc<dyn PhysicalExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let mut eq_properties = EquivalenceProperties::new(input.schema());
+    eq_properties.add_equal_conditions(left, right).unwrap();
+    let mut exec = ConfigurableExec::new(Arc::clone(input));
+    exec.claimed_eq_properties = Some(eq_properties);
+    exec.build()
+}
+
+#[test]
+fn equivalence_classes_that_hold() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["equivalence_classes_hold"])
+            .check(plan)
+            .unwrap()
+            .assert_clean();
+    };
+    // Two nulls are equal
+    let input = pairs_source(&[&[(Some(1), Some(1)), (None, None)], &[]]);
+    let column = |name: &str| col(name, &input.schema()).unwrap();
+    check(&claiming_equality(&input, column("a"), column("b")));
+
+    // A filter on `a = b` makes `a` and `b` equal
+    let input = pairs_source(&[&[(Some(1), Some(1)), (Some(2), Some(3)), (None, None)]]);
+    let predicate = Arc::new(BinaryExpr::new(column("a"), Operator::Eq, column("b")));
+    let filter: Arc<dyn ExecutionPlan> =
+        Arc::new(FilterExec::try_new(predicate, input).unwrap());
+    let eq_properties = filter.properties().equivalence_properties();
+    assert!(
+        eq_properties
+            .eq_group()
+            .exprs_equal(&column("a"), &column("b"))
+    );
+    check(&filter);
+}
+
+#[test]
+fn equivalence_classes_that_do_not_hold() {
+    let check = |plan: Arc<dyn ExecutionPlan>| {
+        let report = checker(&["equivalence_classes_hold"]).check(&plan).unwrap();
+        messages(&report)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let input = pairs_source(&[
+        &[(Some(1), Some(1)), (Some(2), Some(3))],
+        &[(None, None)],
+        &[(Some(4), None)],
+    ]);
+    let column = |name: &str| col(name, &input.schema()).unwrap();
+    assert_eq!(
+        check(claiming_equality(&input, column("a"), column("b"))),
+        vec![
+            "the node reports that a@0 and b@1 are equal, but row 1 of partition 0 has \
+             2 and 3",
+            "the node reports that a@0 and b@1 are equal, but row 0 of partition 2 has \
+             4 and NULL",
+        ]
+    );
+    // A class with a literal is constant, which `constants_hold` checks, and
+    // an expression that refers to a column by a wrong name is reported by
+    // `expression_column_refs`
+    for other in [
+        lit(5),
+        Arc::new(Column::new("c", 1)) as Arc<dyn PhysicalExpr>,
+    ] {
+        assert_eq!(
+            check(claiming_equality(&input, column("a"), other)),
+            Vec::<String>::new()
+        );
+    }
+}
+
 #[test]
 fn equal_cardinality_that_does_not_hold() {
     for transform in [Transform::DropHalf, Transform::Duplicate] {

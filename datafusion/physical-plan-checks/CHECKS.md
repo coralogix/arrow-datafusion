@@ -162,7 +162,9 @@ each a fully specified set of inputs. `Profile::defaults()` gives:
 - `uniform constants` and `constants per partition`: every column of every
   input other than the row id is constant, with one value in every
   partition, or one value per partition, and the inputs declare the
-  constants.
+  constants;
+- `copied columns`: every column of every input other than the row id has a
+  copy, named with the suffix `__copy`, which the input declares equal to it.
 
 Every case splits the rows of each partition into random batches of up to 16
 rows, including empty batches.
@@ -576,7 +578,16 @@ what the plan reports.
 
 - **Severity:** Invariant.
 - **What:** expressions in the same equivalence class are equal on every
-  output row.
+  output row. Two nulls are equal, as in `IS NOT DISTINCT FROM`, since a
+  sort or a hash puts them together. Each expression of a class is compared
+  with the first, after casting its values to the type of the first if the
+  types differ. Literals in a class are not compared: they make the class
+  constant, which B4 checks. An expression that refers to a column by a
+  wrong index or name is not compared, since `expression_column_refs`
+  reports it.
+- **Reporting:** one finding for each expression and partition with a row on
+  which the expression differs from the first of its class, giving the first
+  such row and both values.
 - **Why:** equivalence classes let an ordering or partitioning on one column
   satisfy a requirement on another.
 - **Fix:** only add equivalences the node guarantees, for example from an

@@ -37,6 +37,9 @@ use crate::oracle;
 /// Name of the row id column added by [`SourceSpec::with_row_ids`]
 pub const ROW_ID_COLUMN: &str = "__row_id";
 
+/// Suffix of the name of a column added by [`SourceSpec::with_copy`]
+pub const COPY_SUFFIX: &str = "__copy";
+
 /// How the rows of each partition are split into batches
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchLayout {
@@ -152,8 +155,9 @@ enum PartitionLayout {
 ///
 /// Expressions passed to [`Self::with_ordering`] and
 /// [`Self::with_hash_partitioning`] refer to the schema passed to
-/// [`Self::new`]. The optional row id column is appended after all other
-/// columns, so those expressions stay valid for the generated source.
+/// [`Self::new`]. The optional copies of columns and row id column are
+/// appended after the columns of that schema, so those expressions stay valid
+/// for the generated source.
 ///
 /// # Example
 /// ```
@@ -184,6 +188,8 @@ pub struct SourceSpec {
     ordering: Option<LexOrdering>,
     /// The columns of the base schema that are constant, by name
     constants: Vec<(String, ConstantValues)>,
+    /// The columns of the base schema that have a copy, by name
+    copies: Vec<String>,
     precision: StatisticsPrecision,
     /// The first row id, if the source has a row id column
     first_row_id: Option<u64>,
@@ -205,6 +211,7 @@ impl SourceSpec {
             },
             ordering: None,
             constants: vec![],
+            copies: vec![],
             precision: StatisticsPrecision::Exact,
             first_row_id: None,
             seed: 0,
@@ -287,6 +294,21 @@ impl SourceSpec {
         self
     }
 
+    /// Append a copy of the column `name` of the schema passed to
+    /// [`Self::new`]: a column with the same type and values, named `name`
+    /// followed by [`COPY_SUFFIX`], which the source declares equal to `name`.
+    /// Copies are appended after the columns of that schema, in the order of
+    /// the calls, and before the row id column. A second call for the same
+    /// column does nothing, and [`Self::build`] returns an error for a column
+    /// that is not in the schema.
+    pub fn with_copy(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        if !self.copies.contains(&name) {
+            self.copies.push(name);
+        }
+        self
+    }
+
     /// Set the precision of the statistics the source reports
     pub fn with_statistics_precision(mut self, precision: StatisticsPrecision) -> Self {
         self.precision = precision;
@@ -351,14 +373,34 @@ impl SourceSpec {
         self.ordering.as_ref()
     }
 
-    /// The schema of the generated source, including the row id column if one
-    /// was requested
+    /// The schema of the generated source, including the copies and the row id
+    /// column if they were requested
     pub fn schema(&self) -> SchemaRef {
         if self.first_row_id.is_none() {
+            return self.data_schema();
+        }
+        let mut fields: Vec<Arc<Field>> =
+            self.data_schema().fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(ROW_ID_COLUMN, DataType::UInt64, false)));
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ))
+    }
+
+    /// The schema passed to [`Self::new`], followed by the copies of its
+    /// columns that exist
+    fn data_schema(&self) -> SchemaRef {
+        if self.copies.is_empty() {
             return Arc::clone(&self.schema);
         }
-        let mut fields: Vec<Arc<Field>> = self.schema.fields().iter().cloned().collect();
-        fields.push(Arc::new(Field::new(ROW_ID_COLUMN, DataType::UInt64, false)));
+        let copies = self.copies.iter().filter_map(|name| {
+            let field = self.schema.field_with_name(name).ok()?;
+            let copy = field.clone().with_name(format!("{name}{COPY_SUFFIX}"));
+            Some(Arc::new(copy))
+        });
+        let fields: Vec<Arc<Field>> =
+            self.schema.fields().iter().cloned().chain(copies).collect();
         Arc::new(Schema::new_with_metadata(
             fields,
             self.schema.metadata().clone(),
@@ -377,7 +419,8 @@ impl SourceSpec {
                 .enumerate()
                 .map(|(p, n)| {
                     let batch = self.random_batch(*n, &mut rng)?;
-                    self.make_constant(batch, &constants, p)
+                    let batch = self.make_constant(batch, &constants, p)?;
+                    self.add_copies(batch)
                 })
                 .collect::<Result<Vec<_>>>()?,
             PartitionLayout::Hash {
@@ -390,9 +433,10 @@ impl SourceSpec {
                 }
                 let batch = self.random_batch(*num_rows, &mut rng)?;
                 let batch = self.make_constant(batch, &constants, 0)?;
+                let batch = self.add_copies(batch)?;
                 oracle::hash_partition(&[batch], exprs, *partitions)?
                     .iter()
-                    .map(|batches| concat_batches(&self.schema, batches))
+                    .map(|batches| concat_batches(&self.data_schema(), batches))
                     .collect::<Result<Vec<_>, _>>()?
             }
         };
@@ -459,6 +503,21 @@ impl SourceSpec {
                 .collect::<Result<Vec<_>>>()?;
             source = source.try_with_constants(declared)?;
         }
+        if !self.copies.is_empty() {
+            let schema = self.data_schema();
+            let equalities = self
+                .copies
+                .iter()
+                .map(|name| {
+                    let copy = format!("{name}{COPY_SUFFIX}");
+                    let column = |name: &str| -> Result<Arc<dyn PhysicalExpr>> {
+                        Ok(Arc::new(Column::new(name, schema.index_of(name)?)))
+                    };
+                    Ok((column(name)?, column(&copy)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            source = source.try_with_equalities(equalities)?;
+        }
         Ok(source)
     }
 
@@ -507,6 +566,24 @@ impl SourceSpec {
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
         Ok(RecordBatch::try_new_with_options(
             batch.schema(),
+            columns,
+            &options,
+        )?)
+    }
+
+    /// `batch`, a batch with the schema passed to [`Self::new`], followed by
+    /// the copies of its columns
+    fn add_copies(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        if self.copies.is_empty() {
+            return Ok(batch);
+        }
+        let mut columns = batch.columns().to_vec();
+        for name in &self.copies {
+            columns.push(Arc::clone(batch.column(self.schema.index_of(name)?)));
+        }
+        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        Ok(RecordBatch::try_new_with_options(
+            self.data_schema(),
             columns,
             &options,
         )?)

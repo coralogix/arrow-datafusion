@@ -19,6 +19,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
+use arrow::compute::cast;
+use arrow::compute::kernels::cmp::not_distinct;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_physical_expr::{AcrossPartitions, ConstExpr, PhysicalExpr};
 
@@ -41,6 +43,40 @@ pub fn distinct_values(
         }
     }
     Ok(values)
+}
+
+/// The position of the first row of `batches` on which `left` and `right`
+/// have different values, with the value of each, or `None` if they are equal
+/// on every row. Positions count rows across all batches, in order. Two nulls
+/// are equal, as in `IS NOT DISTINCT FROM`. A value of `right` is cast to the
+/// type of `left` if the types differ.
+///
+/// Returns an error if an expression cannot be evaluated on the batches, or
+/// `right` cannot be cast to the type of `left`.
+pub fn first_unequal_row(
+    batches: &[RecordBatch],
+    left: &Arc<dyn PhysicalExpr>,
+    right: &Arc<dyn PhysicalExpr>,
+) -> Result<Option<(usize, ScalarValue, ScalarValue)>> {
+    let mut offset = 0;
+    for batch in batches {
+        let rows = batch.num_rows();
+        let left = left.evaluate(batch)?.into_array(rows)?;
+        let mut right = right.evaluate(batch)?.into_array(rows)?;
+        if right.data_type() != left.data_type() {
+            right = cast(&right, left.data_type())?;
+        }
+        let equal = not_distinct(&left, &right)?;
+        if let Some(row) = (0..rows).find(|row| !equal.value(*row)) {
+            return Ok(Some((
+                offset + row,
+                ScalarValue::try_from_array(&left, row)?,
+                ScalarValue::try_from_array(&right, row)?,
+            )));
+        }
+        offset += rows;
+    }
+    Ok(None)
 }
 
 /// Each way in which `partitions`, the batches of each partition, contradict

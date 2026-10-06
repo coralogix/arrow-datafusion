@@ -30,7 +30,7 @@ use datafusion_physical_plan::distribution_requirements::ChildSatisfactionOption
 use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use super::{Case, PlanFactory, Profile, ROW_ID_RANGE};
-use crate::fixtures::{BatchLayout, ROW_ID_COLUMN, SourceSpec};
+use crate::fixtures::{BatchLayout, COPY_SUFFIX, ROW_ID_COLUMN, SourceSpec};
 
 /// How many times the harness builds a plan to find inputs that meet its
 /// requirements, which can change with the inputs
@@ -51,11 +51,20 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
         .map(|(i, base)| {
             let rows = base.num_rows() * profile.row_multiplier;
             let mut spec = base.clone();
-            if let Some(values) = profile.constants {
-                for field in base.schema().fields() {
-                    if field.name() != ROW_ID_COLUMN {
-                        spec = spec.with_constant(field.name(), values);
-                    }
+            // The columns of the base schema, without the columns the spec
+            // adds to it
+            let schema = base.schema();
+            let columns = schema
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .filter(|name| *name != ROW_ID_COLUMN && !name.ends_with(COPY_SUFFIX));
+            for name in columns {
+                if let Some(values) = profile.constants {
+                    spec = spec.with_constant(name, values);
+                }
+                if profile.copies {
+                    spec = spec.with_copy(name);
                 }
             }
             spec.with_partition_rows(&profile.partition_rows(rows))

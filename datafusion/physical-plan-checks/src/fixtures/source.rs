@@ -45,6 +45,9 @@ use super::BatchLayout;
 use super::spec::split_rows;
 use crate::oracle;
 
+/// Two expressions that a [`MockSourceExec`] declares equal on every row
+pub type Equality = (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>);
+
 /// How precise the statistics reported by a [`MockSourceExec`] are.
 ///
 /// The values are always computed from the data. Only their precision
@@ -122,6 +125,8 @@ impl fmt::Display for StreamBehavior {
 /// - Constants set with [`Self::try_with_constants`] are rejected unless the
 ///   data has a single value for each in every partition, the same value in
 ///   every partition for a uniform one.
+/// - Equalities set with [`Self::try_with_equalities`] are rejected unless
+///   the two expressions of each are equal on every row.
 /// - Hash partitioning set with [`Self::try_with_partitioning`] is rejected
 ///   unless every row is in the partition `RepartitionExec` would send it to.
 /// - [`Self::try_with_stream_behavior`] makes the streams stall, fail or never
@@ -139,6 +144,7 @@ pub struct MockSourceExec {
     partitioning: Partitioning,
     output_ordering: Option<LexOrdering>,
     constants: Vec<ConstExpr>,
+    equalities: Vec<Equality>,
     precision: StatisticsPrecision,
     behavior: StreamBehavior,
     /// Exact statistics of all partitions, before `precision` is applied
@@ -173,13 +179,14 @@ impl MockSourceExec {
         let partitioning = Partitioning::UnknownPartitioning(partitions.len());
         let behavior = StreamBehavior::Finite;
         let cache =
-            Self::compute_properties(&schema, &partitioning, None, &[], behavior)?;
+            Self::compute_properties(&schema, &partitioning, None, &[], &[], behavior)?;
         Ok(Self {
             schema,
             partitions,
             partitioning,
             output_ordering: None,
             constants: vec![],
+            equalities: vec![],
             precision: StatisticsPrecision::Exact,
             behavior,
             statistics,
@@ -281,6 +288,30 @@ impl MockSourceExec {
         Ok(self)
     }
 
+    /// Declare that the two expressions of each of `equalities` are equal on
+    /// every row, which puts them in the same equivalence class. Replaces the
+    /// equalities declared before.
+    ///
+    /// Returns an error if a row has different values for the two expressions
+    /// (see [`oracle::first_unequal_row`]).
+    pub fn try_with_equalities(mut self, equalities: Vec<Equality>) -> Result<Self> {
+        for (left, right) in &equalities {
+            for (p, batches) in self.partitions.iter().enumerate() {
+                if let Some((row, left_value, right_value)) =
+                    oracle::first_unequal_row(batches, left, right)?
+                {
+                    return plan_err!(
+                        "MockSourceExec equality does not hold: {left} and {right} are \
+                         {left_value} and {right_value} in row {row} of partition {p}"
+                    );
+                }
+            }
+        }
+        self.equalities = equalities;
+        self.cache = self.recompute_properties()?;
+        Ok(self)
+    }
+
     /// Declare the output partitioning.
     ///
     /// The partition count must match the number of partitions. For
@@ -332,6 +363,7 @@ impl MockSourceExec {
             &self.partitioning,
             self.output_ordering.as_ref(),
             &self.constants,
+            &self.equalities,
             self.behavior,
         )
     }
@@ -341,6 +373,7 @@ impl MockSourceExec {
         partitioning: &Partitioning,
         output_ordering: Option<&LexOrdering>,
         constants: &[ConstExpr],
+        equalities: &[Equality],
         behavior: StreamBehavior,
     ) -> Result<Arc<PlanProperties>> {
         let mut eq_properties = match output_ordering {
@@ -351,6 +384,9 @@ impl MockSourceExec {
             None => EquivalenceProperties::new(Arc::clone(schema)),
         };
         eq_properties.add_constants(constants.iter().cloned())?;
+        for (left, right) in equalities {
+            eq_properties.add_equal_conditions(Arc::clone(left), Arc::clone(right))?;
+        }
         let boundedness = match behavior {
             StreamBehavior::Unbounded { .. } => Boundedness::Unbounded {
                 requires_infinite_memory: false,
@@ -446,6 +482,14 @@ impl DisplayAs for MockSourceExec {
                         ", constants=[{}]",
                         ConstExpr::format_list(&self.constants)
                     )?;
+                }
+                if !self.equalities.is_empty() {
+                    let equalities: Vec<String> = self
+                        .equalities
+                        .iter()
+                        .map(|(left, right)| format!("{left} = {right}"))
+                        .collect();
+                    write!(f, ", equalities=[{}]", equalities.join(", "))?;
                 }
                 if self.behavior != StreamBehavior::Finite {
                     write!(f, ", stream={}", self.behavior)?;

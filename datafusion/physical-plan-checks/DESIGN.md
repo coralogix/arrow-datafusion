@@ -95,7 +95,7 @@ ordering and partitioning true.
 
 **Oracles** (`oracle/`). Reference computations of the true properties of a
 set of batches: exact statistics, sortedness, hash partition placement,
-whether an expression is constant, how
+whether an expression is constant, whether two expressions are equal, how
 the rows of two sets of batches compare (as multisets, in order, and as a
 prefix of a sorted sequence apart from rows that tie on the sort key), and
 where the rows of an input appear in an output, tracked by their row ids.
@@ -161,14 +161,18 @@ skips a check in every case and shows the reason in the report.
 
 **Profiles and cases.** A `Profile` is a named, deterministic way to lay out
 inputs: partition weights, a row multiplier, a statistics precision, a seed,
-whether every column is constant, and whether the stream checks run.
+whether every column is constant or has a copy, and whether the stream
+checks run.
 `Profile::defaults()` is a short curated list rather than a cross product:
 `default` (three partitions with weights 1, 0 and 2, exact statistics, every
 check), `single partition`, `inexact statistics`, `absent statistics`,
-`empty input`, `uniform constants` and `constants per partition`. In the last
-two, every input column other than the row id is constant, with one value in
-every partition or one per partition, and the inputs declare the constants,
-so that every plan is checked with constants from its inputs.
+`empty input`, `uniform constants`, `constants per partition` and
+`copied columns`. In `uniform constants` and `constants per partition`, every
+input column other than the row id is constant, with one value in every
+partition or one per partition, and the inputs declare the constants. In
+`copied columns`, every such column has a copy that the input declares equal
+to it. So every plan is checked with constants and equivalences from its
+inputs.
 `Profile::extended()` has two other seeds, 2 and 5 partitions and 8 times the
 rows. With the `extended_tests` feature, as the rest of the workspace gates
 slow tests, the audit also checks these cases and records them in separate

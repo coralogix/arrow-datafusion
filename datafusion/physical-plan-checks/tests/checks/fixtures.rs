@@ -29,7 +29,8 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit, UInt64Type}
 use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_execution::TaskContext;
-use datafusion_physical_expr::expressions::col;
+use datafusion_expr::Operator;
+use datafusion_physical_expr::expressions::{BinaryExpr, col, lit};
 use datafusion_physical_expr::{
     AcrossPartitions, ConstExpr, LexOrdering, Partitioning, PhysicalSortExpr,
 };
@@ -39,7 +40,7 @@ use datafusion_physical_plan::{
     displayable,
 };
 use datafusion_physical_plan_checks::fixtures::{
-    BatchLayout, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
+    BatchLayout, COPY_SUFFIX, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
     StatisticsPrecision, StreamBehavior,
 };
 use datafusion_physical_plan_checks::{PlanChecker, oracle};
@@ -343,6 +344,11 @@ fn generated_sources_pass_every_check() {
         SourceSpec::new(Arc::clone(&schema))
             .with_hash_partitioning(vec![col("a", &schema).unwrap()], 3, 100)
             .with_constant("a", ConstantValues::PerPartition),
+        SourceSpec::new(Arc::clone(&schema))
+            .with_hash_partitioning(vec![col("a", &schema).unwrap()], 3, 100)
+            .with_copy("a")
+            .with_copy("c")
+            .with_row_ids(0),
     ];
     for spec in specs {
         let source = spec.build_arc().unwrap();
@@ -465,6 +471,55 @@ fn constant_columns() {
 }
 
 #[test]
+fn copied_columns() {
+    let source = SourceSpec::new(schema())
+        .with_partition_rows(&[10, 0, 20])
+        .with_copy("c")
+        .with_copy("a")
+        .with_copy("a")
+        .with_row_ids(0)
+        .build()
+        .unwrap();
+    // Copies come after the columns of the schema, in the order they were
+    // asked for, and before the row ids
+    let names: Vec<String> = source
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+    assert_eq!(names, ["a", "b", "c", "c__copy", "a__copy", ROW_ID_COLUMN]);
+    let source_schema = source.schema();
+    assert_eq!(source_schema.field(3).data_type(), &DataType::Float64);
+    assert!(source_schema.field(3).is_nullable());
+
+    // Each copy has the values of its column, and is declared equal to it
+    let column = |name: &str| col(name, &source_schema).unwrap();
+    let eq_group = source
+        .properties()
+        .equivalence_properties()
+        .eq_group()
+        .clone();
+    for name in ["a", "c"] {
+        let copy = column(&format!("{name}{COPY_SUFFIX}"));
+        for batches in source.partitions() {
+            assert_eq!(
+                oracle::first_unequal_row(batches, &column(name), &copy).unwrap(),
+                None
+            );
+        }
+        assert!(eq_group.exprs_equal(&column(name), &copy), "{eq_group}");
+    }
+
+    // An unknown column is an error
+    let error = SourceSpec::new(schema())
+        .with_copy("x")
+        .build()
+        .unwrap_err();
+    assert!(error.to_string().contains("\"x\""), "{error}");
+}
+
+#[test]
 fn false_claims_are_rejected() {
     let schema = schema();
     let unsorted = SourceSpec::new(Arc::clone(&schema))
@@ -494,11 +549,26 @@ fn false_claims_are_rejected() {
 
     let constant =
         ConstExpr::new(col("a", &schema).unwrap(), AcrossPartitions::Heterogeneous);
-    let error = unsorted.try_with_constants(vec![constant]).unwrap_err();
+    let error = unsorted
+        .clone()
+        .try_with_constants(vec![constant])
+        .unwrap_err();
     assert!(
         error
             .to_string()
             .contains("a@0 is constant, but partition 0 has"),
+        "{error}"
+    );
+
+    let a = col("a", &schema).unwrap();
+    let a_plus_one = Arc::new(BinaryExpr::new(Arc::clone(&a), Operator::Plus, lit(1)));
+    let error = unsorted
+        .try_with_equalities(vec![(a, a_plus_one)])
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("a@0 and a@0 + 1 are 11 and 12 in row 0 of partition 0"),
         "{error}"
     );
 

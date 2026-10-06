@@ -32,8 +32,9 @@ mod stream_checks;
 mod variant_checks;
 
 use execution_checks::{
-    batch_schema, cardinality_effect_holds, constants_hold, exact_statistics_hold,
-    execution_succeeds, maintains_input_order_missed, memory_released, orderings_hold,
+    batch_schema, cardinality_effect_holds, constants_hold, equivalence_classes_hold,
+    exact_statistics_hold, execution_succeeds, maintains_input_order_missed,
+    memory_released, orderings_hold,
 };
 use static_checks::{
     cardinality_effect_bounds_num_rows, check_invariants, dynamic_expressions_reset,
@@ -104,6 +105,11 @@ pub fn all_checks() -> Vec<PlanCheck> {
         check("exact_statistics_hold", Execution, exact_statistics_hold),
         check("orderings_hold", Execution, orderings_hold),
         check("constants_hold", Execution, constants_hold),
+        check(
+            "equivalence_classes_hold",
+            Execution,
+            equivalence_classes_hold,
+        ),
         check(
             "cardinality_effect_holds",
             Execution,
