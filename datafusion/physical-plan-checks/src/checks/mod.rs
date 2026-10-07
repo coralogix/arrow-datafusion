@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use datafusion_common::{Result, Statistics};
+use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::{
     ChildStats, ExecutionPlan, StatisticsArgs, StatisticsContext,
 };
@@ -43,8 +44,8 @@ use static_checks::{
     cardinality_effect_bounds_num_rows, check_invariants, display_no_panic,
     dynamic_expressions_reset, dynamic_expressions_visited, equal_cardinality_num_rows,
     expression_column_refs, fetch_bounds_num_rows, fetch_not_equal_cardinality,
-    partition_statistics_sum, per_child_lengths, schema_consistency,
-    statistics_ignore_inputs, statistics_shape,
+    limit_pushdown_merges_partitions, limit_pushdown_missed, partition_statistics_sum,
+    per_child_lengths, schema_consistency, statistics_ignore_inputs, statistics_shape,
 };
 use stream_checks::{
     boundedness_holds, emission_type_holds, errors_propagate, lazy_evaluation_holds,
@@ -52,7 +53,7 @@ use stream_checks::{
 };
 use variant_checks::{
     batch_boundary_invariance, batch_size_invariance, limit_pushdown_equivalent,
-    limit_pushdown_missed, reset_state_reexecution, with_fetch_equivalent,
+    limit_pushdown_missed_at_runtime, reset_state_reexecution, with_fetch_equivalent,
 };
 
 type CheckFn = fn(&Arc<dyn ExecutionPlan>, &CheckContext) -> Result<Vec<Finding>>;
@@ -81,11 +82,11 @@ pub fn all_checks() -> Vec<PlanCheck> {
             Static,
             cardinality_effect_bounds_num_rows,
         ),
-        check("limit_pushdown_missed", Variant, limit_pushdown_missed),
+        check("limit_pushdown_missed", Static, limit_pushdown_missed),
         check(
-            "maintains_input_order_missed",
-            Execution,
-            maintains_input_order_missed,
+            "limit_pushdown_merges_partitions",
+            Static,
+            limit_pushdown_merges_partitions,
         ),
         check("per_child_lengths", Static, per_child_lengths),
         check("check_invariants", Static, check_invariants),
@@ -137,6 +138,11 @@ pub fn all_checks() -> Vec<PlanCheck> {
             Execution,
             maintains_input_order_holds,
         ),
+        check(
+            "maintains_input_order_missed",
+            Execution,
+            maintains_input_order_missed,
+        ),
         check("with_fetch_equivalent", Variant, with_fetch_equivalent),
         check(
             "limit_pushdown_equivalent",
@@ -144,6 +150,11 @@ pub fn all_checks() -> Vec<PlanCheck> {
             limit_pushdown_equivalent,
         ),
         check("reset_state_reexecution", Variant, reset_state_reexecution),
+        check(
+            "limit_pushdown_missed_at_runtime",
+            Variant,
+            limit_pushdown_missed_at_runtime,
+        ),
         check("batch_size_invariance", Variant, batch_size_invariance),
         check(
             "batch_boundary_invariance",
@@ -208,4 +219,29 @@ fn moves_rows_between_partitions(node: &dyn ExecutionPlan, child: usize) -> bool
                 Some(ChildStats::At(None))
             )
         })
+}
+
+/// Whether the properties of `node` show that it passes the rows of its only
+/// child through, which is what limit pushdown needs: its cardinality effect
+/// without its fetch (that of the plan returned by `with_fetch(None)`) is
+/// `Equal`, it maintains the order of the child, and each of its output
+/// partitions is made of the rows of at most one partition of the child. A
+/// child with one partition qualifies however the node spreads its rows, and
+/// a child with several only if the node has as many partitions and does not
+/// move rows between them.
+fn passes_rows_through(node: &dyn ExecutionPlan) -> bool {
+    let children = node.children();
+    let [child] = children.as_slice() else {
+        return false;
+    };
+    let effect = node.with_fetch(None).map_or_else(
+        || node.cardinality_effect(),
+        |plan| plan.cardinality_effect(),
+    );
+    let child_partitions = partition_count(child.as_ref());
+    matches!(effect, CardinalityEffect::Equal)
+        && node.maintains_input_order().first() == Some(&true)
+        && (child_partitions <= 1
+            || (child_partitions == partition_count(node)
+                && !moves_rows_between_partitions(node, 0)))
 }

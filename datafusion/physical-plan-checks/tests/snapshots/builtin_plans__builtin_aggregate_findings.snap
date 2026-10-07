@@ -232,6 +232,7 @@ expression: output
       RepartitionExec: partitioning=Hash([g@0, h@1], 3), input_partitions=1
         AggregateExec: mode=Partial, gby=[g@0 as g, h@1 as h], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
           MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] limit_pushdown_missed at RepartitionExec (root/0): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] invalid_partition_errors at RepartitionExec (root/0): the node has 3 output partitions, but execute(3) returned a stream that panicked when polled: partition not used yet; return an error for a partition at or past the partition count
     [invariant] reset_state_reexecution at RepartitionExec (root/0): with a second execution of the same plan, without a reset: executing the node panicked: partition not used yet; return an error instead
   case inexact statistics:
@@ -305,6 +306,7 @@ expression: output
       RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=1, maintains_sort_order=true
         AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)], ordering_mode=Sorted
           MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[g@0 ASC]
+    [lint] limit_pushdown_missed at RepartitionExec (root/0): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] invalid_partition_errors at RepartitionExec (root/0): the node has 3 output partitions, but execute(3) returned a stream that panicked when polled: partition not used yet; return an error for a partition at or past the partition count
     [invariant] reset_state_reexecution at RepartitionExec (root/0): with a second execution of the same plan, without a reset: executing the node panicked: partition not used yet; return an error instead
   case inexact statistics:
@@ -447,6 +449,7 @@ expression: output
       RepartitionExec: partitioning=Hash([g@0], 3), input_partitions=1
         AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[max(v)], lim=[5]
           MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] limit_pushdown_missed at RepartitionExec (root/0): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] invalid_partition_errors at RepartitionExec (root/0): the node has 3 output partitions, but execute(3) returned a stream that panicked when polled: partition not used yet; return an error for a partition at or past the partition count
     [invariant] reset_state_reexecution at RepartitionExec (root/0): with a second execution of the same plan, without a reset: executing the node panicked: partition not used yet; return an error instead
     [invariant] exact_statistics_hold at AggregateExec (root/0/0): the overall statistics are false: distinct_count of g@0 is Exact(437), but the output has Exact(10); min_value of g@0 is Exact(Int32(1)), but the output has Exact(Int32(8)); max_value of g@0 is Exact(Int32(997)), but the output has Exact(Int32(976))
@@ -569,6 +572,7 @@ expression: output
       RepartitionExec: partitioning=Hash([g@0, h@1, __grouping_id@2], 3), input_partitions=1
         AggregateExec: mode=Partial, gby=[(NULL as g, NULL as h), (g@0 as g, NULL as h), (g@0 as g, h@1 as h)], aggr=[count(v), sum(v), min(v), max(v), avg(f), sum(f)]
           MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[90], statistics=Exact
+    [lint] limit_pushdown_missed at RepartitionExec (root/0): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] invalid_partition_errors at RepartitionExec (root/0): the node has 3 output partitions, but execute(3) returned a stream that panicked when polled: partition not used yet; return an error for a partition at or past the partition count
     [invariant] reset_state_reexecution at RepartitionExec (root/0): with a second execution of the same plan, without a reset: executing the node panicked: partition not used yet; return an error instead
     [invariant] cardinality_effect_holds at AggregateExec (root/0/0): cardinality_effect() is LowerEqual, but the node produced 176 rows from 90 input rows

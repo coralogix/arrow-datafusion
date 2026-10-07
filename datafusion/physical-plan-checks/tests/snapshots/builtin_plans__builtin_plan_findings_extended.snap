@@ -81,30 +81,30 @@ expression: output
   case seed 1:
     CoalesceBatchesExec: target_batch_size=8192
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case seed 2:
     CoalesceBatchesExec: target_batch_size=8192
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case 2 partitions:
     CoalesceBatchesExec: target_batch_size=8192
       MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case 5 partitions:
     CoalesceBatchesExec: target_batch_size=8192
       MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case large input:
     CoalesceBatchesExec: target_batch_size=8192
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 4801], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
 
 ## CoalesceBatchesExec with fetch
   case seed 1:
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
@@ -112,7 +112,7 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
@@ -120,7 +120,7 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10] sum to 20
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 600 input rows
@@ -128,7 +128,7 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 10, 0, 10, 10] sum to 40
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 40 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 40 rows from 600 input rows
@@ -136,7 +136,7 @@ expression: output
     CoalesceBatchesExec: target_batch_size=8192, fetch=10
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
     [invariant] fetch_not_equal_cardinality at CoalesceBatchesExec (root): fetch() is Some(10), but cardinality_effect() is Equal; a fetch can drop input rows, so the effect should be LowerEqual while a fetch is set
-    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 4801], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at CoalesceBatchesExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
     [invariant] partition_statistics_sum at CoalesceBatchesExec (root): overall num_rows is Exact(10), but the exact per-partition num_rows [10, 0, 10] sum to 20
     [invariant] exact_statistics_hold at CoalesceBatchesExec (root): the overall statistics are false: num_rows is Exact(10), but the output has 20 rows
     [invariant] cardinality_effect_holds at CoalesceBatchesExec (root): cardinality_effect() is Equal, but the node produced 20 rows from 4800 input rows
@@ -440,23 +440,23 @@ expression: output
   case seed 1:
     BufferExec: capacity=1024
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case seed 2:
     BufferExec: capacity=1024
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact
-    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case 2 partitions:
     BufferExec: capacity=1024
       MockSourceExec: partitioning=UnknownPartitioning(2), partition_rows=[300, 300], statistics=Exact
-    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case 5 partitions:
     BufferExec: capacity=1024
       MockSourceExec: partitioning=UnknownPartitioning(5), partition_rows=[171, 85, 0, 257, 87], statistics=Exact
-    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 601], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
   case large input:
     BufferExec: capacity=1024
       MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[1600, 0, 3200], statistics=Exact
-    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but with every child limited to its first n rows per partition, for n in [1, 7, 4801], every output partition has the first n rows of the same partition of the normal output, so a limit above the node could be pushed to its children; return true from supports_limit_pushdown if this holds for every input
+    [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
 
 ## CooperativeExec
   case seed 1: no violations

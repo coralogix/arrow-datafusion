@@ -41,7 +41,7 @@ use crate::fixtures::ROW_ID_COLUMN;
 use crate::oracle::{InputOrder, RowPosition};
 use crate::{CheckContext, Finding, NodeOutput, oracle};
 
-/// A6: the rows of a child for which `maintains_input_order()` is false keep
+/// C4: the rows of a child for which `maintains_input_order()` is false keep
 /// their relative order in the output, as tracked by their row ids.
 pub(super) fn maintains_input_order_missed(
     node: &Arc<dyn ExecutionPlan>,

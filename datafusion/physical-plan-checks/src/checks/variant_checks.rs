@@ -30,7 +30,10 @@ use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 
-use super::{moves_rows_between_partitions, partition_count, reports_sorted_output};
+use super::{
+    moves_rows_between_partitions, partition_count, passes_rows_through,
+    reports_sorted_output,
+};
 use crate::{CheckContext, Finding, NodeOutput, RunError, Variant, VariantRun, oracle};
 
 /// What the output of a node must satisfy when at most `limit` rows per
@@ -164,13 +167,17 @@ fn first_rows(output: &NodeOutput, n: usize) -> NodeOutput {
     NodeOutput::new(partitions)
 }
 
-/// A5: a node that does not support limit pushdown, but produces the first
+/// D11: a node that does not support limit pushdown, but produces the first
 /// rows of each output partition from the first rows of its inputs.
-pub(super) fn limit_pushdown_missed(
+pub(super) fn limit_pushdown_missed_at_runtime(
     node: &Arc<dyn ExecutionPlan>,
     context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     if node.supports_limit_pushdown() || node.children().is_empty() {
+        return Ok(vec![]);
+    }
+    // Reported by `limit_pushdown_missed` from the node's properties
+    if passes_rows_through(node.as_ref()) {
         return Ok(vec![]);
     }
     // Only a node that produces a row for each input row, without its fetch,

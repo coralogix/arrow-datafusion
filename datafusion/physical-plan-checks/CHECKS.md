@@ -47,8 +47,7 @@ Every violation has a severity:
 Checks come in four kinds:
 
 - **Static** checks compare what a plan reports about itself, without running
-  it (section A). A5 and A6, which look for properties a plan could report
-  but does not, need its output too.
+  it (section A).
 - **Execution** checks run the plan and compare its output with what it
   reports (sections B and C).
 - **Differential** checks compare a plan with a rewritten version of itself,
@@ -60,11 +59,11 @@ Checks come in four kinds:
 Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
 In code, each check has a `CheckKind` that says what the checker gathers for
-it before checks run: nothing (`Static`, section A apart from A5 and A6, and
-F5), the output of each node and the memory its execution left reserved (`Execution`,
-A6, B0 to B8, C1 and `memory_released` in F1), variant runs (`Variant`, A5,
-sections D and E) or stream experiments (`Stream`, B10 to B12,
-`streams_released` in F1, and F2).
+it before checks run: nothing (`Static`, section A and F5), the output of
+each node and the memory its execution left reserved (`Execution`, B0 to B8,
+C1, C4 and `memory_released` in F1), variant runs (`Variant`, sections D and
+E) or stream experiments (`Stream`, B10 to B12, `streams_released` in F1, and
+F2).
 
 Checks run on one node at a time, but the checker visits every node of a
 plan. Tests should build the plan under test on inputs generated with
@@ -119,7 +118,7 @@ stream experiments only in the `default` case (see [Cases](#cases)).
 
 ### Variant runs
 
-The checks in sections D and E, and A5, compare a node's output with the
+The checks in sections D and E compare a node's output with the
 output of a **variant run** (`Variant`): a rewritten copy of the node, or the
 node run under other settings. When any of them is enabled, the checker runs
 every variant that applies to each node, after it has executed every node
@@ -216,9 +215,8 @@ that has any.
 
 ## A. Static checks
 
-These checks call the methods that describe the plan. A5 and A6 look for
-properties that a plan could report but does not, so they need its output
-too. The other checks never call `execute`.
+These checks call the methods that describe the plan, and never call
+`execute`.
 
 ### A1 `equal_cardinality_num_rows`
 
@@ -305,85 +303,88 @@ too. The other checks never call `execute`.
 ### A5 `limit_pushdown_missed`
 
 - **Severity:** Lint.
-- **Requires execution** (the `LimitedInputs` variant, and the normal
-  output).
-- **What:** a node with children for which `supports_limit_pushdown()` is
-  false, but that is **prefix-closed**: running the node with every child
-  limited to its first `n` rows per partition gives the first `n` rows of
-  each partition of its normal output, for every `n` that the
-  `LimitedInputs` variant tries. Each output partition must have exactly
-  `min(n, rows)` rows, which are the first rows of the same partition of the
-  normal output, in the same order apart from rows that tie on the ordering
-  the node reports. Only reported if the limits removed output rows in at
-  least one run. Not checked:
-  - A node whose cardinality effect without its fetch (that of the plan
-    returned by `with_fetch(None)`) is not `Equal` or `GreaterEqual`. A node
-    that can drop or merge rows, or a join, which combines rows of its inputs,
-    needs later rows in general, and only looks prefix-closed when the
-    generated data does not show it: a final aggregate whose input has each
-    group once, or a mark join whose first input rows already have every key.
-  - A node over a child that reports an ordering or a constant, and whose
-    order the node does not maintain. A node that sorts its input, such as
-    `SortExec`, passes input that is already sorted through, and input
-    sorted on a constant keeps its order. The equivalence properties of a
-    sort on a constant report no ordering, so the constant is what shows it.
-  - A node that can move the rows of a child with several partitions
-    between partitions, which it shows by computing the statistics of an
-    output partition from the overall statistics of the child
-    (`child_stats_requests`), as `RepartitionExec` does. Where such a node
-    puts a row depends on its values, and on generated data it can leave
-    every row where it is: a hash repartition of input hash partitioned the
-    same way, or of input with one value of the key per partition.
-- **Why:** a prefix-closed node can let a limit move below it, so its inputs
-  produce less data. `LimitPushdown` stops at a node that does not support
-  limit pushdown: it gives the node the limit as a fetch, or adds a limit
-  above it (`limit_pushdown.rs:268-309`). Being `Equal` and order-preserving
-  is not enough on its own: `WindowAggExec` is both, but a window over a whole
-  partition needs rows after the first `n`, so it correctly does not support
-  limit pushdown. This check only reports nodes whose outputs have been shown
-  to be prefix-closed.
-- **Fix:** return true from `supports_limit_pushdown`. Allow this check if the
-  node is only prefix-closed for the inputs the test generated.
+- **What:** a single-child node for which `supports_limit_pushdown()` is
+  false, but whose properties show that it passes the rows of its child
+  through:
+  - its cardinality effect without its fetch (that of the plan returned by
+    `with_fetch(None)`) is `Equal`;
+  - `maintains_input_order()[0]` is true;
+  - each output partition is made of the rows of at most one partition of
+    the child: the child has one partition, however the node spreads its
+    rows, or the node has as many partitions as the child and does not move
+    rows between them. A node moves rows between partitions when it
+    computes the statistics of an output partition from the overall
+    statistics of a child with several partitions (`child_stats_requests`),
+    as `RepartitionExec` does.
+- **Why:** `LimitPushdown` stops at a node that does not support limit
+  pushdown: it gives the node the limit as a fetch, or adds a limit above it
+  (`limit_pushdown.rs:268-309`), so the child produces more rows than
+  needed. A node with these properties can let the limit move below it: with
+  every partition of the child limited to its first `n` rows, each output
+  partition has at most `n` rows, and the whole output at least
+  `min(n, rows)` rows, which is all `LimitPushdown` needs (see D2).
+- **False positives:** `Equal` counts rows, it does not say that an output
+  row depends on its input row only. A node whose output rows depend on
+  later input rows reports both properties and still needs those rows: a
+  window function such as `LEAD`, `NTILE` or `CUME_DIST`, an aggregate over
+  a whole window partition or over a `RANGE` frame, which includes the rows
+  that tie with the current row, or a custom operator that looks ahead, such
+  as a backward fill. So does a node with side effects on the rows it reads,
+  such as one that writes them somewhere. `WindowAggExec` and
+  `BoundedWindowAggExec` are such nodes; `limit_pushdown_past_window` pushes
+  limits past the windows that only read earlier rows. Allow this check for
+  such nodes.
+- **Not checked:**
+  - A node with several children. Which child `Equal` refers to is not
+    defined (see A1), and `LimitPushdown` limits every child, including
+    children such as the subqueries of `ScalarSubqueryExec`, whose rows the
+    node does not pass through.
+  - A node that reports `GreaterEqual`, which does not say that every input
+    row produces an output row. D11 checks such nodes on data.
+  - A node whose output partitions each merge rows of several partitions of
+    the child, such as an order preserving `RepartitionExec` over several
+    partitions. With every partition of the child limited to `n` rows, an
+    output partition can get up to `n` rows from each of them.
+- **Fix:** return true from `supports_limit_pushdown`.
 - **Found in:** `BufferExec` (its `supports_limit_pushdown` returns the
-  child's value) and `CoalesceBatchesExec`. `RepartitionExec`, also a
-  candidate when this entry was written, is not reported: its output
-  partitions have rows of several input partitions, in an order that depends
-  on timing.
+  child's value), `CoalesceBatchesExec`, and `RepartitionExec` over a child
+  with one partition, with every partitioning and with or without preserving
+  order. `RepartitionExec` must not support limit pushdown over a child with
+  several partitions (see A6 and D2), so its answer would depend on the
+  number of input partitions.
 
-### A6 `maintains_input_order_missed`
+### A6 `limit_pushdown_merges_partitions`
 
-- **Severity:** Lint.
-- **Requires execution** (the normal output of the node and of its
-  children).
-- **What:** `maintains_input_order()[i]` is false, but the rows of child `i`
-  keep their relative order in the output. Rows are tracked by their row ids
-  (see C1): the child must have exactly one `__row_id` column, with unique
-  ids, and exactly one `__row_id` column of the output must have ids of the
-  child. The order is kept when every row of every output partition is a row
-  of the child, each output partition has rows of one partition of the child
-  only, and they appear in the order of that partition. A row can repeat, as
-  long as its copies are next to each other. Reported when some output
-  partition has at least two rows of the child, and, for a child with several
-  partitions, the output has rows of at least two of them, which shows that
-  the node keeps them apart. Not checked:
-  - A node that reports an output ordering. It orders its output itself, for
-    example by sorting it, which keeps rows that tie on its sort key in their
-    input order.
-  - A child that reports an ordering or a constant. Sorted input is not in a
-    random order, and can be in the order that the node sorts it into, as
-    can input sorted on a constant, for which a sort reports no ordering.
-  - A node that can move the rows of a child with several partitions between
-    partitions, as in A5.
-- **Why:** `maintains_input_order` lets the optimizer avoid re-sorting. A
-  false value that should be true costs an unnecessary sort.
-- **Fix:** return true for that child and make sure the output equivalence
-  properties keep the child's ordering.
-- **Found in:** `CoalescePartitionsExec` with a single input partition, the
-  build side of `HashJoinExec` `LeftSemi`, `LeftAnti` and `LeftMark` and of
-  `NestedLoopJoinExec` `LeftAnti`, which emit the rows of the build side in
-  its order once the probe side ends, and the probe side of
-  `NestedLoopJoinExec` `RightSemi` and `RightMark` and of
-  `PiecewiseMergeJoinExec` `RightSemi`.
+- **Severity:** Invariant.
+- **What:** a node for which `supports_limit_pushdown()` is true and that has
+  one output partition has no child with several partitions.
+  `CoalescePartitionsExec`, `SortPreservingMergeExec`, `GlobalLimitExec` and
+  `LocalLimitExec` are not checked.
+- **Reporting:** one finding for each child with several partitions.
+- **Why:** `LimitPushdown` removes `GlobalLimitExec` and `LocalLimitExec`
+  nodes and keeps their limit (`extract_limit`, `limit_pushdown.rs:414-431`).
+  It only adds a limit back where the limit stops moving down, as a
+  `GlobalLimitExec` above a plan with one partition and a `LocalLimitExec`,
+  which limits each partition, above any other (`add_limit`,
+  `limit_pushdown.rs:441-450`). It only treats `CoalescePartitionsExec` and
+  `SortPreservingMergeExec` as nodes that combine partitions
+  (`combines_input_partitions`, `limit_pushdown.rs:435-437`), and gives them
+  the limit as a fetch. Any other node that supports limit pushdown passes
+  the limit to its children, so a `GlobalLimitExec` of `n` rows above a node
+  with one output partition over a child with `k` partitions becomes a
+  `LocalLimitExec` of `n` rows on the child, and the query returns up to
+  `k * n` rows. D2 shows the same on data, but only when the child has
+  several partitions with rows. The rule never asks limit nodes whether they
+  support limit pushdown (see D2).
+- **Not checked:** a node with one output partition over several children
+  with one partition each. Its output partition can also have up to `n` rows
+  from each child, unless the node ignores some children, as
+  `ScalarSubqueryExec` ignores its subqueries; D2 checks it on data.
+- **Fix:** return false from `supports_limit_pushdown` when a child has
+  several partitions.
+- **Found in:** none of the built-in plans. A `RepartitionExec` into one
+  partition over a child with several would be reported if it supported
+  limit pushdown.
 
 ### A7 `per_child_lengths` and `check_invariants`
 
@@ -835,7 +836,7 @@ through, which lets the checks track where each output row came from.
   the node may reorder rows "within or between partitions". A row can
   repeat, as a join repeats a row once per match, as long as no later row of
   the same child partition comes between its copies. Rows are tracked by
-  their row ids, as in A6: the child must have exactly one `__row_id`
+  their row ids: the child must have exactly one `__row_id`
   column, with unique ids, and exactly one `__row_id` column of the output
   must have ids of the child. Output rows without such an id, such as rows
   of another child or rows an outer join pads with nulls, are ignored, and
@@ -886,6 +887,46 @@ through, which lets the checks track where each output row came from.
   does not say so, such as a final aggregate, gives wrong results when the
   optimizer does not repartition for it.
 - **Fix:** declare the distribution in `input_distribution_requirements`.
+
+### C4 `maintains_input_order_missed`
+
+- **Severity:** Lint.
+- **Requires execution** (the normal output of the node and of its
+  children).
+- **What:** `maintains_input_order()[i]` is false, but the rows of child `i`
+  keep their relative order in the output. Rows are tracked by their row ids
+  as in C1: the child must have exactly one `__row_id` column, with unique
+  ids, and exactly one `__row_id` column of the output must have ids of the
+  child. The order is kept when every row of every output partition is a row
+  of the child, each output partition has rows of one partition of the child
+  only, and they appear in the order of that partition. A row can repeat, as
+  long as its copies are next to each other. Reported when some output
+  partition has at least two rows of the child, and, for a child with several
+  partitions, the output has rows of at least two of them, which shows that
+  the node keeps them apart. Not checked:
+  - A node that reports an output ordering. It orders its output itself, for
+    example by sorting it, which keeps rows that tie on its sort key in their
+    input order.
+  - A child that reports an ordering or a constant. Sorted input is not in a
+    random order, and can be in the order that the node sorts it into, as
+    can input sorted on a constant, for which a sort reports no ordering.
+  - A node that can move the rows of a child with several partitions
+    between partitions, which it shows by computing the statistics of an
+    output partition from the overall statistics of the child
+    (`child_stats_requests`), as `RepartitionExec` does. Where such a node
+    puts a row depends on its values, and on generated data it can leave
+    every row where it is: a hash repartition of input hash partitioned the
+    same way, or of input with one value of the key per partition.
+- **Why:** `maintains_input_order` lets the optimizer avoid re-sorting. A
+  false value that should be true costs an unnecessary sort.
+- **Fix:** return true for that child and make sure the output equivalence
+  properties keep the child's ordering.
+- **Found in:** `CoalescePartitionsExec` with a single input partition, the
+  build side of `HashJoinExec` `LeftSemi`, `LeftAnti` and `LeftMark` and of
+  `NestedLoopJoinExec` `LeftAnti`, which emit the rows of the build side in
+  its order once the probe side ends, and the probe side of
+  `NestedLoopJoinExec` `RightSemi` and `RightMark` and of
+  `PiecewiseMergeJoinExec` `RightSemi`.
 
 ## D. Rewrite hooks are equivalent
 
@@ -965,7 +1006,7 @@ ordering is claimed. Rows that tie on the sort key may appear in any order.
     limited inputs on all of them. Since the limit above the node is gone, the
     node must also not produce more than `n` rows per partition: a node with
     one output partition over several input partitions would produce up to
-    `n` rows from each of them.
+    `n` rows from each of them, which A6 reports without running the node.
   - `CoalescePartitionsExec` and `SortPreservingMergeExec`
     (`combines_input_partitions`) keep the limit: the rule gives them a fetch
     with `with_fetch`, or keeps a limit above them, so only their first `n`
@@ -1088,6 +1129,51 @@ ordering is claimed. Rows that tie on the sort key may appear in any order.
 - **What:** if `try_to_proto` returns `Some`, decoding it gives a plan with
   the same display, the same properties and the same results.
 - **Fix:** serialize every field that affects properties or execution.
+
+### D11 `limit_pushdown_missed_at_runtime`
+
+- **Severity:** Lint.
+- **Requires execution** (the `LimitedInputs` variant, and the normal
+  output).
+- **What:** a node with children for which `supports_limit_pushdown()` is
+  false, but that is **prefix-closed**: running the node with every child
+  limited to its first `n` rows per partition gives the first `n` rows of
+  each partition of its normal output, for every `n` that the
+  `LimitedInputs` variant tries. Each output partition must have exactly
+  `min(n, rows)` rows, which are the first rows of the same partition of the
+  normal output, in the same order apart from rows that tie on the ordering
+  the node reports. Only reported if the limits removed output rows in at
+  least one run. Not checked:
+  - A node whose properties show that it passes its rows through, which A5
+    reports.
+  - A node whose cardinality effect without its fetch (that of the plan
+    returned by `with_fetch(None)`) is not `Equal` or `GreaterEqual`. A node
+    that can drop or merge rows, or a join, which combines rows of its inputs,
+    needs later rows in general, and only looks prefix-closed when the
+    generated data does not show it: a final aggregate whose input has each
+    group once, or a mark join whose first input rows already have every key.
+  - A node over a child that reports an ordering or a constant, and whose
+    order the node does not maintain. A node that sorts its input, such as
+    `SortExec`, passes input that is already sorted through, and input
+    sorted on a constant keeps its order. The equivalence properties of a
+    sort on a constant report no ordering, so the constant is what shows it.
+  - A node that can move the rows of a child with several partitions
+    between partitions, as in C4.
+- **Why:** as for A5, a prefix-closed node can let a limit move below it, so
+  its inputs produce less data. This check finds the nodes whose properties
+  do not show it, such as a node that reports `GreaterEqual` without its
+  fetch, or that does not report that it maintains the order of its input.
+  It only reports nodes whose outputs have been shown to be prefix-closed. It
+  requires more than `LimitPushdown` does (see D2): each output partition
+  must be the
+  first rows of its own partition, so a round robin `RepartitionExec` over
+  one partition, which spreads the first `n` rows of its input over every
+  output partition, would not be reported.
+- **Fix:** return true from `supports_limit_pushdown`. Allow this check if the
+  node is only prefix-closed for the inputs the test generated.
+- **Found in:** none of the built-in plans. The nodes it reported before A5
+  was a static check, `BufferExec` and `CoalesceBatchesExec`, are reported by
+  A5.
 
 ## E. Results do not depend on configuration or input layout
 

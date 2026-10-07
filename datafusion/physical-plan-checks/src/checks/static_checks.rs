@@ -16,9 +16,9 @@
 // under the License.
 
 //! `CheckKind::Static` checks: they compare the statistics, cardinality effect,
-//! fetch, per-child metadata, schema, expressions and dynamic filters a node
-//! reports with each other and with what its children report, without
-//! executing it.
+//! fetch, limit pushdown support, per-child metadata, schema, expressions and
+//! dynamic filters a node reports with each other and with what its children
+//! report, without executing it.
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
@@ -31,10 +31,15 @@ use datafusion_common::{Result, Statistics};
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::{Partitioning, PhysicalExpr};
 use datafusion_physical_plan::aggregates::{AggregateExec, AggregateInputMode};
+use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::execution_plan::{CardinalityEffect, InvariantLevel};
+use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::{ChildSatisfactionOptions, ChildStats, ExecutionPlan};
 
-use super::{overall_statistics, partition_count, partition_statistics};
+use super::{
+    overall_statistics, partition_count, partition_statistics, passes_rows_through,
+};
 use crate::display::{self, DisplayKind};
 use crate::exec::panic_message;
 use crate::{CheckContext, Finding};
@@ -336,6 +341,67 @@ pub(super) fn cardinality_effect_bounds_num_rows(
         }
     }
     Ok(findings)
+}
+
+/// A5: a node whose properties show that it passes the rows of its child
+/// through supports limit pushdown.
+pub(super) fn limit_pushdown_missed(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    if node.supports_limit_pushdown() || !passes_rows_through(node.as_ref()) {
+        return Ok(vec![]);
+    }
+    Ok(vec![Finding::lint(
+        "supports_limit_pushdown() is false, but the cardinality effect without a \
+         fetch is Equal, maintains_input_order() is true, and each output partition \
+         is made of at most one partition of the child, so a limit above the node \
+         could be pushed to its child; return true from supports_limit_pushdown, \
+         unless an output row depends on later input rows, as in a window function, \
+         or the node has side effects on the rows it reads"
+            .to_string(),
+    )])
+}
+
+/// A6: a node that supports limit pushdown and has one output partition does
+/// not read a child with several partitions, unless `LimitPushdown` keeps the
+/// limit above it.
+pub(super) fn limit_pushdown_merges_partitions(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    if !node.supports_limit_pushdown() || partition_count(node.as_ref()) != 1 {
+        return Ok(vec![]);
+    }
+    // `LimitPushdown` merges limit nodes into the limit it pushes down before
+    // it asks whether a node supports limit pushdown, and gives these nodes the
+    // limit as a fetch, or keeps a limit above them
+    // (`combines_input_partitions`)
+    if node.is::<GlobalLimitExec>()
+        || node.is::<LocalLimitExec>()
+        || node.is::<CoalescePartitionsExec>()
+        || node.is::<SortPreservingMergeExec>()
+    {
+        return Ok(vec![]);
+    }
+    Ok(node
+        .children()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, child)| {
+            let partitions = partition_count(child.as_ref());
+            (partitions > 1).then(|| {
+                Finding::invariant(format!(
+                    "supports_limit_pushdown() is true and the node has one output \
+                     partition, but child {i} has {partitions} partitions; \
+                     LimitPushdown removes a limit of n rows above the node and \
+                     limits each partition of the child to n rows instead, so the \
+                     node can produce up to {partitions} * n rows; return false from \
+                     supports_limit_pushdown when a child has several partitions"
+                ))
+            })
+        })
+        .collect())
 }
 
 /// A7: every method that returns one entry per child returns exactly

@@ -38,18 +38,25 @@ use datafusion_physical_plan::aggregates::{
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
+use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::{DisplayFormatType, ExecutionPlan};
 use datafusion_physical_plan_checks::fixtures::{SourceSpec, StatisticsPrecision};
 use datafusion_physical_plan_checks::{CheckKind, Report, Severity};
 
 use crate::common::{
-    ConfigurableExec, Effect, checker, checker_of, exact_source, inexact_source,
-    messages, schema, source, summary,
+    ConfigurableExec, Effect, FetchMode, checker, checker_of, exact_source,
+    inexact_source, messages, schema, source, summary,
 };
 
+/// Run the static checks. Most plans pass their rows through without
+/// supporting limit pushdown, which `limit_pushdown_missed` reports; it is
+/// tested on its own below.
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
-    checker_of(&[CheckKind::Static]).check(plan).unwrap()
+    checker_of(&[CheckKind::Static])
+        .allow("limit_pushdown_missed")
+        .check(plan)
+        .unwrap()
 }
 
 /// Run only the check named `name`
@@ -66,11 +73,14 @@ fn ordering_on_a() -> LexOrdering {
 
 #[test]
 fn correct_passthrough_is_clean() {
-    let plan = ConfigurableExec::new(exact_source(100)).build();
-    check(&plan).assert_clean();
-
-    let plan = ConfigurableExec::new(inexact_source(100)).build();
-    check(&plan).assert_clean();
+    for input in [exact_source(100), inexact_source(100)] {
+        let mut exec = ConfigurableExec::new(input);
+        exec.limit_pushdown = true;
+        checker_of(&[CheckKind::Static])
+            .check(&exec.build())
+            .unwrap()
+            .assert_clean();
+    }
 }
 
 #[test]
@@ -472,6 +482,162 @@ fn statistics_ignore_inputs() {
 }
 
 #[test]
+fn pass_through_without_limit_pushdown() {
+    let report = check_with(
+        "limit_pushdown_missed",
+        &ConfigurableExec::new(exact_source(100)).build(),
+    );
+    assert_eq!(
+        messages(&report),
+        vec![
+            "supports_limit_pushdown() is false, but the cardinality effect without a \
+             fetch is Equal, maintains_input_order() is true, and each output \
+             partition is made of at most one partition of the child, so a limit above \
+             the node could be pushed to its child; return true from \
+             supports_limit_pushdown, unless an output row depends on later input \
+             rows, as in a window function, or the node has side effects on the rows \
+             it reads"
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Lint, "limit_pushdown_missed")]
+    );
+
+    let sorted = SourceSpec::new(schema())
+        .with_partition_rows(&[10, 0, 30])
+        .with_ordering(ordering_on_a())
+        .build_arc()
+        .unwrap();
+    // A node whose fetch is the only thing that drops rows
+    let mut fetching = ConfigurableExec::new(exact_source(100))
+        .effect(Effect::LowerEqual)
+        .fetch(10);
+    fetching.effect_without_fetch = Some(Effect::Equal);
+    fetching.fetch_mode = FetchMode::Enforce;
+    let reported: Vec<Arc<dyn ExecutionPlan>> = vec![
+        // Several partitions, each made of the same partition of the child
+        ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact)).build(),
+        fetching.build(),
+        // The rows of one partition spread over several keep their order
+        Arc::new(
+            RepartitionExec::try_new(exact_source(100), Partitioning::RoundRobinBatch(3))
+                .unwrap(),
+        ),
+        Arc::new(
+            RepartitionExec::try_new(
+                SourceSpec::new(schema())
+                    .with_partition_rows(&[100])
+                    .with_ordering(ordering_on_a())
+                    .build_arc()
+                    .unwrap(),
+                Partitioning::Hash(vec![col("a", &schema()).unwrap()], 3),
+            )
+            .unwrap()
+            .with_preserve_order(),
+        ),
+    ];
+    for plan in reported {
+        assert_eq!(
+            summary(&check_with("limit_pushdown_missed", &plan)),
+            vec![(Severity::Lint, "limit_pushdown_missed")]
+        );
+    }
+
+    let mut supported = ConfigurableExec::new(exact_source(100));
+    supported.limit_pushdown = true;
+    let mut unordered = ConfigurableExec::new(exact_source(100));
+    unordered.maintains_order = Some(false);
+    // One output partition with the rows of several partitions of the child
+    let mut merging =
+        ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact));
+    merging.coalesce = true;
+    merging.maintains_order = Some(true);
+    let clean: Vec<Arc<dyn ExecutionPlan>> = vec![
+        supported.build(),
+        unordered.build(),
+        merging.build(),
+        ConfigurableExec::new(exact_source(100))
+            .effect(Effect::LowerEqual)
+            .build(),
+        ConfigurableExec::new(exact_source(100))
+            .effect(Effect::GreaterEqual)
+            .build(),
+        ConfigurableExec::new(exact_source(100))
+            .effect(Effect::Unknown)
+            .build(),
+        // Equal, but sorts its input
+        Arc::new(SortExec::new(ordering_on_a(), exact_source(100))),
+        // Maintains the order of each input partition, but merges several
+        // into each output partition
+        Arc::new(
+            RepartitionExec::try_new(
+                Arc::clone(&sorted),
+                Partitioning::Hash(vec![col("a", &schema()).unwrap()], 3),
+            )
+            .unwrap()
+            .with_preserve_order(),
+        ),
+    ];
+    for plan in clean {
+        check_with("limit_pushdown_missed", &plan).assert_clean();
+    }
+}
+
+#[test]
+fn limit_pushdown_into_several_partitions_below_one() {
+    let mut exec =
+        ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact));
+    exec.coalesce = true;
+    exec.limit_pushdown = true;
+    let report = check_with("limit_pushdown_merges_partitions", &exec.build());
+    assert_eq!(
+        messages(&report),
+        vec![
+            "supports_limit_pushdown() is true and the node has one output partition, \
+             but child 0 has 3 partitions; LimitPushdown removes a limit of n rows \
+             above the node and limits each partition of the child to n rows instead, \
+             so the node can produce up to 3 * n rows; return false from \
+             supports_limit_pushdown when a child has several partitions"
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Invariant, "limit_pushdown_merges_partitions")]
+    );
+
+    let input = || source(&[10, 0, 30], StatisticsPrecision::Exact);
+    // Over a child with one partition
+    let mut single = ConfigurableExec::new(exact_source(100));
+    single.coalesce = true;
+    single.limit_pushdown = true;
+    // Keeps the partitions of its child
+    let mut partitioned = ConfigurableExec::new(input());
+    partitioned.limit_pushdown = true;
+    // Does not support limit pushdown
+    let mut unsupported = ConfigurableExec::new(input());
+    unsupported.coalesce = true;
+    let clean: Vec<Arc<dyn ExecutionPlan>> = vec![
+        single.build(),
+        partitioned.build(),
+        unsupported.build(),
+        // `LimitPushdown` keeps the limit above these
+        Arc::new(CoalescePartitionsExec::new(input())),
+        Arc::new(SortPreservingMergeExec::new(
+            ordering_on_a(),
+            SourceSpec::new(schema())
+                .with_partition_rows(&[10, 0, 30])
+                .with_ordering(ordering_on_a())
+                .build_arc()
+                .unwrap(),
+        )),
+    ];
+    for plan in clean {
+        check_with("limit_pushdown_merges_partitions", &plan).assert_clean();
+    }
+}
+
+#[test]
 fn allowed_checks_are_skipped() {
     let plan = ConfigurableExec::new(exact_source(100))
         .fetch(10)
@@ -479,6 +645,7 @@ fn allowed_checks_are_skipped() {
         .build();
     checker_of(&[CheckKind::Static])
         .allow("fetch_not_equal_cardinality")
+        .allow("limit_pushdown_missed")
         .check(&plan)
         .unwrap()
         .assert_clean();

@@ -57,13 +57,14 @@ fn execution_checker() -> PlanChecker {
 
 /// Run the checks that execute the plan. `Transform::DropHalf` keeps half of
 /// each batch, so its output depends on batch boundaries, which
-/// `batch_boundary_invariance` reports, and most plans pass their first rows
-/// through without supporting limit pushdown, which `limit_pushdown_missed`
+/// `batch_boundary_invariance` reports, and plans that do not report that they
+/// maintain the order of their input pass their first rows through without
+/// supporting limit pushdown, which `limit_pushdown_missed_at_runtime`
 /// reports; those checks are tested in `variant_checks.rs`.
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
     execution_checker()
         .allow("batch_boundary_invariance")
-        .allow("limit_pushdown_missed")
+        .allow("limit_pushdown_missed_at_runtime")
         .check(plan)
         .unwrap()
 }
@@ -1070,6 +1071,7 @@ fn static_checks_do_not_execute() {
     // A plan that would hang is never executed when no enabled check needs it
     let mut exec = ConfigurableExec::new(exact_source(10));
     exec.hang = true;
+    exec.limit_pushdown = true;
     let plan = exec.build();
     checker_of(&[CheckKind::Static])
         .check(&plan)

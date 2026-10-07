@@ -111,11 +111,20 @@ fn correct_nodes_are_clean() {
     }
 }
 
+/// A node that passes its rows through in order, but reports that it does not
+/// maintain their order, so that its properties do not show what
+/// `limit_pushdown_missed` reports
+fn unordered(input: Arc<dyn ExecutionPlan>) -> ConfigurableExec {
+    let mut exec = ConfigurableExec::new(input);
+    exec.maintains_order = Some(false);
+    exec
+}
+
 #[test]
 fn prefix_closed_node_without_limit_pushdown() {
     let report = check_with(
-        "limit_pushdown_missed",
-        &ConfigurableExec::new(rows_source(&[40, 0, 60])).build(),
+        "limit_pushdown_missed_at_runtime",
+        &unordered(rows_source(&[40, 0, 60])).build(),
     );
     assert_eq!(
         messages(&report),
@@ -129,15 +138,28 @@ fn prefix_closed_node_without_limit_pushdown() {
     );
     assert_eq!(
         summary(&report),
-        vec![(Severity::Lint, "limit_pushdown_missed")]
+        vec![(Severity::Lint, "limit_pushdown_missed_at_runtime")]
     );
 
     // A node whose fetch is the only thing that drops rows, over input sorted
-    // by an ordering it maintains
+    // by an ordering it maintains, that reports GreaterEqual without its
+    // fetch, which `limit_pushdown_missed` does not check
     let mut exec = fetching(sorted_rows_source(&[50, 0, 70]), Some(10));
-    exec.effect_without_fetch = Some(Effect::Equal);
+    exec.effect_without_fetch = Some(Effect::GreaterEqual);
     assert_eq!(
-        summary(&check_with("limit_pushdown_missed", &exec.build())),
+        summary(&check_with(
+            "limit_pushdown_missed_at_runtime",
+            &exec.build()
+        )),
+        vec![(Severity::Lint, "limit_pushdown_missed_at_runtime")]
+    );
+
+    // A node whose properties show that it passes its rows through is reported
+    // by `limit_pushdown_missed` instead
+    let plan = ConfigurableExec::new(rows_source(&[40, 0, 60])).build();
+    check_with("limit_pushdown_missed_at_runtime", &plan).assert_clean();
+    assert_eq!(
+        summary(&check_with("limit_pushdown_missed", &plan)),
         vec![(Severity::Lint, "limit_pushdown_missed")]
     );
 }
@@ -145,8 +167,9 @@ fn prefix_closed_node_without_limit_pushdown() {
 #[test]
 fn nodes_that_need_more_than_their_first_input_rows() {
     // The first nodes report cardinality_effect() Equal, falsely for most of
-    // them, so that only their output shows that they are not prefix-closed
-    let mut skipping = ConfigurableExec::new(rows_source(&[100]));
+    // them, and that they do not maintain the order of their input, so that
+    // only their output shows that they are not prefix-closed
+    let mut skipping = unordered(rows_source(&[100]));
     skipping.skip = 5;
     let sort_on = |input| {
         Arc::new(SortExec::new(ordering_on_a(), input).with_preserve_partitioning(true))
@@ -155,10 +178,10 @@ fn nodes_that_need_more_than_their_first_input_rows() {
     let plans = vec![
         // Keeps half of each batch, so with every partition limited to its first
         // n rows, a partition keeps fewer than the first n rows of its output
-        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+        unordered(rows_source(&[40, 0, 60]))
             .transform(Transform::DropHalf)
             .build(),
-        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+        unordered(rows_source(&[40, 0, 60]))
             .transform(Transform::Duplicate)
             .build(),
         skipping.build(),
@@ -168,24 +191,24 @@ fn nodes_that_need_more_than_their_first_input_rows() {
         // Pass every row through, but report that they can drop or combine
         // rows, like a final aggregate whose input has each group once, or a
         // join
-        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+        unordered(rows_source(&[40, 0, 60]))
             .effect(Effect::LowerEqual)
             .build(),
-        ConfigurableExec::new(rows_source(&[40, 0, 60]))
+        unordered(rows_source(&[40, 0, 60]))
             .effect(Effect::Unknown)
             .build(),
     ];
     for plan in plans {
-        check_with("limit_pushdown_missed", &plan).assert_clean();
+        check_with("limit_pushdown_missed_at_runtime", &plan).assert_clean();
     }
 
     // Limits that remove no rows show nothing
-    let plan = ConfigurableExec::new(rows_source(&[1, 0, 1])).build();
-    check_with("limit_pushdown_missed", &plan).assert_clean();
+    let plan = unordered(rows_source(&[1, 0, 1])).build();
+    check_with("limit_pushdown_missed_at_runtime", &plan).assert_clean();
 
     // A hash repartition of input that is already hash partitioned the same
     // way leaves every row where it is, as if it passed its input through.
-    // Neither this check nor `maintains_input_order_missed` reports it.
+    // Neither these checks nor `maintains_input_order_missed` report it.
     let a = col("a", &schema()).unwrap();
     let partitioned = SourceSpec::new(schema())
         .with_hash_partitioning(vec![Arc::clone(&a)], 3, 100)
@@ -199,10 +222,14 @@ fn nodes_that_need_more_than_their_first_input_rows() {
         )
         .unwrap(),
     );
-    checker(&["limit_pushdown_missed", "maintains_input_order_missed"])
-        .check(&repartition)
-        .unwrap()
-        .assert_clean();
+    checker(&[
+        "limit_pushdown_missed",
+        "limit_pushdown_missed_at_runtime",
+        "maintains_input_order_missed",
+    ])
+    .check(&repartition)
+    .unwrap()
+    .assert_clean();
     // So does an order preserving one of input with one value of the key per
     // partition, when the values hash to different partitions
     let constant_per_partition = SourceSpec::new(schema())
@@ -217,7 +244,7 @@ fn nodes_that_need_more_than_their_first_input_rows() {
             .unwrap()
             .with_preserve_order(),
     );
-    checker(&["limit_pushdown_missed"])
+    checker(&["limit_pushdown_missed", "limit_pushdown_missed_at_runtime"])
         .check(&repartition)
         .unwrap()
         .assert_clean();
