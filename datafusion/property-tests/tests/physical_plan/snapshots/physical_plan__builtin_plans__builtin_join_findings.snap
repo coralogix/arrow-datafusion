@@ -1,0 +1,531 @@
+---
+source: datafusion/property-tests/tests/physical_plan/builtin_plans.rs
+expression: output
+---
+## HashJoinExec CollectLeft Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Left
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Right
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Full
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft LeftSemi
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft RightSemi
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft LeftAnti
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft RightAnti
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft LeftMark
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft RightMark
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Inner with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Full with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft RightSemi with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft LeftAnti with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Inner with nulls equal
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec CollectLeft Inner with fetch
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned Left
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned Full
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned RightAnti
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned LeftMark
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## HashJoinExec Partitioned Full with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec Left
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec Full
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec LeftSemi
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec RightAnti
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec LeftMark
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec Inner with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec Full with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SortMergeJoinExec LeftAnti with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec Left
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec Full
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec RightSemi
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec LeftAnti
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## NestedLoopJoinExec RightMark
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## CrossJoinExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SymmetricHashJoinExec SinglePartition Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## SymmetricHashJoinExec Partitioned Full with filter
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PiecewiseMergeJoinExec Inner
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PiecewiseMergeJoinExec Full
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PiecewiseMergeJoinExec RightSemi
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## AsOfJoinExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
