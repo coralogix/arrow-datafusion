@@ -66,6 +66,7 @@
 mod checker;
 pub mod checks;
 mod context;
+pub(crate) mod display;
 mod exec;
 mod experiments;
 pub mod fixtures;
@@ -76,6 +77,7 @@ mod variants;
 
 pub use checker::{CheckKind, PlanCheck, PlanChecker};
 pub use context::{CheckContext, NodeOutput};
+pub use exec::RunError;
 pub use experiments::{Experiment, PartitionObservation, RunOutcome, StreamRun};
 pub use report::{Finding, Report, Severity, Violation};
 pub use variants::{Variant, VariantRun};

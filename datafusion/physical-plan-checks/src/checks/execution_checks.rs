@@ -25,17 +25,20 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use datafusion_common::stats::Precision;
-use datafusion_common::{Result, Statistics, internal_err};
-use datafusion_physical_expr::expressions::Literal;
+use datafusion_common::tree_node::TreeNode;
+use datafusion_common::{Result, ScalarValue, Statistics, internal_err};
+use datafusion_physical_expr::expressions::{Literal, UnKnownColumn};
+use datafusion_physical_expr::{Partitioning, PhysicalExpr};
 use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::{ChildStats, ExecutionPlan, StatisticsArgs};
 
 use super::static_checks::stale_columns;
 use super::{
-    overall_statistics, partition_count, partition_statistics, reports_sorted_output,
+    moves_rows_between_partitions, overall_statistics, partition_count,
+    partition_statistics, reports_sorted_output,
 };
 use crate::fixtures::ROW_ID_COLUMN;
-use crate::oracle::InputOrder;
+use crate::oracle::{InputOrder, RowPosition};
 use crate::{CheckContext, Finding, NodeOutput, oracle};
 
 /// A6: the rows of a child for which `maintains_input_order()` is false keep
@@ -58,17 +61,27 @@ pub(super) fn maintains_input_order_missed(
     let mut findings = vec![];
     for (i, child) in node.children().into_iter().enumerate() {
         // Input that is sorted, or has a constant, is not in a random order:
-        // its order can be the order the node sorts it into
-        if maintains.get(i) != Some(&false) || reports_sorted_output(child.as_ref()) {
+        // its order can be the order the node sorts it into. A node that
+        // places rows in partitions by their values can leave the rows of
+        // generated input where they are.
+        if maintains.get(i) != Some(&false)
+            || reports_sorted_output(child.as_ref())
+            || moves_rows_between_partitions(node.as_ref(), i)
+        {
             continue;
         }
         let Some(child_output) = context.output(child) else {
             continue;
         };
-        let Some(InputOrder::Kept {
+        let Some(positions) =
+            tracked_positions(&schema, output, &child.schema(), child_output)
+        else {
+            continue;
+        };
+        let InputOrder::Kept {
             input_partitions,
             max_partition_rows,
-        }) = tracked_order(&schema, output, &child.schema(), child_output)
+        } = oracle::input_order_of(&positions)
         else {
             continue;
         };
@@ -89,17 +102,19 @@ pub(super) fn maintains_input_order_missed(
     Ok(findings)
 }
 
-/// Where the rows of a child appear in the output of a node, tracked by the
-/// [`ROW_ID_COLUMN`] of the child and the one row id column of the output
-/// that has its ids. `None` if the child does not have exactly one row id
-/// column, the output has no row id column or several with its ids, or the
-/// batches do not match the schemas, which `batch_schema` reports.
-fn tracked_order(
+/// For each row of each output partition of a node, the position of the row
+/// of a child that it copies, if any (see [`oracle::input_positions`]),
+/// tracked by the [`ROW_ID_COLUMN`] of the child and the one row id column of
+/// the output that has its ids. `None` if the child does not have exactly one
+/// row id column, or its ids are not unique, the output has no row id column
+/// or several with its ids, or the batches do not match the schemas, which
+/// `batch_schema` reports.
+fn tracked_positions(
     schema: &Schema,
     output: &NodeOutput,
     child_schema: &Schema,
     child_output: &NodeOutput,
-) -> Option<InputOrder> {
+) -> Option<Vec<Vec<Option<RowPosition>>>> {
     let row_id_columns = |schema: &Schema| -> Vec<usize> {
         schema
             .fields()
@@ -116,19 +131,68 @@ fn tracked_order(
     };
     let mut tracked = vec![];
     for column in row_id_columns(schema) {
-        let order = oracle::input_order(
+        let positions = oracle::input_positions(
             child_output.partitions(),
             child_column,
             output.partitions(),
             column,
         )
-        .ok()?;
-        if order != InputOrder::Untracked {
-            tracked.push(order);
+        .ok()??;
+        if positions.iter().flatten().any(Option::is_some) {
+            tracked.push(positions);
         }
     }
-    let [order] = <[InputOrder; 1]>::try_from(tracked).ok()?;
-    Some(order)
+    let [positions] = <[_; 1]>::try_from(tracked).ok()?;
+    Some(positions)
+}
+
+/// C1: the rows of a child for which `maintains_input_order()` is true keep
+/// their order in the output, as tracked by their row ids: within each output
+/// partition, the rows of each partition of the child appear in the order of
+/// that partition. How rows of several partitions are merged is checked by
+/// `orderings_hold`, against the ordering the node reports.
+pub(super) fn maintains_input_order_holds(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let Some(output) = context.output(node) else {
+        return Ok(vec![]);
+    };
+    let schema = node.schema();
+    let maintains = node.maintains_input_order();
+    let mut findings = vec![];
+    for (i, child) in node.children().into_iter().enumerate() {
+        if maintains.get(i) != Some(&true) {
+            continue;
+        }
+        let Some(child_output) = context.output(child) else {
+            continue;
+        };
+        let child_schema = child.schema();
+        let Some(positions) =
+            tracked_positions(&schema, output, &child_schema, child_output)
+        else {
+            continue;
+        };
+        let describe = |position: RowPosition| {
+            format!(
+                "row {} of partition {} of child {i}",
+                position.row, position.partition
+            )
+        };
+        for order_break in oracle::order_breaks(&positions) {
+            findings.push(Finding::invariant(format!(
+                "maintains_input_order()[{i}] is true, but row {} of output partition \
+                 {} is {}, which comes before {}, at row {} of the output partition",
+                order_break.output_row,
+                order_break.output_partition,
+                describe(order_break.input_row),
+                describe(order_break.earlier_input_row),
+                order_break.earlier_output_row,
+            )));
+        }
+    }
+    Ok(findings)
 }
 
 /// B0: a node executes without errors, panics or timeouts.
@@ -546,6 +610,127 @@ pub(super) fn equivalence_classes_hold(
         }
     }
     Ok(findings)
+}
+
+/// B7: every output row of a node that reports `Partitioning::Hash` is in the
+/// partition that the hash of its key assigns it to, as `RepartitionExec`
+/// hashes it.
+pub(super) fn hash_partitioning_holds(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    // A node that passes a false hash partitioning of its child through, as
+    // a filter does, has a false one too; it is reported on the child
+    for child in node.children() {
+        if !misplaced_rows(child, context)?.is_empty() {
+            return Ok(vec![]);
+        }
+    }
+    misplaced_rows(node, context)
+}
+
+/// A finding for each output partition of `plan` with rows that do not
+/// belong to it by the hash partitioning `plan` reports, if it reports one
+fn misplaced_rows(
+    plan: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let partitioning = plan.properties().output_partitioning();
+    let Partitioning::Hash(exprs, partitions) = partitioning else {
+        return Ok(vec![]);
+    };
+    let Some(output) = context.output(plan) else {
+        return Ok(vec![]);
+    };
+    // An expression that refers to a column by a wrong index or name is
+    // reported by `expression_column_refs`. A key that is not in the output,
+    // which projecting a partitioning marks with an `UnKnownColumn`, matches
+    // no requirement and cannot be evaluated.
+    let unknown_column = |expr: &Arc<dyn PhysicalExpr>| {
+        expr.exists(|expr| Ok(expr.downcast_ref::<UnKnownColumn>().is_some()))
+            .unwrap_or(true)
+    };
+    if !stale_columns("", exprs, &plan.schema(), "")?.is_empty()
+        || exprs.iter().any(unknown_column)
+    {
+        return Ok(vec![]);
+    }
+    let mut findings = vec![];
+    for (p, batches) in output.partitions().iter().enumerate() {
+        // Keys that cannot be evaluated on the output point to a schema
+        // mismatch, which `batch_schema` reports
+        let Ok(split) = oracle::hash_partition(batches, exprs, *partitions) else {
+            continue;
+        };
+        let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+        let kept: usize = split
+            .get(p)
+            .map_or(0, |batches| batches.iter().map(RecordBatch::num_rows).sum());
+        if kept == rows {
+            continue;
+        }
+        // The first row that belongs to the first other partition with rows
+        let example =
+            split
+                .iter()
+                .enumerate()
+                .filter(|(q, _)| *q != p)
+                .find_map(|(q, batches)| {
+                    let batch = batches.iter().find(|batch| batch.num_rows() > 0)?;
+                    Some((q, batch))
+                });
+        let example = match example {
+            Some((q, batch)) => {
+                let key = exprs
+                    .iter()
+                    .map(|expr| {
+                        let values =
+                            expr.evaluate(batch)?.into_array(batch.num_rows())?;
+                        Ok(ScalarValue::try_from_array(&values, 0)?.to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(|key| key.join(", "))
+                    .unwrap_or_default();
+                format!(": one has the key ({key}), which belongs to partition {q}")
+            }
+            None => String::new(),
+        };
+        findings.push(Finding::invariant(format!(
+            "the node reports the partitioning {partitioning}, but {} of the {rows} rows \
+             of partition {p} belong to other partitions by the hash of their \
+             key{example}",
+            rows - kept,
+        )));
+    }
+    Ok(findings)
+}
+
+/// B7: executing partition `partition_count`, which does not exist, returns
+/// an error, from `execute` or from the first poll of the stream it returns,
+/// rather than panicking, producing a batch, ending or hanging.
+pub(super) fn invalid_partition_errors(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    // An error, from `execute` or from the stream, is what is expected
+    let Some(problem) = context.invalid_partition_problem(node) else {
+        return Ok(vec![]);
+    };
+    let partitions = partition_count(node.as_ref());
+    // A node that executes the same partition of a child with as many
+    // partitions, as a filter does, does what the child does; it is reported
+    // on the child
+    let child_fails = node.children().into_iter().any(|child| {
+        partition_count(child.as_ref()) == partitions
+            && context.invalid_partition_problem(child).is_some()
+    });
+    if child_fails {
+        return Ok(vec![]);
+    }
+    Ok(vec![Finding::invariant(format!(
+        "the node has {partitions} output partitions, but execute({partitions}) \
+         {problem}; return an error for a partition at or past the partition count"
+    ))])
 }
 
 /// B8: the number of output rows agrees with `cardinality_effect()`.

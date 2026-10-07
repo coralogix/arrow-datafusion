@@ -26,7 +26,9 @@ use datafusion_execution::memory_pool::{MemoryPool, UnboundedMemoryPool};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::execution_plan::reset_plan_states;
 
-use crate::exec::{collect_output, task_context_with_pool, wait_for_release};
+use crate::exec::{
+    collect_output, execute_invalid_partition, task_context_with_pool, wait_for_release,
+};
 use crate::experiments::{self, Experiment, StreamRun};
 use crate::variants::{self, Variant, VariantRun};
 
@@ -95,6 +97,8 @@ pub(crate) struct Gather {
 /// - With an execution, variant or stream check, every node of the plan is
 ///   executed on its own (all of its output partitions, concurrently), and its
 ///   output is recorded, along with the memory the execution left reserved.
+///   Then partition `partition_count` of the node, which does not exist, is
+///   executed, and what that did is recorded too.
 /// - With a variant check, every [`Variant`] that applies to a node is
 ///   executed after every node was executed normally, and the outputs are
 ///   recorded as [`VariantRun`]s.
@@ -114,6 +118,8 @@ pub struct CheckContext {
     outputs: HashMap<usize, Result<NodeOutput, String>>,
     /// Bytes still reserved after executing each node to completion
     memory: HashMap<usize, usize>,
+    /// What executing one partition past the last partition of each node did
+    invalid_partitions: HashMap<usize, Option<String>>,
     variant_runs: HashMap<usize, Vec<VariantRun>>,
     stream_runs: HashMap<(usize, Experiment), Vec<StreamRun>>,
 }
@@ -145,6 +151,8 @@ impl CheckContext {
                 if let Some(memory) = memory {
                     context.memory.insert(key, memory);
                 }
+                let outcome = execute_invalid_partition(&node, timeouts.execution).await;
+                context.invalid_partitions.insert(key, outcome);
             }
             if gather.experiments {
                 for experiment in Experiment::ALL {
@@ -201,6 +209,17 @@ impl CheckContext {
         node: &Arc<dyn ExecutionPlan>,
     ) -> Option<usize> {
         self.memory.get(&node_key(node)).copied()
+    }
+
+    /// What executing partition `partition_count` of `node`, which does not
+    /// exist, did instead of returning an error, on a fresh copy of the node,
+    /// polling the stream it returns once. `None` if it returned an error, or
+    /// the node was not executed.
+    pub(crate) fn invalid_partition_problem(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+    ) -> Option<&str> {
+        self.invalid_partitions.get(&node_key(node))?.as_deref()
     }
 
     /// The variant runs of `node`, in the order they ran. Empty if no variant
@@ -270,7 +289,9 @@ async fn execute_node(
             return (Err(error), None);
         }
     };
-    let output = collect_output(node, task_context, timeouts.execution).await;
+    let output = collect_output(node, task_context, timeouts.execution)
+        .await
+        .map_err(|error| error.to_string());
     if output.is_err() {
         return (output, None);
     }

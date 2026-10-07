@@ -21,29 +21,33 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::{Int32Array, RecordBatch};
+use arrow::array::{Int32Array, RecordBatch, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_expr::Operator;
-use datafusion_physical_expr::expressions::{BinaryExpr, Column, col, lit};
+use datafusion_physical_expr::expressions::{
+    BinaryExpr, Column, UnKnownColumn, col, lit,
+};
 use datafusion_physical_expr::{
-    AcrossPartitions, ConstExpr, EquivalenceProperties, LexOrdering, PhysicalExpr,
-    PhysicalSortExpr,
+    AcrossPartitions, ConstExpr, EquivalenceProperties, LexOrdering, Partitioning,
+    PhysicalExpr, PhysicalSortExpr,
 };
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::filter::FilterExec;
+use datafusion_physical_plan::repartition::RepartitionExec;
+use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 use datafusion_physical_plan_checks::fixtures::{
-    BatchLayout, MockSourceExec, SourceSpec, StatisticsPrecision,
+    BatchLayout, MockSourceExec, ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
 };
 use datafusion_physical_plan_checks::harness::ROW_ID_RANGE;
 use datafusion_physical_plan_checks::{CheckKind, PlanChecker, Report, Severity};
 
 use crate::common::{
-    ConfigurableExec, Effect, Transform, checker, checker_of, exact_source,
-    inexact_source, messages, schema, source, summary,
+    ConfigurableExec, Effect, InvalidPartition, Transform, checker, checker_of,
+    exact_source, inexact_source, messages, schema, source, summary,
 };
 
 /// The checks that execute the plan
@@ -185,6 +189,137 @@ fn order_that_is_kept_but_not_reported() {
     check(&union).assert_clean();
 }
 
+/// A source with an `Int32` column `a` and a row id column, with one batch of
+/// these `(a, row id)` rows per partition, that declares that every
+/// partition is sorted by `column`
+fn sorted_rows_source(
+    partitions: &[&[(i32, u64)]],
+    column: &str,
+) -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, false),
+        Field::new(ROW_ID_COLUMN, DataType::UInt64, false),
+    ]));
+    let partitions = partitions
+        .iter()
+        .map(|rows| {
+            let a = Arc::new(Int32Array::from_iter_values(rows.iter().map(|row| row.0)));
+            let ids =
+                Arc::new(UInt64Array::from_iter_values(rows.iter().map(|row| row.1)));
+            vec![RecordBatch::try_new(Arc::clone(&schema), vec![a, ids]).unwrap()]
+        })
+        .collect();
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+        col(column, &schema).unwrap(),
+    )])
+    .unwrap();
+    Arc::new(
+        MockSourceExec::try_new(schema, partitions)
+            .unwrap()
+            .try_with_output_ordering(ordering)
+            .unwrap(),
+    )
+}
+
+#[test]
+fn maintained_order_that_does_not_hold() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["maintains_input_order_holds"])
+            .check(plan)
+            .unwrap()
+    };
+    let input =
+        sorted_rows_source(&[&[(1, 0), (2, 1), (3, 2)], &[], &[(4, 3), (5, 4)]], "a");
+    let report = check(
+        &ConfigurableExec::new(Arc::clone(&input))
+            .transform(Transform::Reverse)
+            .build(),
+    );
+    assert_eq!(
+        messages(&report),
+        vec![
+            "maintains_input_order()[0] is true, but row 1 of output partition 0 is row 1 \
+             of partition 0 of child 0, which comes before row 2 of partition 0 of child \
+             0, at row 0 of the output partition",
+            "maintains_input_order()[0] is true, but row 1 of output partition 2 is row 0 \
+             of partition 2 of child 0, which comes before row 1 of partition 2 of child \
+             0, at row 0 of the output partition",
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Invariant, "maintains_input_order_holds"); 2]
+    );
+
+    // A repeated row must be next to its copy
+    let report = check(
+        &ConfigurableExec::new(Arc::clone(&input))
+            .transform(Transform::Duplicate)
+            .build(),
+    );
+    assert_eq!(
+        messages(&report),
+        vec![
+            "maintains_input_order()[0] is true, but row 3 of output partition 0 is row 0 \
+             of partition 0 of child 0, which comes before row 2 of partition 0 of child \
+             0, at row 2 of the output partition",
+            "maintains_input_order()[0] is true, but row 2 of output partition 2 is row 0 \
+             of partition 2 of child 0, which comes before row 1 of partition 2 of child \
+             0, at row 1 of the output partition",
+        ]
+    );
+
+    // A child that reports no ordering is checked too: the claim is that the
+    // node never reorders the child's rows
+    let report = check(
+        &ConfigurableExec::new(row_id_source(&[40, 0, 60]))
+            .transform(Transform::Reverse)
+            .build(),
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Invariant, "maintains_input_order_holds"); 2]
+    );
+}
+
+#[test]
+fn maintained_order_that_holds() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["maintains_input_order_holds"])
+            .check(plan)
+            .unwrap()
+            .assert_clean();
+    };
+    let input = sorted_rows_source(&[&[(1, 0), (3, 1)], &[], &[(2, 2), (4, 3)]], "a");
+    // Filters and merges keep the order
+    check(&ConfigurableExec::new(Arc::clone(&input)).build());
+    let predicate = Arc::new(BinaryExpr::new(
+        col("a", &input.schema()).unwrap(),
+        Operator::NotEq,
+        lit(3),
+    ));
+    check(&(Arc::new(FilterExec::try_new(predicate, Arc::clone(&input)).unwrap()) as _));
+    let merge = SortPreservingMergeExec::new(ordering_on_a(), Arc::clone(&input));
+    check(&(Arc::new(merge) as _));
+    // How rows of several partitions are interleaved in one output partition
+    // is not checked here: `orderings_hold` checks the ordering the node
+    // reports. This coalesce keeps the order of each input partition.
+    let mut coalesce = ConfigurableExec::new(sorted_rows_source(
+        &[&[(1, 0), (3, 1)], &[(2, 2), (4, 3)]],
+        "a",
+    ));
+    coalesce.coalesce = true;
+    coalesce.maintains_order = Some(true);
+    check(&coalesce.build());
+
+    // Not checked over a child whose rows cannot be tracked
+    check(
+        &ConfigurableExec::new(sorted_source())
+            .transform(Transform::Reverse)
+            .build(),
+    );
+}
+
 #[test]
 fn execute_error_is_reported_on_the_failing_node_only() {
     let mut exec = ConfigurableExec::new(exact_source(100));
@@ -232,9 +367,13 @@ fn timeout_is_reported() {
         .with_stream_timeout(Duration::from_millis(100))
         .check(&plan)
         .unwrap();
+    // The node also hangs when asked for a partition it does not have
     assert_eq!(
         summary(&report),
-        vec![(Severity::Invariant, "execution_succeeds")]
+        vec![
+            (Severity::Invariant, "execution_succeeds"),
+            (Severity::Invariant, "invalid_partition_errors")
+        ]
     );
     assert!(messages(&report)[0].contains("did not finish"), "{report}");
 }
@@ -704,6 +843,160 @@ fn equivalence_classes_that_do_not_hold() {
             Vec::<String>::new()
         );
     }
+}
+
+/// A node that passes `input` through, and reports `partitioning`
+fn claiming_partitioning(
+    input: Arc<dyn ExecutionPlan>,
+    partitioning: Partitioning,
+) -> Arc<dyn ExecutionPlan> {
+    let mut exec = ConfigurableExec::new(input);
+    exec.claimed_partitioning = Some(partitioning);
+    exec.build()
+}
+
+#[test]
+fn hash_partitioning_that_holds() {
+    let check = |plan: &Arc<dyn ExecutionPlan>| {
+        checker(&["hash_partitioning_holds"])
+            .check(plan)
+            .unwrap()
+            .assert_clean();
+    };
+    let input = values_source(&[&[Some(1), Some(2), None], &[Some(3), Some(1)]]);
+    let a = col("a", &input.schema()).unwrap();
+    let repartition: Arc<dyn ExecutionPlan> = Arc::new(
+        RepartitionExec::try_new(
+            Arc::clone(&input),
+            Partitioning::Hash(vec![Arc::clone(&a)], 3),
+        )
+        .unwrap(),
+    );
+    check(&repartition);
+    // A filter keeps the hash partitioning of its input
+    let predicate = Arc::new(BinaryExpr::new(Arc::clone(&a), Operator::NotEq, lit(2)));
+    check(&(Arc::new(FilterExec::try_new(predicate, repartition).unwrap()) as _));
+    // A key that is not in the output, or that refers to a column by a wrong
+    // name, which `expression_column_refs` reports, is not checked
+    for key in [
+        Arc::new(UnKnownColumn::new("x")) as Arc<dyn PhysicalExpr>,
+        Arc::new(Column::new("x", 0)),
+    ] {
+        check(&claiming_partitioning(
+            Arc::clone(&input),
+            Partitioning::Hash(vec![key], 2),
+        ));
+    }
+}
+
+#[test]
+fn hash_partitioning_that_does_not_hold() {
+    let input = values_source(&[&[Some(1), Some(2), None, Some(3)], &[Some(3), Some(2)]]);
+    let a = col("a", &input.schema()).unwrap();
+    let claiming = claiming_partitioning(input, Partitioning::Hash(vec![a], 2));
+    let report = checker(&["hash_partitioning_holds"])
+        .check(&claiming)
+        .unwrap();
+    assert_eq!(
+        messages(&report),
+        vec![
+            "the node reports the partitioning Hash([a@0], 2), but 2 of the 4 rows of \
+             partition 0 belong to other partitions by the hash of their key: one has \
+             the key (1), which belongs to partition 1",
+            "the node reports the partitioning Hash([a@0], 2), but 1 of the 2 rows of \
+             partition 1 belong to other partitions by the hash of their key: one has \
+             the key (2), which belongs to partition 0",
+        ]
+    );
+    assert_eq!(
+        summary(&report),
+        vec![(Severity::Invariant, "hash_partitioning_holds"); 2]
+    );
+
+    // A node that passes the false partitioning of its child through is not
+    // reported: the child is
+    let parent = ConfigurableExec::new(claiming).build();
+    let report = checker(&["hash_partitioning_holds"])
+        .check(&parent)
+        .unwrap();
+    assert_eq!(report.violations.len(), 2, "{report}");
+    assert!(
+        report.violations.iter().all(|v| v.path == vec![0]),
+        "{report}"
+    );
+}
+
+#[test]
+fn invalid_partitions() {
+    let check = |exec: ConfigurableExec| {
+        let report = checker(&["invalid_partition_errors"])
+            .check(&exec.build())
+            .unwrap();
+        messages(&report)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let exec = |invalid_partition| {
+        let mut exec =
+            ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact));
+        exec.invalid_partition = invalid_partition;
+        exec
+    };
+    let reported = |problem: &str| {
+        vec![format!(
+            "the node has 3 output partitions, but execute(3) {problem}; return an \
+             error for a partition at or past the partition count"
+        )]
+    };
+    assert_eq!(
+        check(exec(InvalidPartition::PanicInExecute)),
+        reported("panicked: ConfigurableExec has no partition 3")
+    );
+    assert_eq!(
+        check(exec(InvalidPartition::PanicInStream)),
+        reported(
+            "returned a stream that panicked when polled: ConfigurableExec has no \
+             partition 3"
+        )
+    );
+    assert_eq!(
+        check(exec(InvalidPartition::EmptyStream)),
+        reported("returned a stream that ended without an error")
+    );
+    // A node that produces every input partition in its one partition, for any
+    // partition it is asked for
+    let mut coalesce =
+        ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact));
+    coalesce.coalesce = true;
+    let batch = check(coalesce);
+    assert_eq!(batch.len(), 1);
+    assert!(
+        batch[0].starts_with(
+            "the node has 1 output partitions, but execute(1) returned a stream that \
+             produced a batch of"
+        ),
+        "{batch:?}"
+    );
+
+    // An error from `execute`, as the input returns, or from the stream, is
+    // what the check expects
+    assert_eq!(
+        check(exec(InvalidPartition::PassToInput)),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        check(exec(InvalidPartition::ErrorInStream)),
+        Vec::<String>::new()
+    );
+    // A node that passes the partition to a child with as many partitions
+    // does what the child does, and is not reported
+    let parent = ConfigurableExec::new(exec(InvalidPartition::PanicInExecute).build());
+    let report = checker(&["invalid_partition_errors"])
+        .check(&parent.build())
+        .unwrap();
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
 }
 
 #[test]

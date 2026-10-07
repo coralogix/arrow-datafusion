@@ -60,9 +60,9 @@ Checks come in four kinds:
 Section F covers the lifecycle of execution: cleanup, errors and edge cases.
 
 In code, each check has a `CheckKind` that says what the checker gathers for
-it before checks run: nothing (`Static`, section A apart from A5 and A6), the
-output of each node and the memory its execution left reserved (`Execution`,
-A6, B0 to B8 and `memory_released` in F1), variant runs (`Variant`, A5,
+it before checks run: nothing (`Static`, section A apart from A5 and A6, and
+F5), the output of each node and the memory its execution left reserved (`Execution`,
+A6, B0 to B8, C1 and `memory_released` in F1), variant runs (`Variant`, A5,
 sections D and E) or stream experiments (`Stream`, B10 to B12,
 `streams_released` in F1, and F2).
 
@@ -76,9 +76,11 @@ and check it with a `harness::PlanHarness`, which generates the inputs and
 runs the checks on several cases (see [Cases](#cases)).
 
 When any enabled check needs execution, the checker executes every node of
-the plan on its own before running checks. Each execution uses a fresh copy of
-the node's subtree made with `reset_plan_states`, so state left behind by one
-execution, such as a dynamic filter, does not affect another.
+the plan on its own before running checks, and then executes the partition
+one past its last partition, for `invalid_partition_errors`. Each execution
+uses a fresh copy of the node's subtree made with `reset_plan_states`, so
+state left behind by one execution, such as a dynamic filter, does not affect
+another.
 
 ### Stream experiments
 
@@ -141,6 +143,10 @@ normally, so that their sizes can depend on the normal outputs:
   batches of up to 3 rows with empty batches, and into one batch per
   partition. The leaves keep the same rows in the same order and partitions,
   and the same `PlanProperties`, so the rebuilt node keeps its properties.
+- `Reset` executes the copy to completion, resets it with
+  `reset_plan_states`, and executes it again; `Rerun` executes the copy to
+  completion twice, without a reset. Their output is that of the second
+  execution.
 
 Rows are compared with the functions in `oracle`: as multisets, in order, and
 as a prefix of a sorted sequence in which rows that tie on the sort key may
@@ -164,7 +170,16 @@ each a fully specified set of inputs. `Profile::defaults()` gives:
   partition, or one value per partition, and the inputs declare the
   constants;
 - `copied columns`: every column of every input other than the row id has a
-  copy, named with the suffix `__copy`, which the input declares equal to it.
+  copy, named with the suffix `__copy`, which the input declares equal to it;
+- `sorted by row id`: every input that does not need another ordering
+  declares that its partitions are sorted by the row id column, which they
+  are, so every node sees sorted input. Nodes take other code paths on input
+  that reports an ordering, such as `HashJoinExec`, which keeps the order of
+  its probe side only then, and report orderings of their own, which
+  `orderings_hold` and the checks of sections D and E then check;
+- `hash partitioned`: every input that does not need another partitioning is
+  hash partitioned on its first column into three partitions, and declares
+  it, so every node sees hash partitioned input.
 
 Every case splits the rows of each partition into random batches of up to 16
 rows, including empty batches.
@@ -312,6 +327,13 @@ too. The other checks never call `execute`.
     `SortExec`, passes input that is already sorted through, and input
     sorted on a constant keeps its order. The equivalence properties of a
     sort on a constant report no ordering, so the constant is what shows it.
+  - A node that can move the rows of a child with several partitions
+    between partitions, which it shows by computing the statistics of an
+    output partition from the overall statistics of the child
+    (`child_stats_requests`), as `RepartitionExec` does. Where such a node
+    puts a row depends on its values, and on generated data it can leave
+    every row where it is: a hash repartition of input hash partitioned the
+    same way, or of input with one value of the key per partition.
 - **Why:** a prefix-closed node can let a limit move below it, so its inputs
   produce less data. `LimitPushdown` stops at a node that does not support
   limit pushdown: it gives the node the limit as a fetch, or adds a limit
@@ -350,6 +372,8 @@ too. The other checks never call `execute`.
   - A child that reports an ordering or a constant. Sorted input is not in a
     random order, and can be in the order that the node sorts it into, as
     can input sorted on a constant, for which a sort reports no ordering.
+  - A node that can move the rows of a child with several partitions between
+    partitions, as in A5.
 - **Why:** `maintains_input_order` lets the optimizer avoid re-sorting. A
   false value that should be true costs an unnecessary sort.
 - **Fix:** return true for that child and make sure the output equivalence
@@ -607,17 +631,51 @@ what the plan reports.
 
 - **Severity:** Invariant.
 - **What:**
-  - `hash_partitioning_holds`: with `Partitioning::Hash(exprs, n)`, a key
-    tuple never appears in two partitions, and the partition index equals
-    `hash(key) % n` using the hash that `RepartitionExec` uses.
-  - `invalid_partition_errors`: `execute(i)` with `i` at or past the
-    partition count returns an error, not a panic.
+
+  - `hash_partitioning_holds` (requires execution): with
+    `Partitioning::Hash(exprs, n)`, every row of output partition `p` is in
+    the partition that `RepartitionExec` would send it to: `BatchPartitioner`
+    with the same expressions and `n` puts it in partition `p`. So a key
+    tuple never appears in two partitions. Not checked:
+
+    - a node over a child whose own hash partitioning is false, which is
+      reported on the child: a node that passes its child's partitioning
+      through, as a filter does, has a false one too;
+    - expressions that refer to a column by a wrong index or name, which
+      `expression_column_refs` reports, and keys that are not in the output,
+      which projecting a partitioning marks with an `UnKnownColumn`, so that
+      the partitioning matches no requirement.
+
+    One finding for each output partition with rows of other partitions,
+    giving how many, and the key of one of them with the partition it
+    belongs to. The harness reaches nodes that pass hash partitioning
+    through in the `hash partitioned` case.
+
+  - `invalid_partition_errors` (requires execution): `execute(n)` on a node
+    with `n` output partitions returns an error. The checker executes
+    partition `n` of a fresh copy of every node, with panics caught, and
+    polls the stream it returns once, within the execution timeout. An error
+    from `execute`, or as the first item of the stream, is what the check
+    expects: many nodes only call `execute` on their children when their
+    stream is first polled, and either way the query fails instead of
+    returning wrong data. A panic in `execute` or in the poll, a batch, a
+    stream that ends without an error, and a stream that produces nothing
+    within the timeout are reported. Partitions past `n` are not tried. A node
+    that executes the same partition of a child with as many partitions, as
+    a filter does, is not reported when the child is, since it does what the
+    child does. One finding per node, saying what happened.
+
 - **Why:** partitioned joins and aggregates assume that two inputs hash
   partitioned on equal keys are co-partitioned. A node that claims hash
   partitioning but distributes rows differently silently drops join matches
-  or splits groups.
+  or splits groups. A node asked for a partition it does not have, by a
+  parent with a wrong partition count or by a scheduler, must fail the query
+  rather than return the rows of another partition or none, or bring down
+  the thread with a panic.
 - **Fix:** report `UnknownPartitioning` unless the node's partitioning really
-  matches the repartition hash.
+  matches the repartition hash. Check the partition index in `execute`, or
+  in the stream it returns, and return an error such as
+  `internal_err!("Invalid partition {partition}")`.
 
 ### B8 `cardinality_effect_holds`
 
@@ -768,11 +826,44 @@ through, which lets the checks track where each output row came from.
 ### C1 `maintains_input_order_holds`
 
 - **Severity:** Invariant.
-- **What:** if `maintains_input_order()[i]` is true, rows from child `i` keep
-  their relative order within each output partition.
+- **Requires execution** (the normal output of the node and of its
+  children).
+- **What:** if `maintains_input_order()[i]` is true, then within each output
+  partition, the rows of each partition of child `i` appear in the order of
+  that partition, whether or not the child reports an ordering:
+  `ExecutionPlan::maintains_input_order` documents that it must be false if
+  the node may reorder rows "within or between partitions". A row can
+  repeat, as a join repeats a row once per match, as long as no later row of
+  the same child partition comes between its copies. Rows are tracked by
+  their row ids, as in A6: the child must have exactly one `__row_id`
+  column, with unique ids, and exactly one `__row_id` column of the output
+  must have ids of the child. Output rows without such an id, such as rows
+  of another child or rows an outer join pads with nulls, are ignored, and
+  so is how rows of several child partitions are interleaved in one output
+  partition.
+- **Interleaved partitions:** a node that maintains order and puts rows of
+  several child partitions in one output partition, such as
+  `SortPreservingMergeExec` or an order preserving `RepartitionExec`, must
+  merge them by the ordering it keeps. Such a node reports that ordering,
+  so a bad merge is reported by `orderings_hold` (B3), not here.
+- **Not checked:** rows that cannot be tracked: a node whose output has no
+  row id column of the child, such as an aggregate or a projection that
+  drops it, or a child whose ids are not unique, such as a join that repeats
+  its input rows.
+- **Reporting:** one finding for each output partition and partition of the
+  child whose rows are out of order, giving the first row that comes before
+  an earlier row of the same child partition.
 - **Why:** the optimizer keeps orderings through nodes that claim to maintain
-  them and removes the sorts above.
-- **Fix:** return false for that child.
+  them and removes the sorts above, or pushes sorts below them: sort
+  pushdown pushes a sort below a node that maintains the order of a child
+  (`sort_pushdown.rs`, `handle_custom_pushdown` and `handle_hash_join`),
+  `EnforceSorting` keeps a sort below such a node and removes the sorts that
+  its ordering makes unnecessary, and `replace_with_order_preserving_variants`
+  follows the claim to find order losing repartitions. With input that
+  reports no ordering, there is no reported ordering to lose, but a node that
+  only keeps the order of sorted input makes a conditional claim the
+  optimizer cannot see.
+- **Fix:** return false for that child, or keep the order of every input.
 
 ### C2 `required_input_ordering_honest`
 
@@ -960,12 +1051,36 @@ ordering is claimed. Rows that tie on the sort key may appear in any order.
 ### D9 `reset_state_reexecution`
 
 - **Severity:** Invariant.
-- **What:** after `reset_plan_states`, executing the plan again gives the same
-  results. Executing the same partition twice either gives the same results
-  or returns an error, never different data.
-- **Why:** recursive queries re-execute plans.
+- **Requires execution** (the `Reset` and `Rerun` variants).
+- **What:**
+
+  - After `reset_plan_states`, executing the plan again gives the same
+    results (the `Reset` variant): every partition of the second execution
+    is compared with the normal output as in section E, so a node with a
+    fetch only has to produce a valid result of its fetch, and every
+    ordering the node reports must hold. Errors, panics and timeouts are
+    reported.
+  - Executing every partition of the same plan again, without a reset (the
+    `Rerun` variant), either gives the same results, compared the same way,
+    or returns an error. A panic, or not finishing within the execution
+    timeout, is reported as well as different data.
+
+  As in section E, a node is only compared when every child produced the
+  same rows, in the same order and partitions, in the same variant as
+  normally, so a child whose second execution differs is reported instead
+  of the nodes above it.
+
+- **Reporting:** one finding per variant for the rows, and one per ordering
+  that no longer holds, as in section E.
+- **Why:** recursive queries re-execute plans, after resetting them with
+  `reset_plan_states` (`reset_state` is documented as what re-execution
+  needs). A plan that is executed again without a reset, for example a
+  cached physical plan, must not return wrong results silently.
 - **Fix:** clear all execution state, such as shared build sides and dynamic
-  filters, in `reset_state`.
+  filters, in `reset_state`, and return an error from a second execution
+  that cannot reuse the state of the first.
+- **Not checked:** executing a single partition twice while the others run
+  once; every partition is executed again together.
 
 ### D10 `proto_roundtrip`
 
@@ -1125,4 +1240,25 @@ the spill path.
 
 - **Severity:** Invariant.
 - **What:** every `DisplayFormatType` and the tree renderer work without
-  panicking, and `name()` is not empty.
+  panicking, and `name()` is not empty. The node alone is formatted with
+  `fmt_as` in `Default`, `Verbose` and `TreeRender`, and the node and its
+  descendants with the tree renderer (`displayable(plan).tree_render()`),
+  each into a `String`, with panics caught. Returning `fmt::Error` is
+  reported too: writing to a `String` cannot fail, and `to_string()`, which
+  `EXPLAIN` uses, panics on it. A panic in `name()` is reported as well.
+- **Attribution:** the tree renderer formats every node of the subtree, so a
+  node whose `TreeRender` output panics makes the tree renderer panic for
+  every ancestor. The tree renderer is only reported for a node whose
+  children all render.
+- **Reporting:** one finding for an empty or panicking `name()`, and one for
+  each way of displaying the node that fails, with the panic message.
+- **Not checked:** `displayable(plan).indent()`, `one_line()` and
+  `graphviz()`, which format each node with `fmt_as` in `Default` or
+  `Verbose`, and the statistics and schema that `EXPLAIN VERBOSE` can add.
+- **Why:** `EXPLAIN`, logging and error messages display plans. A display
+  that panics takes down the query, or the process, that wanted to show it.
+- **Fix:** do not index, unwrap or slice in `fmt_as`, and return a non-empty
+  constant from `name()`.
+- **Helper:** the crate's `display::display` renders a plan in one of these
+  ways (`DisplayKind`), with panics and `fmt::Error` caught, for checks that
+  compare the displays of two plans, such as D10.

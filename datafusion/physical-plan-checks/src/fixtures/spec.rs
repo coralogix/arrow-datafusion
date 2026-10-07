@@ -25,6 +25,7 @@ use datafusion_common::{Result, ScalarValue, plan_err};
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::{
     AcrossPartitions, ConstExpr, LexOrdering, Partitioning, PhysicalExpr,
+    PhysicalSortExpr,
 };
 use datafusion_physical_plan::ExecutionPlan;
 use rand::rngs::StdRng;
@@ -193,6 +194,9 @@ pub struct SourceSpec {
     precision: StatisticsPrecision,
     /// The first row id, if the source has a row id column
     first_row_id: Option<u64>,
+    /// Declare that every partition is sorted by the row id column, when no
+    /// other ordering is set
+    row_id_ordering: bool,
     seed: u64,
 }
 
@@ -214,6 +218,7 @@ impl SourceSpec {
             copies: vec![],
             precision: StatisticsPrecision::Exact,
             first_row_id: None,
+            row_id_ordering: false,
             seed: 0,
         }
     }
@@ -323,9 +328,20 @@ impl SourceSpec {
     /// Row ids make every row unique, and let checks track where an output row
     /// came from. Use a different `first_id` for each input of a plan so that
     /// ids do not overlap. The source does not declare an ordering on the row
-    /// id column.
+    /// id column, unless [`Self::with_row_id_ordering`] says so.
     pub fn with_row_ids(mut self, first_id: u64) -> Self {
         self.first_row_id = Some(first_id);
+        self
+    }
+
+    /// Declare that every partition is sorted by the row id column, ascending,
+    /// which it is, since ids increase in the order rows are produced. Only
+    /// applies to a spec with row ids ([`Self::with_row_ids`]) and without an
+    /// ordering set with [`Self::with_ordering`], which the source declares
+    /// instead (its partitions are also sorted by the row id column, but the
+    /// source declares one ordering).
+    pub fn with_row_id_ordering(mut self) -> Self {
+        self.row_id_ordering = true;
         self
     }
 
@@ -472,10 +488,17 @@ impl SourceSpec {
             .map(|batch| split_rows(batch, self.batch_layout, &mut rng))
             .collect();
 
-        let mut source = MockSourceExec::try_new(schema, partitions)?
+        let mut source = MockSourceExec::try_new(Arc::clone(&schema), partitions)?
             .with_statistics_precision(self.precision);
         if let Some(ordering) = &self.ordering {
             source = source.try_with_output_ordering(ordering.clone())?;
+        } else if self.row_id_ordering
+            && self.first_row_id.is_some()
+            && let Some(ordering) = LexOrdering::new([PhysicalSortExpr::new_default(
+                Arc::new(Column::new(ROW_ID_COLUMN, schema.index_of(ROW_ID_COLUMN)?)),
+            )])
+        {
+            source = source.try_with_output_ordering(ordering)?;
         }
         if let PartitionLayout::Hash {
             exprs, partitions, ..

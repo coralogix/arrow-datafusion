@@ -126,11 +126,14 @@ and does it reach the nodes above them?**
   `reports_sorted_output`).
 - When generated cases cannot reach a situation, describe it (rule 2). For
   example, `FilterExec` on `a = 3` claims `distinct_count` `Exact(1)` for a
-  partition with rows but no 3; the generated partitions are large enough
-  to always contain every value. Say what would reach it (a profile with
-  many small partitions, a base spec with more distinct values) and ask
-  before adding it. Hand-written factories in `tests/builtin_plans.rs` are
-  the last resort, and each says what it exercises.
+  partition with rows but no 3, which no case showed while every generated
+  partition contained every value; the `hash partitioned` profile, which
+  puts every 3 in one partition, reaches it. Say what would reach such a
+  situation (a profile with many small partitions, a base spec with more
+  distinct values) and ask before adding it.
+- Add a factory for each configuration of a node (mode, flag, option)
+  without asking; only a multi-node plan built for one edge case needs
+  justification. See "One factory per configuration" in `DESIGN.md`.
 
 ### 5. Test the check
 

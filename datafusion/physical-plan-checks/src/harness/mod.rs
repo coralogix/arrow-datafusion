@@ -198,6 +198,18 @@ pub struct Profile {
     /// declares equal to it (see [`SourceSpec::with_copy`]). The row id column
     /// has none.
     pub copies: bool,
+    /// Whether every input that does not need another ordering declares that
+    /// its partitions are sorted by its row id column, which they are (see
+    /// [`SourceSpec::with_row_id_ordering`]), so that every node sees sorted
+    /// input
+    pub row_id_ordering: bool,
+    /// Whether every input is hash partitioned on the first column of its
+    /// base spec into one partition per weight of
+    /// [`Self::partition_weights`], and declares it (see
+    /// [`SourceSpec::with_hash_partitioning`]), so that every node sees hash
+    /// partitioned input. How many rows each partition gets then depends on
+    /// the data. An input that must be partitioned otherwise is.
+    pub hash_partitioning: bool,
     /// Whether the [`CheckKind::Stream`] checks run. They depend on how a plan
     /// drives its streams rather than on the shape of its data, and several of
     /// them wait for timeouts, so only [`Self::default_profile`] runs them.
@@ -207,8 +219,8 @@ pub struct Profile {
 impl Profile {
     /// A profile named `name` with three partitions, the second of them empty
     /// and the third with twice the rows of the first, exact statistics, seed
-    /// 0, and no constant or copied columns, that does not run the stream
-    /// checks
+    /// 0, no constant or copied columns, no ordering on the row ids and no
+    /// hash partitioning, that does not run the stream checks
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -218,6 +230,8 @@ impl Profile {
             seed: 0,
             constants: None,
             copies: false,
+            row_id_ordering: false,
+            hash_partitioning: false,
             stream_checks: false,
         }
     }
@@ -234,8 +248,11 @@ impl Profile {
     /// then `single partition`, `inexact statistics`, `absent statistics`,
     /// `empty input`, `uniform constants` (every column has the same value in
     /// every partition), `constants per partition` (every column has one
-    /// value per partition) and `copied columns` (every column has a copy
-    /// that the input declares equal to it)
+    /// value per partition), `copied columns` (every column has a copy
+    /// that the input declares equal to it), `sorted by row id` (every input
+    /// that does not need another ordering declares that it is sorted by its
+    /// row ids) and `hash partitioned` (every input that does not need
+    /// another partitioning is hash partitioned on its first column)
     pub fn defaults() -> Vec<Self> {
         vec![
             Self::default_profile(),
@@ -266,6 +283,14 @@ impl Profile {
             Self {
                 copies: true,
                 ..Self::new("copied columns")
+            },
+            Self {
+                row_id_ordering: true,
+                ..Self::new("sorted by row id")
+            },
+            Self {
+                hash_partitioning: true,
+                ..Self::new("hash partitioned")
             },
         ]
     }

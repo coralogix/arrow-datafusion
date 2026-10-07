@@ -501,6 +501,60 @@ fn case_inputs_follow_the_profile() {
 }
 
 #[test]
+fn row_id_ordering_and_hash_partitioning_profiles() {
+    let profile = |name: &str| {
+        Profile::defaults()
+            .into_iter()
+            .find(|profile| profile.name == name)
+            .unwrap()
+    };
+    let harness = static_harness().with_profiles(vec![
+        profile("sorted by row id"),
+        profile("hash partitioned"),
+    ]);
+    let cases = harness.cases(&filter()).unwrap();
+    let inputs: Vec<Plan> = cases
+        .iter()
+        .map(|case| Arc::clone(case.plan.children()[0]))
+        .collect();
+
+    // Every input declares that it is sorted by its row ids
+    let ordering = inputs[0].properties().output_ordering().unwrap();
+    assert_eq!(ordering.to_string(), format!("{ROW_ID_COLUMN}@2 ASC"));
+    assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[20, 0, 40][..]));
+
+    // Every input is hash partitioned on its first column, into the profile's
+    // partitions
+    assert_eq!(
+        inputs[1].properties().output_partitioning().to_string(),
+        "Hash([a@0], 3)"
+    );
+    assert_eq!(cases[1].inputs[0].num_rows(), 60);
+
+    // Inputs that must be laid out otherwise are
+    let cases = harness
+        .cases(&hash_join(PartitionMode::CollectLeft))
+        .unwrap();
+    let [build, probe] = cases[1].inputs.as_slice() else {
+        panic!("two inputs");
+    };
+    assert_eq!(build.partition_rows(), Some(&[60][..]));
+    assert_eq!(probe.hash_partitioning().unwrap()[0].to_string(), "c@0");
+    let cases = harness
+        .cases(&one_input("SortPreservingMergeExec", |input| {
+            Ok(Arc::new(SortPreservingMergeExec::new(
+                ordering_on("b", &input)?,
+                input,
+            )))
+        }))
+        .unwrap();
+    assert_eq!(
+        cases[0].inputs[0].ordering().unwrap().to_string(),
+        "b@1 ASC"
+    );
+}
+
+#[test]
 fn row_id_columns() {
     let factory = hash_join(PartitionMode::CollectLeft);
     let case = &static_harness().cases(&factory).unwrap()[0];

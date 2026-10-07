@@ -22,6 +22,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use datafusion_common::{Result, plan_err};
+use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::{
     Distribution, LexOrdering, LexRequirement, OrderingRequirements, PhysicalExpr,
     PhysicalSortExpr,
@@ -67,8 +68,21 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
                     spec = spec.with_copy(name);
                 }
             }
-            spec.with_partition_rows(&profile.partition_rows(rows))
-                .with_batch_layout(BATCH_LAYOUT)
+            if profile.row_id_ordering {
+                spec = spec.with_row_id_ordering();
+            }
+            spec = spec.with_partition_rows(&profile.partition_rows(rows));
+            if profile.hash_partitioning
+                && let Some(first) = schema.fields().first()
+            {
+                let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new(first.name(), 0));
+                spec = spec.with_hash_partitioning(
+                    vec![key],
+                    profile.partition_weights.len().max(1),
+                    rows,
+                );
+            }
+            spec.with_batch_layout(BATCH_LAYOUT)
                 .with_statistics_precision(profile.statistics)
                 .with_seed(profile.seed.wrapping_mul(1000).wrapping_add(i as u64))
                 .with_row_ids(i as u64 * ROW_ID_RANGE)

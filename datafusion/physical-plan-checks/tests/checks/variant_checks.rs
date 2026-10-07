@@ -24,22 +24,25 @@ use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use datafusion_physical_expr::expressions::col;
-use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion_physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::limit::GlobalLimitExec;
 use datafusion_physical_plan::projection::ProjectionExec;
+use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan_checks::fixtures::{BatchLayout, SourceSpec};
+use datafusion_physical_plan_checks::fixtures::{
+    BatchLayout, ConstantValues, SourceSpec,
+};
 use datafusion_physical_plan_checks::{
     CheckKind, Finding, PlanCheck, PlanChecker, Report, Severity, Variant, oracle,
 };
 
 use crate::common::{
-    ConfigurableExec, Effect, FetchMode, Transform, checker, checker_of, messages,
-    schema, summary,
+    ConfigurableExec, Effect, FetchMode, OnRerun, Transform, checker, checker_of,
+    messages, schema, summary,
 };
 
 /// Run only the check named `name`
@@ -179,6 +182,45 @@ fn nodes_that_need_more_than_their_first_input_rows() {
     // Limits that remove no rows show nothing
     let plan = ConfigurableExec::new(rows_source(&[1, 0, 1])).build();
     check_with("limit_pushdown_missed", &plan).assert_clean();
+
+    // A hash repartition of input that is already hash partitioned the same
+    // way leaves every row where it is, as if it passed its input through.
+    // Neither this check nor `maintains_input_order_missed` reports it.
+    let a = col("a", &schema()).unwrap();
+    let partitioned = SourceSpec::new(schema())
+        .with_hash_partitioning(vec![Arc::clone(&a)], 3, 100)
+        .with_row_ids(0)
+        .build_arc()
+        .unwrap();
+    let repartition: Arc<dyn ExecutionPlan> = Arc::new(
+        RepartitionExec::try_new(
+            partitioned,
+            Partitioning::Hash(vec![Arc::clone(&a)], 3),
+        )
+        .unwrap(),
+    );
+    checker(&["limit_pushdown_missed", "maintains_input_order_missed"])
+        .check(&repartition)
+        .unwrap()
+        .assert_clean();
+    // So does an order preserving one of input with one value of the key per
+    // partition, when the values hash to different partitions
+    let constant_per_partition = SourceSpec::new(schema())
+        .with_partition_rows(&[20, 0, 40])
+        .with_constant("a", ConstantValues::PerPartition)
+        .with_ordering(ordering_on_a())
+        .with_row_ids(0)
+        .build_arc()
+        .unwrap();
+    let repartition: Arc<dyn ExecutionPlan> = Arc::new(
+        RepartitionExec::try_new(constant_per_partition, Partitioning::Hash(vec![a], 4))
+            .unwrap()
+            .with_preserve_order(),
+    );
+    checker(&["limit_pushdown_missed"])
+        .check(&repartition)
+        .unwrap()
+        .assert_clean();
 }
 
 #[test]
@@ -611,6 +653,72 @@ fn fetch_may_keep_different_rows_under_other_batch_layouts() {
     );
 }
 
+#[test]
+fn reexecution_that_differs() {
+    let check = |exec: ConfigurableExec| {
+        let report = check_with("reset_state_reexecution", &exec.build());
+        messages(&report)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let exec = |on_rerun| {
+        let mut exec = ConfigurableExec::new(rows_source(&[40, 0, 60]));
+        exec.on_rerun = on_rerun;
+        exec
+    };
+    // Executed again without a reset, the node produces no rows
+    assert_eq!(
+        check(exec(OnRerun::Empty)),
+        vec![
+            "with a second execution of the same plan, without a reset: the node \
+             produced 0 rows, 0 of which do not appear in the normal output, instead \
+             of the 100 rows it produces normally; a plan executed again without \
+             reset_state must produce the same rows or return an error"
+        ]
+    );
+    assert_eq!(
+        check(exec(OnRerun::Panic)),
+        vec![
+            "with a second execution of the same plan, without a reset: executing the \
+             node panicked: ConfigurableExec partition 0 was already executed; return \
+             an error instead"
+        ]
+    );
+    // Its state survives `reset_state`, so it produces no rows after a reset
+    // either
+    let mut keeping_state = exec(OnRerun::Empty);
+    keeping_state.keep_state_on_reset = true;
+    let messages = check(keeping_state);
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages[0].starts_with(
+            "with a second execution after reset_plan_states: the node produced 0 rows"
+        ),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn reexecution_that_gives_the_same_rows_or_an_error() {
+    let check = |exec: ConfigurableExec| {
+        check_with("reset_state_reexecution", &exec.build()).assert_clean();
+    };
+    for on_rerun in [OnRerun::Same, OnRerun::Error] {
+        let mut exec = ConfigurableExec::new(rows_source(&[40, 0, 60]));
+        exec.on_rerun = on_rerun;
+        check(exec);
+    }
+    // A node above a child that produces other rows when executed again is
+    // not compared: the child is reported
+    let mut child = ConfigurableExec::new(rows_source(&[40, 0, 60]));
+    child.on_rerun = OnRerun::Empty;
+    let parent = ConfigurableExec::new(child.build()).build();
+    let report = check_with("reset_state_reexecution", &parent);
+    assert_eq!(report.violations.len(), 1, "{report}");
+    assert_eq!(report.violations[0].path, vec![0]);
+}
+
 /// Reports every variant run on every node
 const LIST_VARIANTS: PlanCheck = PlanCheck {
     name: "list_variants",
@@ -655,18 +763,20 @@ fn variants_run_on_builtin_plans() {
         Variant::BatchLayout(BatchLayout::Fixed(1)),
         Variant::BatchLayout(BatchLayout::Random { max_rows: 3 }),
         Variant::BatchLayout(BatchLayout::Single),
+        Variant::Reset,
+        Variant::Rerun,
     ]
     .iter()
     .map(|variant| format!("{variant:?}"))
     .collect();
     assert_eq!(root, expected);
 
-    // The source has no fetch and no children, so only the batch size and
-    // layout variants apply to it
+    // The source has no fetch and no children, so only the batch size,
+    // layout and re-execution variants apply to it
     let leaf = report
         .violations
         .iter()
         .filter(|v| v.path == vec![0])
         .count();
-    assert_eq!(leaf, 7, "{report}");
+    assert_eq!(leaf, 9, "{report}");
 }

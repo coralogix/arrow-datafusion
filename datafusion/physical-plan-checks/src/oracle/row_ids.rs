@@ -18,11 +18,135 @@
 //! Tracking the rows of an input through an output by a column of unique row
 //! ids, such as the one `SourceSpec::with_row_ids` adds.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use arrow::array::{AsArray, RecordBatch, UInt64Array};
 use arrow::datatypes::UInt64Type;
 use datafusion_common::{Result, plan_datafusion_err};
+
+/// Where a row is in a set of batches split into partitions: its partition,
+/// and its position among the rows of that partition, counted across its
+/// batches
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RowPosition {
+    /// The partition
+    pub partition: usize,
+    /// The position of the row in its partition
+    pub row: usize,
+}
+
+/// Returns, for each row of each partition of `output`, the position in
+/// `input` of the input row it copies, both given as the batches of each
+/// partition. Each input row is identified by the id in column `input_ids`
+/// of the input batches, which the output copies into column `output_ids` of
+/// its batches. Both columns must be `UInt64`. An output row without an id,
+/// such as a row an outer join pads with nulls, or with an id that no input
+/// row has, such as a row of another input, has no position.
+///
+/// Returns `None` if the input ids are not unique or an input row has no
+/// id, so that rows cannot be tracked, and an error if a batch does not have
+/// such a column.
+pub fn input_positions(
+    input: &[Vec<RecordBatch>],
+    input_ids: usize,
+    output: &[Vec<RecordBatch>],
+    output_ids: usize,
+) -> Result<Option<Vec<Vec<Option<RowPosition>>>>> {
+    // The position of every input row, by id
+    let mut positions: HashMap<u64, RowPosition> = HashMap::new();
+    for (partition, batches) in input.iter().enumerate() {
+        let mut row = 0;
+        for batch in batches {
+            for id in row_ids(batch, input_ids)? {
+                let Some(id) = id else {
+                    return Ok(None);
+                };
+                if positions
+                    .insert(id, RowPosition { partition, row })
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+                row += 1;
+            }
+        }
+    }
+    output
+        .iter()
+        .map(|batches| {
+            let mut rows = vec![];
+            for batch in batches {
+                let ids = row_ids(batch, output_ids)?;
+                rows.extend(ids.map(|id| id.and_then(|id| positions.get(&id).copied())));
+            }
+            Ok(rows)
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+/// A row of an output partition that copies an input row which comes before
+/// the input row copied by an earlier row of the same output partition, from
+/// the same input partition (see [`order_breaks`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderBreak {
+    /// The output partition
+    pub output_partition: usize,
+    /// The position in the output partition of the row that breaks the order
+    pub output_row: usize,
+    /// The input row it copies
+    pub input_row: RowPosition,
+    /// The position in the output partition of the earlier row
+    pub earlier_output_row: usize,
+    /// The input row the earlier row copies, which comes after `input_row`
+    /// in the same input partition
+    pub earlier_input_row: RowPosition,
+}
+
+/// Returns where the output partitions described by `positions` (see
+/// [`input_positions`]) do not keep the rows of each input partition in
+/// their input order: for each output partition and each input partition,
+/// the first output row that copies an input row which comes before the
+/// input row of an earlier output row from the same input partition, with
+/// the latest such earlier row. Rows of other input partitions, and rows
+/// without a position, are ignored, so rows of several input partitions may
+/// be interleaved in any way. A row may repeat, as long as no row of the same
+/// input partition that comes later in the input is between its copies.
+pub fn order_breaks(positions: &[Vec<Option<RowPosition>>]) -> Vec<OrderBreak> {
+    let mut breaks = vec![];
+    for (output_partition, rows) in positions.iter().enumerate() {
+        // The latest input row seen so far of each input partition, and the
+        // output row that copies it
+        let mut latest: BTreeMap<usize, (usize, RowPosition)> = BTreeMap::new();
+        let mut broken: HashSet<usize> = HashSet::new();
+        for (output_row, position) in rows.iter().enumerate() {
+            let Some(position) = *position else {
+                continue;
+            };
+            if broken.contains(&position.partition) {
+                continue;
+            }
+            match latest.get(&position.partition) {
+                Some(&(earlier_output_row, earlier_input_row))
+                    if position.row < earlier_input_row.row =>
+                {
+                    broken.insert(position.partition);
+                    breaks.push(OrderBreak {
+                        output_partition,
+                        output_row,
+                        input_row: position,
+                        earlier_output_row,
+                        earlier_input_row,
+                    });
+                }
+                _ => {
+                    latest.insert(position.partition, (output_row, position));
+                }
+            }
+        }
+    }
+    breaks
+}
 
 /// Where the rows of an input appear in an output, see [`input_order`]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,68 +184,50 @@ pub fn input_order(
     output: &[Vec<RecordBatch>],
     output_ids: usize,
 ) -> Result<InputOrder> {
-    // The partition and position of every input row, by id
-    let mut positions: HashMap<u64, (usize, usize)> = HashMap::new();
-    for (p, batches) in input.iter().enumerate() {
-        let mut position = 0;
-        for batch in batches {
-            for id in row_ids(batch, input_ids)? {
-                let Some(id) = id else {
-                    return Ok(InputOrder::Untracked);
-                };
-                if positions.insert(id, (p, position)).is_some() {
-                    return Ok(InputOrder::Untracked);
-                }
-                position += 1;
-            }
-        }
-    }
+    Ok(
+        match input_positions(input, input_ids, output, output_ids)? {
+            Some(positions) => input_order_of(&positions),
+            None => InputOrder::Untracked,
+        },
+    )
+}
 
-    // The input partition and position of each row of each output partition,
-    // if it is a row of the input
-    let output = output
-        .iter()
-        .map(|batches| {
-            let mut rows = vec![];
-            for batch in batches {
-                let ids = row_ids(batch, output_ids)?;
-                rows.extend(ids.map(|id| id.and_then(|id| positions.get(&id).copied())));
-            }
-            Ok(rows)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if output.iter().flatten().all(Option::is_none) {
-        return Ok(InputOrder::Untracked);
+/// Returns where the rows of an input appear in an output, from the position
+/// of the input row each output row copies (see [`input_positions`]), as
+/// [`input_order`] does
+pub fn input_order_of(positions: &[Vec<Option<RowPosition>>]) -> InputOrder {
+    if positions.iter().flatten().all(Option::is_none) {
+        return InputOrder::Untracked;
     }
-
     let mut input_partitions = HashSet::new();
     let mut max_partition_rows = 0;
-    for (partition, rows) in output.iter().enumerate() {
-        let mut previous: Option<(usize, usize)> = None;
+    for (partition, rows) in positions.iter().enumerate() {
+        let mut previous: Option<RowPosition> = None;
         let mut distinct = 0;
         for (row, current) in rows.iter().enumerate() {
             let Some(current) = *current else {
-                return Ok(InputOrder::Broken { partition, row });
+                return InputOrder::Broken { partition, row };
             };
             match previous {
                 Some(previous) if current == previous => continue,
-                Some((input_partition, position))
-                    if current.0 != input_partition || current.1 < position =>
+                Some(previous)
+                    if current.partition != previous.partition
+                        || current.row < previous.row =>
                 {
-                    return Ok(InputOrder::Broken { partition, row });
+                    return InputOrder::Broken { partition, row };
                 }
                 _ => {}
             }
             previous = Some(current);
             distinct += 1;
-            input_partitions.insert(current.0);
+            input_partitions.insert(current.partition);
         }
         max_partition_rows = max_partition_rows.max(distinct);
     }
-    Ok(InputOrder::Kept {
+    InputOrder::Kept {
         input_partitions: input_partitions.len(),
         max_partition_rows,
-    })
+    }
 }
 
 /// The values of the `UInt64` column `column` of `batch`
@@ -231,6 +337,85 @@ mod tests {
                 partition: 1,
                 row: 0
             }
+        );
+    }
+
+    fn breaks(output: &[&[Option<u64>]]) -> Vec<OrderBreak> {
+        let output: Vec<Vec<RecordBatch>> =
+            output.iter().map(|ids| vec![batch(ids)]).collect();
+        let positions = input_positions(&input(), 1, &output, 1).unwrap().unwrap();
+        order_breaks(&positions)
+    }
+
+    fn at(partition: usize, row: usize) -> RowPosition {
+        RowPosition { partition, row }
+    }
+
+    #[test]
+    fn positions_of_output_rows() {
+        let output = vec![vec![batch(&[Some(11), None, Some(99), Some(2)])]];
+        assert_eq!(
+            input_positions(&input(), 1, &output, 1).unwrap(),
+            Some(vec![vec![Some(at(1, 1)), None, None, Some(at(0, 2))]])
+        );
+        // Input ids that are not unique
+        let input = vec![vec![batch(&[Some(0), Some(0)])]];
+        assert_eq!(input_positions(&input, 1, &output, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn interleaved_partitions_in_order() {
+        // Rows of both input partitions interleaved, with repeated rows, rows
+        // without an id and rows of another input
+        assert_eq!(
+            breaks(&[
+                &[
+                    Some(10),
+                    Some(0),
+                    Some(0),
+                    Some(11),
+                    None,
+                    Some(2),
+                    Some(99)
+                ],
+                &[Some(1), Some(1), Some(12)]
+            ]),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn interleaved_partitions_out_of_order() {
+        assert_eq!(
+            breaks(&[
+                &[Some(10), Some(2), Some(0), Some(12), Some(11), Some(1)],
+                &[Some(3), Some(4), Some(3)]
+            ]),
+            vec![
+                // Only the first break of each input partition
+                OrderBreak {
+                    output_partition: 0,
+                    output_row: 2,
+                    input_row: at(0, 0),
+                    earlier_output_row: 1,
+                    earlier_input_row: at(0, 2),
+                },
+                OrderBreak {
+                    output_partition: 0,
+                    output_row: 4,
+                    input_row: at(1, 1),
+                    earlier_output_row: 3,
+                    earlier_input_row: at(1, 2),
+                },
+                // A repeated row that is not next to its copy
+                OrderBreak {
+                    output_partition: 1,
+                    output_row: 2,
+                    input_row: at(0, 3),
+                    earlier_output_row: 1,
+                    earlier_input_row: at(0, 4),
+                },
+            ]
         );
     }
 

@@ -32,7 +32,6 @@ use datafusion_physical_expr::{
     ConstExpr, EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr,
     PhysicalSortExpr,
 };
-use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::aggregates::{
     AggregateExec, AggregateMode, PhysicalGroupBy,
 };
@@ -40,6 +39,7 @@ use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
 use datafusion_physical_plan::union::UnionExec;
+use datafusion_physical_plan::{DisplayFormatType, ExecutionPlan};
 use datafusion_physical_plan_checks::fixtures::{SourceSpec, StatisticsPrecision};
 use datafusion_physical_plan_checks::{CheckKind, Report, Severity};
 
@@ -805,4 +805,71 @@ fn dynamic_filters_that_survive_reset_state() {
             .unwrap()
             .assert_clean();
     }
+}
+
+#[test]
+fn displays_that_fail() {
+    let display = |exec: ConfigurableExec| {
+        let report = check_with("display_no_panic", &exec.build());
+        assert!(
+            report
+                .violations
+                .iter()
+                .all(|v| v.severity == Severity::Invariant),
+            "{report}"
+        );
+        messages(&report)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let exec = || ConfigurableExec::new(exact_source(10));
+
+    let mut unnamed = exec();
+    unnamed.name = "";
+    assert_eq!(
+        display(unnamed),
+        vec!["name() is empty; return the name of the plan, such as \"FilterExec\""]
+    );
+
+    let mut verbose_panics = exec();
+    verbose_panics.display_panics = Some(DisplayFormatType::Verbose);
+    assert_eq!(
+        display(verbose_panics),
+        vec![
+            "displaying the node with fmt_as(DisplayFormatType::Verbose) panicked: \
+             ConfigurableExec cannot be displayed as Verbose"
+        ]
+    );
+
+    let mut default_fails = exec();
+    default_fails.display_error = Some(DisplayFormatType::Default);
+    assert_eq!(
+        display(default_fails),
+        vec![
+            "displaying the node with fmt_as(DisplayFormatType::Default) returned \
+             fmt::Error, which makes to_string() panic, although writing to a String \
+             cannot fail"
+        ]
+    );
+
+    // The tree renderer formats every node with `TreeRender`, so it fails for
+    // the node and for its parents. Only the node is reported.
+    let mut tree_panics = exec();
+    tree_panics.display_panics = Some(DisplayFormatType::TreeRender);
+    let parent = ConfigurableExec::new(tree_panics.build()).build();
+    let report = check_with("display_no_panic", &parent);
+    assert_eq!(
+        messages(&report),
+        vec![
+            "displaying the node with fmt_as(DisplayFormatType::TreeRender) panicked: \
+             ConfigurableExec cannot be displayed as TreeRender",
+            "displaying the node with the tree renderer panicked: ConfigurableExec \
+             cannot be displayed as TreeRender",
+        ]
+    );
+    assert!(
+        report.violations.iter().all(|v| v.path == vec![0]),
+        "{report}"
+    );
 }

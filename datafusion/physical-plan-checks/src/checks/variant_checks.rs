@@ -30,8 +30,8 @@ use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 
-use super::{partition_count, reports_sorted_output};
-use crate::{CheckContext, Finding, NodeOutput, Variant, VariantRun, oracle};
+use super::{moves_rows_between_partitions, partition_count, reports_sorted_output};
+use crate::{CheckContext, Finding, NodeOutput, RunError, Variant, VariantRun, oracle};
 
 /// What the output of a node must satisfy when at most `limit` rows per
 /// partition are wanted from it: the output of a node with a fetch, or of a
@@ -198,6 +198,13 @@ pub(super) fn limit_pushdown_missed(
         maintains.get(i) != Some(&true) && reports_sorted_output(child.as_ref())
     });
     if sorted_input {
+        return Ok(vec![]);
+    }
+    // A node that places rows in partitions by their values can leave the rows
+    // of generated input where they are, as if it only needed the first rows
+    // of its input
+    if (0..node.children().len()).any(|i| moves_rows_between_partitions(node.as_ref(), i))
+    {
         return Ok(vec![]);
     }
     let Some(normal) = context.output(node) else {
@@ -466,6 +473,47 @@ pub(super) fn limit_pushdown_equivalent(
             findings.push(Finding::invariant(format!(
                 "with {}: {problem}, so a limit above the node cannot be pushed to its \
                  children; return false from supports_limit_pushdown",
+                run.variant
+            )));
+        }
+    }
+    Ok(findings)
+}
+
+/// D9: executing the node again after `reset_plan_states` gives the same
+/// results, and executing it again without a reset gives the same results or
+/// an error.
+pub(super) fn reset_state_reexecution(
+    node: &Arc<dyn ExecutionPlan>,
+    context: &CheckContext,
+) -> Result<Vec<Finding>> {
+    let mut findings =
+        check_invariance(node, context, |variant| matches!(variant, Variant::Reset));
+    // A failing node is reported by `execution_succeeds`
+    let Some(normal) = context.output(node) else {
+        return Ok(findings);
+    };
+    let Some(run) = context.variant_run(node, Variant::Rerun) else {
+        return Ok(findings);
+    };
+    if !inputs_unchanged(node, context, Variant::Rerun) {
+        return Ok(findings);
+    }
+    match &run.output {
+        Ok(output) => {
+            for difference in differences(node, context, normal, output) {
+                findings.push(Finding::invariant(format!(
+                    "with {}: {difference}; a plan executed again without \
+                     reset_state must produce the same rows or return an error",
+                    run.variant
+                )));
+            }
+        }
+        // Executing a plan a second time without a reset may fail
+        Err(RunError::Failed(_)) => {}
+        Err(error @ (RunError::Panicked(_) | RunError::TimedOut(_))) => {
+            findings.push(Finding::invariant(format!(
+                "with {}: executing the node {error}; return an error instead",
                 run.variant
             )));
         }

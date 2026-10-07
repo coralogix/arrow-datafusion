@@ -274,6 +274,30 @@ fn builtin_plans() -> Result<Vec<PlanFactory>> {
                 Partitioning::Hash(vec![a], 4),
             )?))
         }),
+        // Merges the sorted input partitions it sends to each output
+        // partition. Only preserves order when the input reports an ordering
+        // and has more than one partition.
+        one_input(
+            "RepartitionExec round robin preserving order",
+            sorted_spec()?,
+            |input| {
+                Ok(Arc::new(
+                    RepartitionExec::try_new(input, Partitioning::RoundRobinBatch(4))?
+                        .with_preserve_order(),
+                ))
+            },
+        ),
+        one_input(
+            "RepartitionExec hash preserving order",
+            sorted_spec()?,
+            |input| {
+                let a = col("a", &input.schema())?;
+                Ok(Arc::new(
+                    RepartitionExec::try_new(input, Partitioning::Hash(vec![a], 4))?
+                        .with_preserve_order(),
+                ))
+            },
+        ),
         one_input("GlobalLimitExec", spec(), |input| {
             Ok(Arc::new(GlobalLimitExec::new(input, 5, Some(FETCH))))
         }),

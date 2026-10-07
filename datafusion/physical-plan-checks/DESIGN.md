@@ -41,12 +41,14 @@ Checks never execute anything themselves. The kind says what the checker
 gathers for the check before it runs, in the `CheckContext`:
 
 - `Static`: nothing. The check only calls the node's own methods.
-- `Execution`: the output of executing each node to completion, and the
-  memory the execution left reserved.
+- `Execution`: the output of executing each node to completion, the memory
+  the execution left reserved, and what executing the partition one past the
+  node's last partition did.
 - `Variant`: also the output of each `Variant` of each node: the plan
   returned by `with_fetch`, the node with its children limited the way
-  `LimitPushdown` limits them, or the node run with another session batch
-  size or with its `MockSourceExec` leaves split into other batches. Variants
+  `LimitPushdown` limits them, the node run with another session batch
+  size or with its `MockSourceExec` leaves split into other batches, or the
+  node executed a second time, after `reset_plan_states` or without it. Variants
   run after every node has been executed normally, so that their parameters,
   such as a fetch larger than the output, can depend on the normal outputs.
 - `Stream`: also the results of each stream `Experiment` on each node, for
@@ -129,6 +131,14 @@ derived from a list of `Profile`s, and runs a `PlanChecker` on each.
   missed optimization.
 - **Plain output.** Every problem is its own finding, reported where it
   occurs, in every case it occurs in. Findings are not grouped or summarized.
+- **One factory per configuration.** Following the goal of as little test
+  code as possible, a simple plan needs one factory, and a plan with modes,
+  flags or options one factory per configuration, such as `RepartitionExec`
+  round robin, hash, and each preserving order. Such factories are expected.
+  The situations a check needs come from the generated inputs instead:
+  a multi-node plan built to reach one edge case needs an argument that no
+  `SourceSpec` feature or `Profile` could generate that situation for every
+  plan.
 
 ## Harness
 
@@ -157,7 +167,9 @@ per case, so it must be a pure function of its inputs; it must bind
 expressions to the schemas of the inputs it receives, by name, since the
 harness appends a `__row_id` column; and it must use the input plans as
 given, since the harness recognizes them by identity. `allow(check, reason)`
-skips a check in every case and shows the reason in the report.
+skips a check in every case and shows the reason in the report. Write one
+factory per configuration of the node (see "One factory per configuration"
+in the principles).
 
 **Profiles and cases.** A `Profile` is a named, deterministic way to lay out
 inputs: partition weights, a row multiplier, a statistics precision, a seed,
@@ -166,13 +178,21 @@ checks run.
 `Profile::defaults()` is a short curated list rather than a cross product:
 `default` (three partitions with weights 1, 0 and 2, exact statistics, every
 check), `single partition`, `inexact statistics`, `absent statistics`,
-`empty input`, `uniform constants`, `constants per partition` and
-`copied columns`. In `uniform constants` and `constants per partition`, every
-input column other than the row id is constant, with one value in every
-partition or one per partition, and the inputs declare the constants. In
-`copied columns`, every such column has a copy that the input declares equal
-to it. So every plan is checked with constants and equivalences from its
-inputs.
+`empty input`, `uniform constants`, `constants per partition`,
+`copied columns`, `sorted by row id` and `hash partitioned`. In
+`uniform constants` and
+`constants per partition`, every input column other than the row id is
+constant, with one value in every partition or one per partition, and the
+inputs declare the constants. In `copied columns`, every such column has a
+copy that the input declares equal to it. In `sorted by row id`, every input
+that does not need another ordering declares that its partitions are sorted
+by the row id column, which they are; nodes take other code paths on input
+that reports an ordering, such as a hash join that keeps the order of its
+probe side only then, and report orderings that the other checks then
+check. In `hash partitioned`, every input
+that does not need another partitioning is hash partitioned on its first
+column. So every plan is checked with constants, equivalences, orderings and
+hash partitioning from its inputs.
 `Profile::extended()` has two other seeds, 2 and 5 partitions and 8 times the
 rows. With the `extended_tests` feature, as the rest of the workspace gates
 slow tests, the audit also checks these cases and records them in separate
@@ -215,9 +235,9 @@ in several cases is listed in each, so the report is long when a plan has
 problems, but each case can be read on its own.
 
 **Runtime.** Cases run one after another on a current-thread runtime. The
-default audit takes about 13 seconds for the three snapshot tests together,
+default audit takes about 21 seconds for the three snapshot tests together,
 and with the `extended_tests` feature, which adds three tests on the
-extended profiles, about 39 seconds.
+extended profiles, about 54 seconds.
 
 Open questions:
 
@@ -232,7 +252,4 @@ Open questions:
   (`with_fetch`, `repartitioned`, `try_pushdown_sort`) to add cases for
   section D are not generated yet.
 - D8 `replace_children_consistent` can build the same node on different
-  valid inputs by calling `create` on the inputs of two cases; C1
-  `maintains_input_order_holds` can follow the `__row_id` columns, whose ids
-  come from a separate range (`input * ROW_ID_RANGE`) per input, with
-  `oracle::input_order`, as A6 `maintains_input_order_missed` does.
+  valid inputs by calling `create` on the inputs of two cases.

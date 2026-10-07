@@ -282,6 +282,38 @@ fn row_ids_are_unique_and_increasing() {
 }
 
 #[test]
+fn row_id_ordering() {
+    let schema = schema();
+    let spec = SourceSpec::new(Arc::clone(&schema))
+        .with_hash_partitioning(vec![col("a", &schema).unwrap()], 3, 100)
+        .with_row_ids(1000)
+        .with_row_id_ordering();
+    let source = spec.build().unwrap();
+    let ordering = source.properties().output_ordering().unwrap().clone();
+    assert_eq!(ordering.to_string(), format!("{ROW_ID_COLUMN}@3 ASC"));
+    for batches in source.partitions() {
+        assert_eq!(
+            oracle::first_unsorted_row(batches, &ordering).unwrap(),
+            None
+        );
+    }
+
+    // Another ordering is declared instead, and without row ids there is no
+    // ordering
+    let ordering_on_a = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+        col("a", &schema).unwrap(),
+    )])
+    .unwrap();
+    let source = spec.with_ordering(ordering_on_a.clone()).build().unwrap();
+    assert_eq!(source.properties().output_ordering(), Some(&ordering_on_a));
+    let source = SourceSpec::new(schema)
+        .with_row_id_ordering()
+        .build()
+        .unwrap();
+    assert_eq!(source.properties().output_ordering(), None);
+}
+
+#[test]
 fn statistics_are_computed_from_the_data() {
     let spec = SourceSpec::new(schema()).with_partition_rows(&[40, 60]);
     let source = spec.build().unwrap();
@@ -349,6 +381,10 @@ fn generated_sources_pass_every_check() {
             .with_copy("a")
             .with_copy("c")
             .with_row_ids(0),
+        SourceSpec::new(Arc::clone(&schema))
+            .with_partition_rows(&[10, 0, 20])
+            .with_row_ids(0)
+            .with_row_id_ordering(),
     ];
     for spec in specs {
         let source = spec.build_arc().unwrap();

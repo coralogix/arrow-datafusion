@@ -38,7 +38,10 @@ mod values;
 
 pub use ordering::{first_unsorted_row, sort_rows};
 pub use partitioning::{hash_partition, rows_outside_hash_partition};
-pub use row_ids::{InputOrder, input_order};
+pub use row_ids::{
+    InputOrder, OrderBreak, RowPosition, input_order, input_order_of, input_positions,
+    order_breaks,
+};
 pub use rows::{first_non_prefix_row, same_rows, same_rows_in_order, unmatched_rows};
 pub use statistics::exact_statistics;
 pub use values::{constant_violations, distinct_values, first_unequal_row};

@@ -18,6 +18,7 @@
 //! A plan with knobs for breaking the `ExecutionPlan` contract, and helpers
 //! shared by the tests.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -143,6 +144,36 @@ pub enum FetchMode {
     RepeatFirstRow,
 }
 
+/// What `ConfigurableExec` does when a partition of the same instance is
+/// executed again
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnRerun {
+    /// Produce the same rows again
+    Same,
+    /// Produce no rows, as a node whose first execution consumed shared state
+    Empty,
+    /// Return an error from `execute`
+    Error,
+    /// Panic in `execute`
+    Panic,
+}
+
+/// What `ConfigurableExec` does when asked to execute a partition at or past
+/// its partition count
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidPartition {
+    /// Execute that partition of the input, as for any other partition
+    PassToInput,
+    /// Panic in `execute`
+    PanicInExecute,
+    /// Return a stream that panics when polled
+    PanicInStream,
+    /// Return a stream whose first item is an error
+    ErrorInStream,
+    /// Return a stream that ends at once
+    EmptyStream,
+}
+
 /// Where `ConfigurableExec` keeps its input streams when its output stream is
 /// dropped
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +275,18 @@ pub struct ConfigurableExec {
     pub hold_input: HoldInput,
     /// Reserve memory in every partition and never release it
     pub leak_memory: bool,
+    /// What to do when asked for a partition at or past the partition count
+    pub invalid_partition: InvalidPartition,
+    /// What to do when a partition of the same instance is executed again
+    pub on_rerun: OnRerun,
+    /// Keep the record of executed partitions in `reset_state`
+    pub keep_state_on_reset: bool,
+    /// Return this from `name()`
+    pub name: &'static str,
+    /// Panic in `fmt_as` with this format
+    pub display_panics: Option<DisplayFormatType>,
+    /// Return `fmt::Error` from `fmt_as` with this format
+    pub display_error: Option<DisplayFormatType>,
 }
 
 impl ConfigurableExec {
@@ -289,6 +332,12 @@ impl ConfigurableExec {
             on_input_error: OnInputError::Propagate,
             hold_input: HoldInput::No,
             leak_memory: false,
+            invalid_partition: InvalidPartition::PassToInput,
+            on_rerun: OnRerun::Same,
+            keep_state_on_reset: false,
+            name: "ConfigurableExec",
+            display_panics: None,
+            display_error: None,
         }
     }
 
@@ -323,6 +372,7 @@ impl ConfigurableExec {
             exec: self,
             cache,
             held_inputs: HeldInputs::default(),
+            executed: Arc::default(),
         })
     }
 
@@ -380,6 +430,8 @@ struct Built {
     cache: Arc<PlanProperties>,
     /// Input streams kept for [`HoldInput::InPlan`]
     held_inputs: HeldInputs,
+    /// The partitions executed so far, for [`ConfigurableExec::on_rerun`]
+    executed: Arc<Mutex<HashSet<usize>>>,
 }
 
 /// Input streams kept alive by the plan
@@ -424,14 +476,21 @@ impl Drop for HeldInput {
 }
 
 impl DisplayAs for Built {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        assert!(
+            self.exec.display_panics != Some(t),
+            "ConfigurableExec cannot be displayed as {t:?}"
+        );
+        if self.exec.display_error == Some(t) {
+            return Err(fmt::Error);
+        }
         write!(f, "ConfigurableExec")
     }
 }
 
 impl ExecutionPlan for Built {
     fn name(&self) -> &'static str {
-        "ConfigurableExec"
+        self.exec.name
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -509,6 +568,14 @@ impl ExecutionPlan for Built {
             exec.dynamic_expressions =
                 exec.dynamic_expressions.iter().map(replace).collect();
         }
+        if exec.keep_state_on_reset {
+            return Ok(Arc::new(Built {
+                cache: exec.compute_properties(),
+                exec,
+                held_inputs: self.held_inputs.clone(),
+                executed: Arc::clone(&self.executed),
+            }));
+        }
         Ok(exec.build())
     }
 
@@ -539,6 +606,52 @@ impl ExecutionPlan for Built {
     ) -> Result<SendableRecordBatchStream> {
         if self.exec.execute_error {
             return internal_err!("ConfigurableExec cannot execute");
+        }
+        let schema = self.schema();
+        let stream = |items: Vec<Result<RecordBatch>>| -> SendableRecordBatchStream {
+            Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&schema),
+                futures::stream::iter(items),
+            ))
+        };
+        let first_execution = self.executed.lock().unwrap().insert(partition);
+        if !first_execution {
+            match self.exec.on_rerun {
+                OnRerun::Same => {}
+                OnRerun::Empty => return Ok(stream(vec![])),
+                OnRerun::Error => {
+                    return internal_err!(
+                        "ConfigurableExec partition {partition} was already executed"
+                    );
+                }
+                OnRerun::Panic => {
+                    panic!("ConfigurableExec partition {partition} was already executed")
+                }
+            }
+        }
+        if partition >= self.properties().output_partitioning().partition_count() {
+            match self.exec.invalid_partition {
+                InvalidPartition::PassToInput => {}
+                InvalidPartition::PanicInExecute => {
+                    panic!("ConfigurableExec has no partition {partition}")
+                }
+                InvalidPartition::PanicInStream => {
+                    return Ok(Box::pin(RecordBatchStreamAdapter::new(
+                        Arc::clone(&schema),
+                        futures::stream::poll_fn(
+                            move |_| -> std::task::Poll<Option<Result<RecordBatch>>> {
+                                panic!("ConfigurableExec has no partition {partition}")
+                            },
+                        ),
+                    )));
+                }
+                InvalidPartition::ErrorInStream => {
+                    return Ok(stream(vec![internal_err!(
+                        "ConfigurableExec has no partition {partition}"
+                    )]));
+                }
+                InvalidPartition::EmptyStream => return Ok(stream(vec![])),
+            }
         }
         if self.exec.hang {
             return Ok(Box::pin(RecordBatchStreamAdapter::new(

@@ -22,7 +22,8 @@
 //! Unlike stream [`Experiment`]s, variant runs do not observe how a node
 //! drives its streams. Each one executes a fresh copy of the node's subtree,
 //! made with [`reset_plan_states`], to completion on finite inputs, within
-//! the checker's execution timeout, like the normal execution.
+//! the checker's execution timeout, like the normal execution. The
+//! [`Variant::Reset`] and [`Variant::Rerun`] runs execute it twice.
 //!
 //! [`Experiment`]: crate::Experiment
 
@@ -38,7 +39,7 @@ use datafusion_physical_plan::execution_plan::{
 };
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 
-use crate::exec::{self, collect_output};
+use crate::exec::{self, RunError, collect_output};
 use crate::fixtures::{BatchLayout, map_mock_leaves};
 use crate::{CheckContext, NodeOutput};
 
@@ -94,6 +95,13 @@ pub enum Variant {
     ///
     /// [`MockSourceExec`]: crate::fixtures::MockSourceExec
     BatchLayout(BatchLayout),
+    /// The node executed to completion, then reset with `reset_plan_states`,
+    /// and executed again. The output is that of the second execution.
+    Reset,
+    /// The node executed to completion, and executed again on the same
+    /// instance, without a reset. The output is that of the second
+    /// execution.
+    Rerun,
 }
 
 impl fmt::Display for Variant {
@@ -106,6 +114,12 @@ impl fmt::Display for Variant {
             }
             Variant::BatchSize(n) => write!(f, "batch size {n}"),
             Variant::BatchLayout(layout) => write!(f, "input rows in {layout}"),
+            Variant::Reset => {
+                write!(f, "a second execution after reset_plan_states")
+            }
+            Variant::Rerun => {
+                write!(f, "a second execution of the same plan, without a reset")
+            }
         }
     }
 }
@@ -117,7 +131,7 @@ pub struct VariantRun {
     pub variant: Variant,
     /// The output of every partition, or why building or executing the
     /// variant failed, panicked or timed out
-    pub output: std::result::Result<NodeOutput, String>,
+    pub output: std::result::Result<NodeOutput, RunError>,
 }
 
 /// Run every variant that applies to `node`, whose normal output and the
@@ -156,6 +170,7 @@ pub(crate) async fn run(
     }
     variants.extend(BATCH_SIZES.map(Variant::BatchSize));
     variants.extend(LEAF_LAYOUTS.map(Variant::BatchLayout));
+    variants.extend([Variant::Reset, Variant::Rerun]);
     for variant in variants {
         runs.extend(run_variant(node, variant, timeout).await);
     }
@@ -175,11 +190,44 @@ async fn run_variant(
                 Variant::BatchSize(batch_size) => exec::task_context(batch_size),
                 _ => Arc::new(TaskContext::default()),
             };
-            collect_output(plan, task_context, timeout).await
+            match variant {
+                Variant::Reset | Variant::Rerun => {
+                    execute_twice(plan, task_context, variant, timeout).await
+                }
+                _ => collect_output(plan, task_context, timeout).await,
+            }
         }
-        Err(e) => Err(format!("building the plan failed: {}", e.strip_backtrace())),
+        Err(e) => Err(RunError::Failed(format!(
+            "building the plan failed: {}",
+            e.strip_backtrace()
+        ))),
     };
     Some(VariantRun { variant, output })
+}
+
+/// Execute `plan` to completion, then execute it again, after resetting it
+/// with `reset_plan_states` for [`Variant::Reset`], and return the output of
+/// the second execution
+async fn execute_twice(
+    plan: Arc<dyn ExecutionPlan>,
+    task_context: Arc<TaskContext>,
+    variant: Variant,
+    timeout: Duration,
+) -> std::result::Result<NodeOutput, RunError> {
+    if let Err(error) =
+        collect_output(Arc::clone(&plan), Arc::clone(&task_context), timeout).await
+    {
+        return Err(RunError::Failed(format!(
+            "the first execution failed: {error}"
+        )));
+    }
+    let plan = match variant {
+        Variant::Reset => reset_plan_states(plan).map_err(|e| {
+            RunError::Failed(format!("reset_plan_states failed: {}", e.strip_backtrace()))
+        })?,
+        _ => plan,
+    };
+    collect_output(plan, task_context, timeout).await
 }
 
 /// Build the plan that `variant` executes from a fresh copy of `node`, or
@@ -210,7 +258,7 @@ fn build(
                 .collect();
             Some(replace_children_if_necessary(node, children)?)
         }
-        Variant::BatchSize(_) => Some(node),
+        Variant::BatchSize(_) | Variant::Reset | Variant::Rerun => Some(node),
         Variant::BatchLayout(layout) => {
             let mut changed = false;
             let plan = map_mock_leaves(&node, |source| {
