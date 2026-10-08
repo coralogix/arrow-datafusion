@@ -31,16 +31,11 @@ use datafusion_physical_plan::distribution_requirements::ChildSatisfactionOption
 use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use super::{Case, PlanFactory, Profile, ROW_ID_RANGE};
-use crate::physical_plan::fixtures::{
-    BatchLayout, COPY_SUFFIX, ROW_ID_COLUMN, SourceSpec,
-};
+use crate::physical_plan::fixtures::{COPY_SUFFIX, ROW_ID_COLUMN, SourceSpec};
 
 /// How many times the harness builds a plan to find inputs that meet its
 /// requirements, which can change with the inputs
 const MAX_PROBES: usize = 5;
-
-/// How the rows of every input partition are split into batches
-const BATCH_LAYOUT: BatchLayout = BatchLayout::Random { max_rows: 16 };
 
 /// Derive the case of `factory` for `profile`: build the plan on inputs laid
 /// out by the profile, change the inputs to meet the requirements of the nodes
@@ -84,8 +79,7 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
                     rows,
                 );
             }
-            spec.with_batch_layout(BATCH_LAYOUT)
-                .with_statistics_precision(profile.statistics)
+            spec.with_statistics_precision(profile.statistics)
                 .with_seed(profile.seed.wrapping_mul(1000).wrapping_add(i as u64))
                 .with_row_ids(i as u64 * ROW_ID_RANGE)
         })

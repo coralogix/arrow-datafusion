@@ -1,0 +1,107 @@
+---
+source: datafusion/property-tests/tests/physical_plan/builtin_plans/mod.rs
+expression: output
+---
+## BoundedWindowAggExec ROW_NUMBER
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec RANK, DENSE_RANK and a running SUM
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec LAG and LEAD
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec SUM over a RANGE frame
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec ROW_NUMBER without PARTITION BY
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec PartiallySorted
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## BoundedWindowAggExec Linear
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## WindowAggExec SUM over the whole window partition
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## WindowAggExec NTILE and CUME_DIST
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## WindowAggExec SUM without PARTITION BY
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartitionedTopKExec ROW_NUMBER
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartitionedTopKExec RANK
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartitionedTopKExec DENSE_RANK
+  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations

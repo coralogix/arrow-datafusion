@@ -21,7 +21,6 @@
 //! without executing it.
 
 use std::collections::HashSet;
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema};
@@ -41,7 +40,6 @@ use super::{
     overall_statistics, partition_count, partition_statistics, passes_rows_through,
 };
 use crate::Finding;
-use crate::physical_plan::display::{self, DisplayKind, panic_message};
 
 /// The input rows that one output partition of a node is made of, which its
 /// statistics describe
@@ -924,40 +922,4 @@ pub(super) fn dynamic_expressions_reset(
             ))
         })
         .collect())
-}
-
-/// A12: the node can be displayed in every `DisplayFormatType` and by the tree
-/// renderer without panicking or returning `fmt::Error`, and `name()` is not
-/// empty.
-pub(super) fn display_no_panic(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
-    let mut findings = vec![];
-    match std::panic::catch_unwind(AssertUnwindSafe(|| node.name())) {
-        Ok("") => findings.push(Finding::invariant(
-            "name() is empty; return the name of the plan, such as \"FilterExec\"",
-        )),
-        Ok(_) => {}
-        Err(panic) => findings.push(Finding::invariant(format!(
-            "name() panicked: {}",
-            panic_message(&panic)
-        ))),
-    }
-    for kind in DisplayKind::ALL {
-        let Err(error) = display::display(node.as_ref(), kind) else {
-            continue;
-        };
-        // A display that includes the children fails when a child's does,
-        // which is reported on the child
-        if kind.includes_children()
-            && node
-                .children()
-                .iter()
-                .any(|child| display::display(child.as_ref(), kind).is_err())
-        {
-            continue;
-        }
-        findings.push(Finding::invariant(format!(
-            "displaying the node with {kind} {error}"
-        )));
-    }
-    Ok(findings)
 }

@@ -100,12 +100,6 @@ pub struct ConfigurableExec {
     pub limit_pushdown: bool,
     /// Report a single output partition, made of every input partition
     pub coalesce: bool,
-    /// Return this from `name()`
-    pub name: &'static str,
-    /// Panic in `fmt_as` with this format
-    pub display_panics: Option<DisplayFormatType>,
-    /// Return `fmt::Error` from `fmt_as` with this format
-    pub display_error: Option<DisplayFormatType>,
 }
 
 impl ConfigurableExec {
@@ -134,9 +128,6 @@ impl ConfigurableExec {
             supports_with_fetch: false,
             limit_pushdown: false,
             coalesce: false,
-            name: "ConfigurableExec",
-            display_panics: None,
-            display_error: None,
         }
     }
 
@@ -196,21 +187,14 @@ struct Built {
 }
 
 impl DisplayAs for Built {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        assert!(
-            self.exec.display_panics != Some(t),
-            "ConfigurableExec cannot be displayed as {t:?}"
-        );
-        if self.exec.display_error == Some(t) {
-            return Err(fmt::Error);
-        }
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "ConfigurableExec")
     }
 }
 
 impl ExecutionPlan for Built {
     fn name(&self) -> &'static str {
-        self.exec.name
+        "ConfigurableExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

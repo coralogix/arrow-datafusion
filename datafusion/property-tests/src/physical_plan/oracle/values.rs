@@ -27,6 +27,7 @@ use datafusion_physical_expr::{AcrossPartitions, ConstExpr, PhysicalExpr};
 /// Returns the distinct values of `expr` on the rows of `batches`, in the
 /// order in which they first appear. Null is a value, distinct from every
 /// non-null value.
+#[allow(clippy::allow_attributes, clippy::mutable_key_type)] // ScalarValue has interior mutability but is intentionally used as hash key
 pub fn distinct_values(
     batches: &[RecordBatch],
     expr: &Arc<dyn PhysicalExpr>,
@@ -66,8 +67,24 @@ pub fn first_unequal_row(
         if right.data_type() != left.data_type() {
             right = cast(&right, left.data_type())?;
         }
-        let equal = not_distinct(&left, &right)?;
-        if let Some(row) = (0..rows).find(|row| !equal.value(*row)) {
+        // The comparison kernels do not support every nested type, so nested
+        // values are compared one row at a time
+        let unequal = if left.data_type().is_nested() {
+            let mut unequal = None;
+            for row in 0..rows {
+                if ScalarValue::try_from_array(&left, row)?
+                    != ScalarValue::try_from_array(&right, row)?
+                {
+                    unequal = Some(row);
+                    break;
+                }
+            }
+            unequal
+        } else {
+            let equal = not_distinct(&left, &right)?;
+            (0..rows).find(|row| !equal.value(*row))
+        };
+        if let Some(row) = unequal {
             return Ok(Some((
                 offset + row,
                 ScalarValue::try_from_array(&left, row)?,

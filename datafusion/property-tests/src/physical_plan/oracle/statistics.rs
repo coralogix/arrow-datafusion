@@ -30,7 +30,9 @@ use datafusion_common::{ColumnStatistics, Result, ScalarValue, Statistics};
 /// and decimal columns the sum of the non-null values, in the type of SQL
 /// `SUM` (see [`ColumnStatistics::sum_value`]). The minimum, maximum and sum
 /// are `Absent` when a column has no non-null values, and the sum is also
-/// `Absent` when it overflows. The sum of a floating point column is not
+/// `Absent` when it overflows. The minimum and maximum of a nested column,
+/// such as a list or a struct, are not computed, as file formats do not
+/// report them. The sum of a floating point column is not
 /// computed, because its exact value depends on the order in which the values
 /// are added. The byte sizes and the total byte size are not computed and are
 /// `Absent`, because their exact values depend on implementation details such
@@ -50,6 +52,7 @@ pub fn exact_statistics(schema: &Schema, batches: &[RecordBatch]) -> Result<Stat
     })
 }
 
+#[allow(clippy::allow_attributes, clippy::mutable_key_type)] // ScalarValue has interior mutability but is intentionally used as hash key
 fn column_statistics(
     batches: &[RecordBatch],
     column: usize,
@@ -59,6 +62,7 @@ fn column_statistics(
     let mut min: Option<ScalarValue> = None;
     let mut max: Option<ScalarValue> = None;
     let summed = data_type.is_integer() || data_type.is_decimal();
+    let bounded = !data_type.is_nested();
     let mut sum: Option<Precision<ScalarValue>> = None;
     let mut distinct = HashSet::new();
 
@@ -73,15 +77,17 @@ fn column_statistics(
                 continue;
             }
             let value = ScalarValue::try_from_array(array, row)?;
-            if min
-                .as_ref()
-                .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Less))
+            if bounded
+                && min
+                    .as_ref()
+                    .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Less))
             {
                 min = Some(value.clone());
             }
-            if max
-                .as_ref()
-                .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Greater))
+            if bounded
+                && max
+                    .as_ref()
+                    .is_none_or(|m| value.partial_cmp(m) == Some(Ordering::Greater))
             {
                 max = Some(value.clone());
             }

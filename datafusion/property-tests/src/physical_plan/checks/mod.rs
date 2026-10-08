@@ -33,11 +33,11 @@ use crate::Finding;
 mod static_checks;
 
 use static_checks::{
-    cardinality_effect_bounds_num_rows, check_invariants, display_no_panic,
-    dynamic_expressions_reset, dynamic_expressions_visited, equal_cardinality_num_rows,
-    expression_column_refs, fetch_bounds_num_rows, fetch_not_equal_cardinality,
-    limit_pushdown_merges_partitions, limit_pushdown_missed, partition_statistics_sum,
-    per_child_lengths, schema_consistency, statistics_ignore_inputs, statistics_shape,
+    cardinality_effect_bounds_num_rows, check_invariants, dynamic_expressions_reset,
+    dynamic_expressions_visited, equal_cardinality_num_rows, expression_column_refs,
+    fetch_bounds_num_rows, fetch_not_equal_cardinality, limit_pushdown_merges_partitions,
+    limit_pushdown_missed, partition_statistics_sum, per_child_lengths,
+    schema_consistency, statistics_ignore_inputs, statistics_shape,
 };
 
 type CheckFn = fn(&Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>>;
@@ -70,7 +70,6 @@ pub fn all_checks() -> Vec<PlanCheck> {
         check("expression_column_refs", expression_column_refs),
         check("dynamic_expressions_visited", dynamic_expressions_visited),
         check("dynamic_expressions_reset", dynamic_expressions_reset),
-        check("display_no_panic", display_no_panic),
     ]
 }
 

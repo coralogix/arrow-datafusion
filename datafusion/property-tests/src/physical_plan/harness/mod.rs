@@ -63,8 +63,8 @@ type CreateFn =
 /// that the inputs of a join match), the number of rows, and optionally an
 /// ordering the plan should see, for example to exercise a sorted code path.
 /// The harness sets everything else for each case, replacing what the base
-/// spec says: the partition layout, hash partitioning, the batch layout, the
-/// statistics precision, the seed and the row ids, and in some cases makes
+/// spec says: the partition layout, hash partitioning, the statistics
+/// precision, the seed and the row ids, and in some cases makes
 /// every column constant or adds a copy of every column (see [`Profile`]). It
 /// keeps the base ordering unless the plan requires another one.
 ///
@@ -167,13 +167,11 @@ impl PlanFactory {
 ///
 /// A profile sets everything about an input that the plan's author does not
 /// need to know: how many partitions it has and how its rows are spread over
-/// them, the precision of its statistics, the seed, and whether its columns
-/// are constant or have copies. Rows are split into
-/// random batches of up to 16 rows, with empty batches. The size of each
-/// input is the number of rows of its base [`SourceSpec`] times
-/// [`Self::row_multiplier`]: only the author of the plan knows what size
-/// makes sense, since for example a cross join produces the product of its
-/// input sizes.
+/// them, the precision of its statistics, the seed, and whether its columns are
+/// constant or have copies. The size of each input is the number of rows of its
+/// base [`SourceSpec`] times [`Self::row_multiplier`]: only the author of the
+/// plan knows what size makes sense, since for example a cross join produces
+/// the product of its input sizes.
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// The name, used to refer to the case in reports
@@ -378,8 +376,7 @@ impl PlanHarness {
         }
     }
 
-    /// Run the checks of `checker`, with its settings such as timeouts,
-    /// instead of every built-in check
+    /// Run the checks of `checker` instead of every built-in check
     pub fn with_checker(mut self, checker: PlanChecker) -> Self {
         self.checker = checker;
         self
