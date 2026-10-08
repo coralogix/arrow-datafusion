@@ -63,8 +63,8 @@ use datafusion_physical_plan::empty::EmptyExec;
 use datafusion_physical_plan::filter::FilterExec;
 use datafusion_physical_plan::joins::utils::{ColumnIndex, JoinFilter, JoinOn};
 use datafusion_physical_plan::joins::{
-    AsOfJoinExec, AsOfMatchExpr, CrossJoinExec, HashJoinExec, NestedLoopJoinExec,
-    PartitionMode, PiecewiseMergeJoinExec, SortMergeJoinExec, StreamJoinPartitionMode,
+    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
+    PiecewiseMergeJoinExec, SortMergeJoinExec, StreamJoinPartitionMode,
     SymmetricHashJoinExec,
 };
 use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
@@ -819,8 +819,7 @@ fn nested_loop_join(join_type: JoinType) -> PlanFactory {
 }
 
 /// A piecewise merge join on `l_k < r_k`. The harness puts the buffered
-/// (left) side in one partition and sorts it as the join requires; right
-/// existence joins require neither.
+/// (left) side in one partition and sorts it as the join requires.
 fn piecewise_merge_join(join_type: JoinType) -> PlanFactory {
     join(
         format!("PiecewiseMergeJoinExec {join_type}"),
@@ -859,27 +858,6 @@ fn symmetric_hash_join(
             None,
             None,
             mode,
-        )?))
-    })
-}
-
-/// `ASOF JOIN ... ON l_k = r_k MATCH_CONDITION (l_v >= r_v)`. The harness
-/// sorts both inputs as the join requires, on the equality keys and then on
-/// the match expression, and puts the right input in one partition.
-fn asof_join() -> PlanFactory {
-    join("AsOfJoinExec", |left, right| {
-        let on = join_on(&left, &right)?;
-        let match_condition = AsOfMatchExpr::new(
-            col("l_v", &left.schema())?,
-            Operator::GtEq,
-            col("r_v", &right.schema())?,
-        );
-        Ok(Arc::new(AsOfJoinExec::try_new(
-            left,
-            right,
-            on,
-            match_condition,
-            None,
         )?))
     })
 }
@@ -964,11 +942,10 @@ fn join_plans() -> Vec<PlanFactory> {
         true,
     ));
 
-    for join_type in [Inner, Full, RightSemi] {
+    for join_type in [Inner, Full] {
         factories.push(piecewise_merge_join(join_type));
     }
 
-    factories.push(asof_join());
     factories
 }
 

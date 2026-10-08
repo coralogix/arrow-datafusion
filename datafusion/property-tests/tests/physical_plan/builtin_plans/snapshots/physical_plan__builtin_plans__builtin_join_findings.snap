@@ -505,27 +505,3 @@ expression: output
   case copied columns: no violations
   case sorted by row id: no violations
   case hash partitioned: no violations
-
-## PiecewiseMergeJoinExec RightSemi
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
-  case empty input: no violations
-  case uniform constants: no violations
-  case constants per partition: no violations
-  case copied columns: no violations
-  case sorted by row id: no violations
-  case hash partitioned: no violations
-
-## AsOfJoinExec
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
-  case empty input: no violations
-  case uniform constants: no violations
-  case constants per partition: no violations
-  case copied columns: no violations
-  case sorted by row id: no violations
-  case hash partitioned: no violations

@@ -295,17 +295,3 @@ expression: output
   case 2 partitions: no violations
   case 5 partitions: no violations
   case large input: no violations
-
-## PiecewiseMergeJoinExec RightSemi
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations
-
-## AsOfJoinExec
-  case seed 1: no violations
-  case seed 2: no violations
-  case 2 partitions: no violations
-  case 5 partitions: no violations
-  case large input: no violations

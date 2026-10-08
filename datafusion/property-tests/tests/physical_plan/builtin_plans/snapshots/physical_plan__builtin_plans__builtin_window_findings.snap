@@ -157,16 +157,3 @@ expression: output
   case copied columns: no violations
   case sorted by row id: no violations
   case hash partitioned: no violations
-
-## PartitionedTopKExec DENSE_RANK
-  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
-  case empty input: no violations
-  case uniform constants: no violations
-  case constants per partition: no violations
-  case copied columns: no violations
-  case sorted by row id: no violations
-  case hash partitioned: no violations

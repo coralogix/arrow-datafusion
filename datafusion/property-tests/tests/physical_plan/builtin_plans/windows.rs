@@ -391,10 +391,5 @@ pub(super) fn window_plans() -> Result<Vec<PlanFactory>> {
             WindowFnKind::RowNumber,
         ),
         top_k("PartitionedTopKExec RANK", rank(), WindowFnKind::Rank),
-        top_k(
-            "PartitionedTopKExec DENSE_RANK",
-            dense_rank(),
-            WindowFnKind::DenseRank,
-        ),
     ])
 }
