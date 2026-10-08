@@ -49,7 +49,6 @@
 
 mod checker;
 pub mod checks;
-mod display;
 pub mod fixtures;
 pub mod harness;
 pub mod oracle;

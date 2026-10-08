@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions, UInt64Array};
@@ -40,78 +39,6 @@ pub const ROW_ID_COLUMN: &str = "__row_id";
 
 /// Suffix of the name of a column added by [`SourceSpec::with_copy`]
 pub const COPY_SUFFIX: &str = "__copy";
-
-/// How the rows of each partition are split into batches
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatchLayout {
-    /// Batches of `rows` rows, except that the last batch of a partition can be
-    /// smaller
-    Fixed(usize),
-    /// Batches of a random size between 1 and `max_rows` rows, with batches
-    /// without rows at random positions, including at the start and end of a
-    /// partition
-    Random { max_rows: usize },
-    /// All rows of a partition in one batch. A partition without rows has no
-    /// batches.
-    Single,
-}
-
-impl fmt::Display for BatchLayout {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BatchLayout::Fixed(1) => write!(f, "batches of 1 row"),
-            BatchLayout::Fixed(rows) => write!(f, "batches of {rows} rows"),
-            BatchLayout::Random { max_rows } => {
-                write!(
-                    f,
-                    "random batches of up to {max_rows} rows and empty batches"
-                )
-            }
-            BatchLayout::Single => write!(f, "one batch per partition"),
-        }
-    }
-}
-
-/// Split the rows of `batch` into batches according to `layout`
-fn split_rows(
-    batch: &RecordBatch,
-    layout: BatchLayout,
-    rng: &mut StdRng,
-) -> Vec<RecordBatch> {
-    let rows = batch.num_rows();
-    let mut batches = vec![];
-    let mut offset = 0;
-    match layout {
-        BatchLayout::Fixed(size) => {
-            let size = size.max(1);
-            while offset < rows {
-                let len = size.min(rows - offset);
-                batches.push(batch.slice(offset, len));
-                offset += len;
-            }
-        }
-        BatchLayout::Random { max_rows } => {
-            let maybe_empty = |batches: &mut Vec<RecordBatch>, rng: &mut StdRng| {
-                if rng.random_bool(0.2) {
-                    batches.push(batch.slice(0, 0));
-                }
-            };
-            while offset < rows {
-                maybe_empty(&mut batches, rng);
-                let len = rng.random_range(1..=max_rows.max(1)).min(rows - offset);
-                batches.push(batch.slice(offset, len));
-                offset += len;
-            }
-            maybe_empty(&mut batches, rng);
-        }
-        BatchLayout::Single => {
-            if rows > 0 {
-                batches.push(batch.clone());
-            }
-        }
-    }
-    batches
-}
 
 /// How [`SourceSpec::with_constant`] chooses the values of a constant column
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,14 +93,13 @@ enum PartitionLayout {
 /// # use arrow::datatypes::{DataType, Field, Schema};
 /// # use datafusion_physical_expr::expressions::col;
 /// # use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr};
-/// use datafusion_property_tests::physical_plan::fixtures::{BatchLayout, SourceSpec};
+/// use datafusion_property_tests::physical_plan::fixtures::SourceSpec;
 ///
 /// let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
 /// let ordering =
 ///     LexOrdering::new(vec![PhysicalSortExpr::new_default(col("a", &schema)?)]).unwrap();
 /// let source = SourceSpec::new(schema)
 ///     .with_partition_rows(&[10, 0, 25])
-///     .with_batch_layout(BatchLayout::Random { max_rows: 4 })
 ///     .with_ordering(ordering)
 ///     .with_seed(42)
 ///     .build()?;
@@ -184,7 +110,6 @@ enum PartitionLayout {
 pub struct SourceSpec {
     schema: SchemaRef,
     layout: PartitionLayout,
-    batch_layout: BatchLayout,
     values: ValueOptions,
     ordering: Option<LexOrdering>,
     /// The columns of the base schema that are constant, by name
@@ -201,14 +126,12 @@ pub struct SourceSpec {
 }
 
 impl SourceSpec {
-    /// Create a spec with one partition of 100 rows, random batches of up to 32
-    /// rows, 10% nulls in nullable fields, 16 distinct values per column, exact
-    /// statistics and seed 0.
+    /// Create a spec with one partition of 100 rows, 10% nulls in nullable
+    /// fields, 16 distinct values per column, exact statistics and seed 0.
     pub fn new(schema: SchemaRef) -> Self {
         Self {
             schema,
             layout: PartitionLayout::Rows(vec![100]),
-            batch_layout: BatchLayout::Random { max_rows: 32 },
             values: ValueOptions {
                 null_fraction: 0.1,
                 distinct_values: 16,
@@ -253,12 +176,6 @@ impl SourceSpec {
             partitions,
             num_rows,
         };
-        self
-    }
-
-    /// Set how the rows of each partition are split into batches
-    pub fn with_batch_layout(mut self, batch_layout: BatchLayout) -> Self {
-        self.batch_layout = batch_layout;
         self
     }
 
@@ -483,9 +400,16 @@ impl SourceSpec {
                 .collect::<Result<_>>()?;
         }
 
+        // A partition without rows has no batches
         let partitions = partitions
-            .iter()
-            .map(|batch| split_rows(batch, self.batch_layout, &mut rng))
+            .into_iter()
+            .map(|batch| {
+                if batch.num_rows() > 0 {
+                    vec![batch]
+                } else {
+                    vec![]
+                }
+            })
             .collect();
 
         let mut source = MockSourceExec::try_new(Arc::clone(&schema), partitions)?

@@ -51,6 +51,17 @@ futures = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+# For the plans defined outside `datafusion-physical-plan`: data sources and
+# sinks, `MemTable` DML (which needs a `SessionState`) and the optimizer's
+# `OutputRequirementExec`
+datafusion = { workspace = true, features = ["parquet"] }
+datafusion-catalog = { workspace = true }
+datafusion-datasource = { workspace = true }
 datafusion-expr = { workspace = true }
+datafusion-ffi = { workspace = true }
 datafusion-functions-aggregate = { workspace = true }
+datafusion-functions-window = { workspace = true }
 insta = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

@@ -24,7 +24,9 @@ use arrow::array::{
     Array, AsArray, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
 };
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit, UInt64Type};
+use arrow::datatypes::{
+    DataType, Field, Fields, Schema, SchemaRef, TimeUnit, UInt64Type,
+};
 use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
 use datafusion_expr::Operator;
@@ -34,7 +36,7 @@ use datafusion_physical_expr::{
 };
 use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
 use datafusion_property_tests::physical_plan::fixtures::{
-    BatchLayout, COPY_SUFFIX, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
+    COPY_SUFFIX, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
     StatisticsPrecision,
 };
 use datafusion_property_tests::physical_plan::{PlanChecker, oracle};
@@ -77,39 +79,23 @@ fn generation_is_deterministic() {
 }
 
 #[test]
-fn partition_rows_and_batch_layout() {
+fn partition_rows() {
     let source = SourceSpec::new(schema())
         .with_partition_rows(&[25, 0, 7])
-        .with_batch_layout(BatchLayout::Fixed(10))
         .build()
         .unwrap();
     assert_eq!(rows_per_partition(&source), vec![25, 0, 7]);
+    // One batch per partition, and none for a partition without rows
     let sizes: Vec<Vec<usize>> = source
         .partitions()
         .iter()
         .map(|batches| batches.iter().map(RecordBatch::num_rows).collect())
         .collect();
-    assert_eq!(sizes, vec![vec![10, 10, 5], vec![], vec![7]]);
+    assert_eq!(sizes, vec![vec![25], vec![], vec![7]]);
     assert_eq!(
         source.properties().output_partitioning().partition_count(),
         3
     );
-}
-
-#[test]
-fn random_batch_layout_with_empty_batches() {
-    let source = SourceSpec::new(schema())
-        .with_partition_rows(&[200, 0])
-        .with_batch_layout(BatchLayout::Random { max_rows: 5 })
-        .build()
-        .unwrap();
-    assert_eq!(rows_per_partition(&source), vec![200, 0]);
-    let sizes: Vec<usize> = all_batches(&source)
-        .iter()
-        .map(RecordBatch::num_rows)
-        .collect();
-    assert!(sizes.iter().all(|n| *n <= 5), "{sizes:?}");
-    assert!(sizes.contains(&0), "{sizes:?}");
 }
 
 #[test]
@@ -351,7 +337,6 @@ fn generated_sources_pass_every_check() {
         SourceSpec::new(Arc::clone(&schema)).with_partition_rows(&[0, 0]),
         SourceSpec::new(Arc::clone(&schema))
             .with_partition_rows(&[30, 5, 80])
-            .with_batch_layout(BatchLayout::Random { max_rows: 3 })
             .with_ordering(ordering),
         SourceSpec::new(Arc::clone(&schema)).with_hash_partitioning(
             vec![col("b", &schema).unwrap()],
@@ -409,6 +394,12 @@ fn every_supported_type_can_be_generated() {
         DataType::Timestamp(TimeUnit::Microsecond, None),
         DataType::Timestamp(TimeUnit::Nanosecond, Some("+01:00".into())),
         DataType::Decimal128(10, 2),
+        DataType::new_list(DataType::Int32, false),
+        DataType::new_large_list(DataType::Utf8, true),
+        DataType::Struct(Fields::from(vec![
+            Field::new("x", DataType::Int32, false),
+            Field::new("y", DataType::new_list(DataType::Utf8, true), true),
+        ])),
     ];
     let fields: Vec<Field> = types
         .iter()
@@ -423,6 +414,62 @@ fn every_supported_type_can_be_generated() {
         for (column, data_type) in batch.columns().iter().zip(&types) {
             assert_eq!(column.data_type(), data_type);
         }
+    }
+}
+
+#[test]
+fn nested_columns() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("l", DataType::new_list(DataType::Int32, false), true),
+        Field::new(
+            "s",
+            DataType::Struct(Fields::from(vec![
+                Field::new("x", DataType::Int32, false),
+                Field::new("y", DataType::Utf8, true),
+            ])),
+            true,
+        ),
+    ]));
+    let spec = SourceSpec::new(Arc::clone(&schema)).with_partition_rows(&[30, 0, 20]);
+    let source = spec.build().unwrap();
+
+    // The list of index k has k % 4 elements, k, k + 1 and so on, and every
+    // field of a struct has the value of the struct's index
+    for batch in all_batches(&source) {
+        let lists = batch.column(0).as_list::<i32>();
+        let structs = batch.column(1).as_struct();
+        for row in 0..batch.num_rows() {
+            if lists.is_valid(row) {
+                let list = lists.value(row);
+                let values = list.as_primitive::<arrow::datatypes::Int32Type>();
+                if let Some(first) = values.iter().next() {
+                    let first = first.unwrap();
+                    let expected: Vec<i32> =
+                        (first..first + (first % 4)).collect::<Vec<_>>();
+                    assert_eq!(values.values().to_vec(), expected);
+                }
+            }
+            if structs.is_valid(row) {
+                let x = structs
+                    .column(0)
+                    .as_primitive::<arrow::datatypes::Int32Type>();
+                let y = structs.column(1).as_string::<i32>();
+                assert_eq!(y.value(row), format!("s{:03}", x.value(row)));
+            }
+        }
+    }
+    let stats = oracle::exact_statistics(&schema, &all_batches(&source)).unwrap();
+    assert_eq!(stats.column_statistics[0].min_value, Precision::Absent);
+
+    // Nested columns can be constant, copied and checked
+    for spec in [
+        spec.clone()
+            .with_constant("l", ConstantValues::Uniform)
+            .with_constant("s", ConstantValues::PerPartition),
+        spec.clone().with_copy("l").with_copy("s").with_row_ids(0),
+    ] {
+        let source = spec.build_arc().unwrap();
+        PlanChecker::new().check(&source).unwrap().assert_clean();
     }
 }
 

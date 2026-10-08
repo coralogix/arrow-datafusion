@@ -1,5 +1,5 @@
 ---
-source: datafusion/property-tests/tests/physical_plan/builtin_plans.rs
+source: datafusion/property-tests/tests/physical_plan/builtin_plans/mod.rs
 expression: output
 ---
 ## ProjectionExec
@@ -319,6 +319,140 @@ expression: output
     [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
 
 ## CooperativeExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartialSortExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartialSortExec with preserve_partitioning
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## PartialSortExec with fetch
+  case seed 1:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case seed 2:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case 2 partitions:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case 5 partitions:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case large input:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[4800], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(4800), which is more than the fetch allows (10)
+
+## InterleaveExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## UnnestExec on a list
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## UnnestExec on a struct
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## UnnestExec on a list and a struct
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## UnnestExec on a list without preserving nulls
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## AsyncFuncExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## ScalarSubqueryExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## OutputRequirementExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## OutputRequirementExec above a SortExec with fetch
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## AnalyzeExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## RecursiveQueryExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## ForeignExecutionPlan of a FilterExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## ForeignExecutionPlan of a SortExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## ForeignExecutionPlan of a RepartitionExec
   case seed 1: no violations
   case seed 2: no violations
   case 2 partitions: no violations

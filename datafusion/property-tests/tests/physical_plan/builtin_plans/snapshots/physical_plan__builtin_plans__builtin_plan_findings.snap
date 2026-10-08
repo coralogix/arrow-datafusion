@@ -1,5 +1,5 @@
 ---
-source: datafusion/property-tests/tests/physical_plan/builtin_plans.rs
+source: datafusion/property-tests/tests/physical_plan/builtin_plans/mod.rs
 expression: output
 ---
 ## EmptyExec
@@ -556,6 +556,257 @@ expression: output
     [lint] limit_pushdown_missed at BufferExec (root): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
 
 ## CooperativeExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PartialSortExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PartialSortExec with preserve_partitioning
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## PartialSortExec with fetch
+  case default:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case single partition:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case inexact statistics:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Inexact, output_ordering=[a@0 ASC]
+    [lint] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but the overall num_rows estimate Inexact(600) is more than the fetch allows (10)
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC], constants=[a@0(uniform: 11),b@1(uniform: false),c@2(uniform: s000)]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case constants per partition:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC], constants=[a@0(heterogeneous),b@1(heterogeneous),c@2(heterogeneous)]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case copied columns:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC], equalities=[a@0 = a__copy@3, b@1 = b__copy@4, c@2 = c__copy@5]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case sorted by row id:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+  case hash partitioned:
+    PartialSortExec: TopK(fetch=10), expr=[a@0 ASC, c@2 ASC], common_prefix_length=[1]
+      MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact, output_ordering=[a@0 ASC]
+    [invariant] fetch_bounds_num_rows at PartialSortExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (10)
+
+## InterleaveExec
+  case default: no violations
+  case single partition:
+    InterleaveExec
+      RepartitionExec: partitioning=Hash([a@0], 3), input_partitions=1
+        MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+      RepartitionExec: partitioning=Hash([a@0], 3), input_partitions=1
+        MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[600], statistics=Exact
+    [lint] limit_pushdown_missed at RepartitionExec (root/0): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
+    [lint] limit_pushdown_missed at RepartitionExec (root/1): supports_limit_pushdown() is false, but the cardinality effect without a fetch is Equal, maintains_input_order() is true, and each output partition is made of at most one partition of the child, so a limit above the node could be pushed to its child; return true from supports_limit_pushdown, unless an output row depends on later input rows, as in a window function, or the node has side effects on the rows it reads
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## UnnestExec on a list
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## UnnestExec on a struct
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## UnnestExec on a list and a struct
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## UnnestExec on a list without preserving nulls
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## AsyncFuncExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants:
+    AsyncFuncExec: async_expr=[async_expr(name=async_identity(a), expr=async_identity(a@0))]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact, constants=[a@0(uniform: 11),b@1(uniform: false),c@2(uniform: s000)]
+    [invariant] expression_column_refs at async_func (root): the equivalence class {members: [async_identity(a)@0], constant: (heterogeneous)} refers to column 'async_identity(a)'@0, but field 0 of schema() is 'a'
+  case constants per partition:
+    AsyncFuncExec: async_expr=[async_expr(name=async_identity(a), expr=async_identity(a@0))]
+      MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[200, 0, 400], statistics=Exact, constants=[a@0(heterogeneous),b@1(heterogeneous),c@2(heterogeneous)]
+    [invariant] expression_column_refs at async_func (root): the equivalence class {members: [async_identity(a)@0], constant: (heterogeneous)} refers to column 'async_identity(a)'@0, but field 0 of schema() is 'a'
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## ScalarSubqueryExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input:
+    ScalarSubqueryExec: subqueries=1
+      FilterExec: a@0 < scalar_subquery(<pending>)
+        MockSourceExec: partitioning=UnknownPartitioning(3), partition_rows=[0, 0, 0], statistics=Exact
+      AggregateExec: mode=Single, gby=[], aggr=[max(a)]
+        MockSourceExec: partitioning=UnknownPartitioning(1), partition_rows=[0], statistics=Exact
+    [invariant] cardinality_effect_bounds_num_rows at AggregateExec (root/1): cardinality_effect() is LowerEqual, but the overall num_rows is Exact(1) for the input with num_rows Exact(0)
+    [invariant] cardinality_effect_bounds_num_rows at AggregateExec (root/1): cardinality_effect() is LowerEqual, but the partition 0 num_rows is Exact(1) for the input with num_rows Exact(0)
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## OutputRequirementExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## OutputRequirementExec above a SortExec with fetch
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## AnalyzeExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## ExplainExec
+  case default: no violations
+
+## RecursiveQueryExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## ForeignExecutionPlan of a FilterExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## ForeignExecutionPlan of a SortExec
+  case default: no violations
+  case single partition: no violations
+  case inexact statistics: no violations
+  case absent statistics: no violations
+  case empty input: no violations
+  case uniform constants: no violations
+  case constants per partition: no violations
+  case copied columns: no violations
+  case sorted by row id: no violations
+  case hash partitioned: no violations
+
+## ForeignExecutionPlan of a RepartitionExec
   case default: no violations
   case single partition: no violations
   case inexact statistics: no violations

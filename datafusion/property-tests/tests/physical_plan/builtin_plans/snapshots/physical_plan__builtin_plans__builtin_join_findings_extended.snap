@@ -1,5 +1,5 @@
 ---
-source: datafusion/property-tests/tests/physical_plan/builtin_plans.rs
+source: datafusion/property-tests/tests/physical_plan/builtin_plans/mod.rs
 expression: output
 ---
 ## HashJoinExec CollectLeft Inner

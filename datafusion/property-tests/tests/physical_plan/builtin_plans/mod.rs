@@ -17,15 +17,17 @@
 
 //! Runs all checks against the `ExecutionPlan`s defined in DataFusion and
 //! records the findings in snapshots, one per family of operators: simple
-//! operators, aggregates and joins.
+//! operators, aggregates, joins, windows, and sources and sinks.
 //!
 //! Every plan is a `PlanFactory`: a function that builds the plan from its
 //! inputs. The `PlanHarness` generates the inputs, meets the plan's
 //! `required_input_ordering` and `input_distribution_requirements`, and
 //! checks every case of `Profile::defaults`. With the `extended_tests`
 //! feature, the cases of `Profile::extended` are also checked, and recorded
-//! in separate `_extended` snapshots. Aggregates and joins are built the way
-//! the physical planner and the optimizer build them.
+//! in separate `_extended` snapshots. Plans are built the way the physical
+//! planner and the optimizer build them. A source or a sink is built from the
+//! rows of a generated input, so that it is checked with every layout of the
+//! profiles.
 //!
 //! The snapshots are the list of known violations in the built-in plans. When
 //! a plan is fixed, or a new check finds a new problem, a snapshot changes
@@ -76,6 +78,10 @@ use datafusion_property_tests::physical_plan::fixtures::SourceSpec;
 use datafusion_property_tests::physical_plan::harness::{
     PlanFactory, PlanHarness, Profile,
 };
+
+mod operators;
+mod sources;
+mod windows;
 
 type Plan = Arc<dyn ExecutionPlan>;
 
@@ -145,6 +151,13 @@ fn coalesce_batches(input: Plan, fetch: Option<usize>) -> Plan {
 
 /// The simple operators under test
 fn builtin_plans() -> Result<Vec<PlanFactory>> {
+    let mut factories = simple_plans()?;
+    factories.extend(operators::operator_plans()?);
+    Ok(factories)
+}
+
+/// Sorts, limits, repartitions, projections, filters and the like
+fn simple_plans() -> Result<Vec<PlanFactory>> {
     Ok(vec![
         PlanFactory::new("EmptyExec", vec![], |_| {
             Ok(Arc::new(EmptyExec::new(schema())) as Plan)
@@ -331,15 +344,6 @@ fn aggregate_spec_sorted_on_g() -> Result<SourceSpec> {
     )?)])
     .unwrap();
     Ok(aggregate_spec().with_ordering(ordering))
-}
-
-/// Many distinct values, so that few groups tie on `max(v)` and the groups a
-/// TopK aggregate keeps are well defined, or so that there are more groups
-/// than rows
-fn many_values(rows: usize) -> SourceSpec {
-    aggregate_spec()
-        .with_distinct_values(1000)
-        .with_num_rows(rows)
 }
 
 /// `udaf(arg) AS alias`, with `arg` a column of `input`
@@ -606,7 +610,7 @@ fn aggregate_plans() -> Result<Vec<PlanFactory>> {
         // after `TopKAggregation` pushed the limit into both phases
         one_input(
             "AggregateExec Partial and FinalPartitioned with TopK limit",
-            many_values(600),
+            aggregate_spec(),
             move |input| {
                 let group_by = group_by(&["g"], &input)?;
                 let aggr_expr = vec![aggregate(max_udaf(), "v", "max(v)", &input)?];
@@ -624,12 +628,10 @@ fn aggregate_plans() -> Result<Vec<PlanFactory>> {
                 single_phase(AggregateMode::Single, group_by, vec![], input, limit)
             },
         ),
-        // SELECT g, h, count(v), ... FROM t GROUP BY ROLLUP (g, h), on few
-        // rows with many distinct values, so that there are more groups
-        // than input rows
+        // SELECT g, h, count(v), ... FROM t GROUP BY ROLLUP (g, h)
         one_input(
             "AggregateExec Partial and FinalPartitioned with ROLLUP",
-            many_values(90),
+            aggregate_spec(),
             move |input| {
                 let group_by = rollup_g_h(&input)?;
                 let aggr_expr = all_aggregates(&input)?;
@@ -644,18 +646,13 @@ const LEFT_ROWS: usize = 60;
 /// Rows of the right input of a join
 const RIGHT_ROWS: usize = 90;
 
-/// A nullable join key and a value. The left key has more distinct values
-/// than the right key, so that both sides have rows without a match: left
-/// rows with keys the right side does not have, and rows with null keys on
-/// both sides.
+/// A nullable join key and a value
 fn left_spec() -> SourceSpec {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_k", DataType::Int32, true),
         Field::new("l_v", DataType::Int32, false),
     ]));
-    SourceSpec::new(schema)
-        .with_distinct_values(12)
-        .with_num_rows(LEFT_ROWS)
+    SourceSpec::new(schema).with_num_rows(LEFT_ROWS)
 }
 
 fn right_spec() -> SourceSpec {
@@ -663,9 +660,7 @@ fn right_spec() -> SourceSpec {
         Field::new("r_k", DataType::Int32, true),
         Field::new("r_v", DataType::Int32, false),
     ]));
-    SourceSpec::new(schema)
-        .with_distinct_values(8)
-        .with_num_rows(RIGHT_ROWS)
+    SourceSpec::new(schema).with_num_rows(RIGHT_ROWS)
 }
 
 /// A factory for a join of a [`left_spec`] and a [`right_spec`] input
@@ -998,6 +993,20 @@ fn builtin_join_findings() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn builtin_window_findings() -> Result<()> {
+    let output = audit(windows::window_plans()?, Profile::defaults())?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[test]
+fn builtin_source_findings() -> Result<()> {
+    let output = audit(sources::source_plans()?, Profile::defaults())?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
 #[cfg(feature = "extended_tests")]
 #[test]
 fn builtin_plan_findings_extended() -> Result<()> {
@@ -1024,6 +1033,22 @@ fn builtin_aggregate_findings_extended() -> Result<()> {
 #[test]
 fn builtin_join_findings_extended() -> Result<()> {
     let output = audit(join_plans(), Profile::extended())?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[cfg(feature = "extended_tests")]
+#[test]
+fn builtin_window_findings_extended() -> Result<()> {
+    let output = audit(windows::window_plans()?, Profile::extended())?;
+    insta::assert_snapshot!(output);
+    Ok(())
+}
+
+#[cfg(feature = "extended_tests")]
+#[test]
+fn builtin_source_findings_extended() -> Result<()> {
+    let output = audit(sources::source_plans()?, Profile::extended())?;
     insta::assert_snapshot!(output);
     Ok(())
 }
