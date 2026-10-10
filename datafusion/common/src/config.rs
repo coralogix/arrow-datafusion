@@ -1795,6 +1795,17 @@ config_namespace! {
         /// query is used.
         pub join_reordering: bool, default = true
 
+        /// (Experimental) When set to true, both hash join inputs are drained
+        /// before the join runs until one finishes and the other is known to
+        /// have at least as many rows, and the build side is swapped at
+        /// runtime if the probe side has fewer rows.
+        pub adaptive_join_build_side: bool, default = false
+
+        /// Cap on bytes buffered by `adaptive_join_build_side` for each join
+        /// input, across all its partitions. If neither input finishes under
+        /// it, the planned build side is kept.
+        pub adaptive_join_max_bytes: usize, default = 4 * 1024 * 1024 * 1024
+
         /// (Deprecated) Ignored: the physical plan optimizer always consults the
         /// session's pluggable `StatisticsRegistry` (register providers on the
         /// `SessionState`; with none it is a no-op).

@@ -433,12 +433,10 @@ async fn register_tables(ctx: &SessionContext) -> Result<()> {
 pub async fn adaptive_join() -> Result<()> {
     // Dynamic join filters are disabled because they are wired up for the
     // original build side, and `swap_inputs` refuses to swap once they exist.
-    let config = SessionConfig::new()
-        .with_target_partitions(1)
-        .set_bool(
-            "datafusion.optimizer.enable_join_dynamic_filter_pushdown",
-            false,
-        );
+    let config = SessionConfig::new().with_target_partitions(1).set_bool(
+        "datafusion.optimizer.enable_join_dynamic_filter_pushdown",
+        false,
+    );
     let ctx = SessionContext::new_with_config(config);
     register_tables(&ctx).await?;
     // The planner cannot analyze `f.v % 1000 = 0`, so it assumes the default

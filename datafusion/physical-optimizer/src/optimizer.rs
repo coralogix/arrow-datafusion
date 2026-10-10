@@ -20,6 +20,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::adaptive_join::AdaptiveJoinBuildSide;
 use crate::aggregate_statistics::AggregateStatistics;
 use crate::combine_partial_final_agg::CombinePartialFinalAggregate;
 use crate::ensure_coop::EnsureCooperative;
@@ -179,6 +180,9 @@ impl PhysicalOptimizer {
             // Therefore, it should be run at the end of the optimization process since any changes to the plan may break the dynamic filter's references.
             // See `FilterPushdownPhase` for more details.
             Arc::new(FilterPushdown::new_post_optimization()),
+            // Experimental: pick hash join build sides at runtime. Runs after
+            // dynamic filter pushdown since it only wraps join inputs.
+            Arc::new(AdaptiveJoinBuildSide::new()),
             // The SanityCheckPlan rule checks whether the order and
             // distribution requirements of each node in the plan
             // is satisfied. It will also reject non-runnable query
