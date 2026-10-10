@@ -21,11 +21,14 @@
 //!
 //! ## Usage
 //! ```bash
-//! cargo run --example execution_monitoring -- [all|mem_pool_exec_plan|mem_pool_tracking|stage_pause|stage_admission|stage_dependencies|tracing]
+//! cargo run --example execution_monitoring -- [all|adaptive_join|mem_pool_exec_plan|mem_pool_tracking|stage_pause|stage_admission|stage_dependencies|tracing]
 //! ```
 //!
 //! Each subcommand runs a corresponding example:
 //! - `all` — run all examples included in this module
+//!
+//! - `adaptive_join`
+//!   (file: adaptive_join.rs, desc: Pick a hash join build side at runtime from stage boundaries)
 //!
 //! - `mem_pool_exec_plan`
 //!   (file: memory_pool_execution_plan.rs, desc: Memory-aware ExecutionPlan with spilling)
@@ -45,6 +48,7 @@
 //! - `tracing`
 //!   (file: tracing.rs, desc: Demonstrates tracing integration)
 
+mod adaptive_join;
 mod memory_pool_execution_plan;
 mod memory_pool_tracking;
 mod staged_execution;
@@ -58,6 +62,7 @@ use strum_macros::{Display, EnumIter, EnumString, VariantNames};
 #[strum(serialize_all = "snake_case")]
 enum ExampleKind {
     All,
+    AdaptiveJoin,
     MemPoolExecPlan,
     MemPoolTracking,
     StagePause,
@@ -81,6 +86,7 @@ impl ExampleKind {
                     Box::pin(example.run()).await?;
                 }
             }
+            ExampleKind::AdaptiveJoin => adaptive_join::adaptive_join().await?,
             ExampleKind::MemPoolExecPlan => {
                 memory_pool_execution_plan::memory_pool_execution_plan().await?
             }

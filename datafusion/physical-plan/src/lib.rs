@@ -55,7 +55,7 @@ pub use crate::execution_plan::{
 pub use crate::metrics::Metric;
 pub use crate::ordering::InputOrderMode;
 pub use crate::sort_pushdown::SortOrderPushdownResult;
-pub use crate::stage_boundary::StageBoundary;
+pub use crate::stage_boundary::{StageBoundary, StageProgress};
 pub use crate::statistics::{ChildStats, StatisticsArgs, StatisticsContext};
 pub use crate::stream::EmptyRecordBatchStream;
 pub use crate::topk::TopK;

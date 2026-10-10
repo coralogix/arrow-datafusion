@@ -24,6 +24,7 @@ use crate::filter_pushdown::{
 pub use crate::metrics::Metric;
 pub use crate::ordering::InputOrderMode;
 use crate::sort_pushdown::SortOrderPushdownResult;
+use crate::stage_boundary::StageBoundary;
 pub use crate::stream::EmptyRecordBatchStream;
 
 use arrow_schema::Schema;
@@ -1005,6 +1006,15 @@ pub trait ExecutionPlan: Any + Debug + DisplayAs + Send + Sync {
         &self,
         _preserve_order: bool,
     ) -> Option<Arc<dyn ExecutionPlan>> {
+        None
+    }
+
+    /// Returns this node as a [`StageBoundary`] if a driver may prime, inspect,
+    /// and release it, without wrapping it in a separate buffering node.
+    ///
+    /// Defaults to `None`. Pipeline breakers that already buffer their input
+    /// can override this.
+    fn as_boundary(&self) -> Option<&dyn StageBoundary> {
         None
     }
 

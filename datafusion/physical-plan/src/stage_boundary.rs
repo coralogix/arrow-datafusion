@@ -25,6 +25,18 @@ use datafusion_execution::TaskContext;
 
 use crate::ExecutionPlan;
 
+/// What a [`StageBoundary`] partition has buffered when it became ready.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageProgress {
+    /// Rows buffered so far.
+    pub rows: usize,
+    /// Memory used by the buffered batches.
+    pub bytes: usize,
+    /// Whether the input reached EOF. If `false`, the remaining input is
+    /// streamed through after [`StageBoundary::release`].
+    pub complete: bool,
+}
+
 /// An [`ExecutionPlan`] that materializes its input under driver control.
 ///
 /// [`Self::prime`] drains an input partition independently of downstream
@@ -93,11 +105,21 @@ pub trait StageBoundary: ExecutionPlan {
     /// and marks the partition ready.
     fn prime(&self, partition: usize, context: Arc<TaskContext>) -> Result<()>;
 
-    /// Returns whether a partition's drain reached EOF or terminated with an error.
+    /// Returns whether a partition is safe to inspect via [`Self::progress`].
     ///
-    /// Once ready, a partition remains ready. Returns `false` for an invalid
-    /// partition.
+    /// A partition is ready when its drain reached EOF, terminated with an
+    /// error, or stopped early because an implementation-defined condition
+    /// (such as a size threshold) was met. Once ready, a partition remains
+    /// ready. Returns `false` for an invalid partition.
     fn is_ready(&self, partition: usize) -> bool;
+
+    /// Reports what a ready partition has buffered so far.
+    ///
+    /// Returns `None` if the partition is not ready or the implementation does
+    /// not track progress.
+    fn progress(&self, _partition: usize) -> Option<StageProgress> {
+        None
+    }
 
     /// Allows all materialized output partitions to flow downstream.
     ///
