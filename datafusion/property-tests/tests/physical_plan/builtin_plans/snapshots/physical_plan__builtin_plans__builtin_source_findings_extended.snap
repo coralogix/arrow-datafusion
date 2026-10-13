@@ -1,0 +1,169 @@
+---
+source: datafusion/property-tests/tests/physical_plan/builtin_plans/mod.rs
+expression: output
+---
+## DataSourceExec MemorySourceConfig
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec MemorySourceConfig with projection
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec MemorySourceConfig with limit
+  case seed 1:
+    DataSourceExec: partitions=3, partition_sizes=[1, 0, 1], fetch=10
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(200), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(400), which is more than the fetch allows (10)
+  case seed 2:
+    DataSourceExec: partitions=3, partition_sizes=[1, 0, 1], fetch=10
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(200), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(400), which is more than the fetch allows (10)
+  case 2 partitions:
+    DataSourceExec: partitions=2, partition_sizes=[1, 1], fetch=10
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (20)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(300), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 1 num_rows is Exact(300), which is more than the fetch allows (10)
+  case 5 partitions:
+    DataSourceExec: partitions=5, partition_sizes=[1, 1, 0, 1, 1], fetch=10
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (50)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(171), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 1 num_rows is Exact(85), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 3 num_rows is Exact(257), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 4 num_rows is Exact(87), which is more than the fetch allows (10)
+  case large input:
+    DataSourceExec: partitions=3, partition_sizes=[1, 0, 1], fetch=10
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(4800), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(1600), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(3200), which is more than the fetch allows (10)
+
+## DataSourceExec values
+  case seed 1: no violations
+
+## DataSourceExec Parquet
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec CSV
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec JSON
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec Arrow
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSourceExec Parquet with projection and limit
+  case seed 1:
+    DataSourceExec: file_groups={3 groups: [[data/part-0.parquet], [data/part-1.parquet], [data/part-2.parquet]]}, projection=[a, c, __row_id], limit=10, file_type=parquet
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(200), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(400), which is more than the fetch allows (10)
+  case seed 2:
+    DataSourceExec: file_groups={3 groups: [[data/part-0.parquet], [data/part-1.parquet], [data/part-2.parquet]]}, projection=[a, c, __row_id], limit=10, file_type=parquet
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(200), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(400), which is more than the fetch allows (10)
+  case 2 partitions:
+    DataSourceExec: file_groups={2 groups: [[data/part-0.parquet], [data/part-1.parquet]]}, projection=[a, c, __row_id], limit=10, file_type=parquet
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (20)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(300), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 1 num_rows is Exact(300), which is more than the fetch allows (10)
+  case 5 partitions:
+    DataSourceExec: file_groups={5 groups: [[data/part-0.parquet], [data/part-1.parquet], [data/part-2.parquet], [data/part-3.parquet], [data/part-4.parquet]]}, projection=[a, c, __row_id], limit=10, file_type=parquet
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(600), which is more than the fetch allows (50)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(171), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 1 num_rows is Exact(85), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 3 num_rows is Exact(257), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 4 num_rows is Exact(87), which is more than the fetch allows (10)
+  case large input:
+    DataSourceExec: file_groups={3 groups: [[data/part-0.parquet], [data/part-1.parquet], [data/part-2.parquet]]}, projection=[a, c, __row_id], limit=10, file_type=parquet
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but overall num_rows is Exact(4800), which is more than the fetch allows (30)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 0 num_rows is Exact(1600), which is more than the fetch allows (10)
+    [invariant] fetch_bounds_num_rows at DataSourceExec (root): fetch() is Some(10), but partition 2 num_rows is Exact(3200), which is more than the fetch allows (10)
+
+## LazyMemoryExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## LazyMemoryExec with projection
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## StreamingTableExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## StreamingTableExec with projection and limit
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## StreamingTableExec infinite
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSinkExec MemSink
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## DataSinkExec with a sort order
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## MemDeleteExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
+
+## MemUpdateExec
+  case seed 1: no violations
+  case seed 2: no violations
+  case 2 partitions: no violations
+  case 5 partitions: no violations
+  case large input: no violations
