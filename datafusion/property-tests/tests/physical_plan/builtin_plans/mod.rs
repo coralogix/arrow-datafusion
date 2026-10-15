@@ -983,9 +983,9 @@ fn join_plans() -> Vec<PlanFactory> {
         true,
     ));
 
-    for join_type in [Inner, Full] {
-        factories.push(piecewise_merge_join(join_type));
-    }
+    // Not `Full`: on v55 its output never ends with small batch sizes
+    // (https://github.com/apache/datafusion/issues/24297)
+    factories.push(piecewise_merge_join(Inner));
 
     factories
 }

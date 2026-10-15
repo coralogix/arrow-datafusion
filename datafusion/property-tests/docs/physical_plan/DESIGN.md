@@ -26,7 +26,7 @@ heading. See [CHECKS.md](CHECKS.md) for what is checked and
 ## Goal
 
 `ExecutionPlan`s have a lot of properties, both implicit and explicit, that are
-important to get right for correctness and performance.  The interface exposes
+important to get right for correctness and performance. The interface exposes
 enough that we should be able to create a generic test suite over that interface
 to (1) catch real bugs in `ExecutionPlan`s shipped by DataFusion, and (2) let
 users more easily create correct and performant `ExecutionPlan`s.
@@ -36,7 +36,7 @@ profiles that vary the inputs to the `ExecutionPlan` to increase test coverage
 (e.g. varying statistics precision or input partitioning).
 
 The goal is that users only need to define a "spec" that describes valid inputs
-to the plan node and the cases will be generated automatically.  Some plans that
+to the plan node and the cases will be generated automatically. Some plans that
 have multiple configurations (e.g. `RepartitionExec` in different partitioning
 modes) will require users to define these variations explicitly.
 

@@ -551,96 +551,70 @@ expression: output
 
 ## MemDeleteExec
   case default:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case single partition:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=364
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case inexact statistics:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case absent statistics:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-  case empty input: no violations
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case empty input:
+    DmlResultExec: rows_affected=0
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case uniform constants:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=600
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case constants per partition:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=600
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case copied columns:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case sorted by row id:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case sorted by columns:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=362
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
   case hash partitioned:
-    MemDeleteExec: predicate=[a@0 > 5]
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution after reset_plan_states: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] reset_state_reexecution at MemDeleteExec (root): with a second execution of the same plan, without a reset: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally; a plan executed again without reset_state must produce the same rows or return an error
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 1: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 2: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 7: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
-    [invariant] batch_size_invariance at MemDeleteExec (root): with batch size 8192: the node produced 1 rows, 1 of which do not appear in the normal output, instead of the 1 rows it produces normally
+    DmlResultExec: rows_affected=364
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
 
 ## MemUpdateExec
-  case default: no violations
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
-  case empty input: no violations
-  case uniform constants: no violations
-  case constants per partition: no violations
-  case copied columns: no violations
-  case sorted by row id: no violations
-  case sorted by columns: no violations
-  case hash partitioned: no violations
+  case default:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case single partition:
+    DmlResultExec: rows_affected=310
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case inexact statistics:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case absent statistics:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case empty input:
+    DmlResultExec: rows_affected=0
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case uniform constants:
+    DmlResultExec: rows_affected=0
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case constants per partition:
+    DmlResultExec: rows_affected=0
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case copied columns:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case sorted by row id:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case sorted by columns:
+    DmlResultExec: rows_affected=277
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count
+  case hash partitioned:
+    DmlResultExec: rows_affected=310
+    [invariant] invalid_partition_errors at DmlResultExec (root): the node has 1 output partitions, but execute(1) returned a stream that produced a batch of 1 rows; return an error for a partition at or past the partition count

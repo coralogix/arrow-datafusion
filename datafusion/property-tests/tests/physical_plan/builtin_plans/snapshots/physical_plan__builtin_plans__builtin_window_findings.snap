@@ -216,21 +216,3 @@ expression: output
   case sorted by row id: no violations
   case sorted by columns: no violations
   case hash partitioned: no violations
-
-## PartitionedTopKExec DENSE_RANK
-  allowed limit_pushdown_missed: a window function can need later rows, as LEAD, NTILE, CUME_DIST and frames that end after the current row do, so a window operator cannot support limit pushdown in general; limit_pushdown_past_window pushes limits past the windows that only read earlier rows
-  case default:
-    BoundedWindowAggExec: wdw=[dense_rank() PARTITION BY [g] ORDER BY [v]: Field { "dense_rank() PARTITION BY [g] ORDER BY [v]": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
-      PartitionedTopKExec: fn=dense_rank, fetch=5, partition=[g@0], order=[v@2 ASC]
-        MockSourceExec: partitioning=Hash([g@0], 3), partition_rows=[146, 236, 218], statistics=Exact
-    [invariant] boundedness_holds at PartitionedTopKExec (root/0): rebuilt with child 0 unbounded, the node reports Boundedness::Bounded, but its output did not end while the child kept delivering rows
-  case single partition: no violations
-  case inexact statistics: no violations
-  case absent statistics: no violations
-  case empty input: no violations
-  case uniform constants: no violations
-  case constants per partition: no violations
-  case copied columns: no violations
-  case sorted by row id: no violations
-  case sorted by columns: no violations
-  case hash partitioned: no violations
