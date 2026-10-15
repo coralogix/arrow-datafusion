@@ -34,8 +34,9 @@ The crate currently covers `ExecutionPlan`, in the `physical_plan` module.
 ## ExecutionPlan
 
 Optimizer rules trust what a plan reports about itself, such as its
-cardinality effect, statistics and whether it supports limit pushdown. The
-checks compare these with each other and with what the plan's inputs report.
+cardinality effect, statistics and orderings. The checks compare these with
+each other, with what the plan's inputs report, and with what the plan does
+when it runs.
 
 Describe how to build your plan from its inputs, and let the harness do the
 rest:
@@ -83,12 +84,16 @@ report.assert_no_invariant_violations();
 
 - [CHECKS.md](docs/physical_plan/CHECKS.md) lists every check, why it
   matters and how to fix a violation.
+- [IMPLEMENTATION_STATUS.md](docs/physical_plan/IMPLEMENTATION_STATUS.md)
+  tracks which checks are implemented, and the violations currently found in
+  DataFusion's own plans.
 - [DESIGN.md](docs/physical_plan/DESIGN.md) describes how the module is
-  structured, including the harness.
+  structured, including the harness, and where it is heading.
 
-To add a check, write a function that returns the findings for one node in
-`src/physical_plan/checks/`, add it to `checks::all_checks` with its name,
-and describe it in [CHECKS.md](docs/physical_plan/CHECKS.md).
+To add a check, write a function that returns the findings for one node, in
+the file of `src/physical_plan/checks/` for the check's `CheckKind`, add it
+to `checks::all_checks` with its name and `CheckKind`, and describe it in
+[CHECKS.md](docs/physical_plan/CHECKS.md).
 
 [apache arrow]: https://arrow.apache.org/
 [apache datafusion]: https://datafusion.apache.org/

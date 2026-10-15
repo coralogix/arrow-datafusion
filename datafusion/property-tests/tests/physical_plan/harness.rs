@@ -22,7 +22,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use arrow::array::AsArray;
+use arrow::array::{AsArray, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt64Type};
 use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
@@ -44,17 +44,18 @@ use datafusion_physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
     ExecutionPlanProperties, InputDistributionRequirements, Partitioning, PlanProperties,
     ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
+    collect_partitioned,
 };
 use datafusion_property_tests::Severity;
-use datafusion_property_tests::physical_plan::PlanChecker;
+use datafusion_property_tests::physical_plan::CheckKind;
 use datafusion_property_tests::physical_plan::fixtures::{
-    MockSourceExec, ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
+    ROW_ID_COLUMN, SourceSpec, StatisticsPrecision,
 };
 use datafusion_property_tests::physical_plan::harness::{
     FactoryReport, PlanFactory, PlanHarness, Profile, ROW_ID_RANGE,
 };
 
-use crate::common::{ConfigurableExec, Effect};
+use crate::common::{ConfigurableExec, Effect, FetchMode, checker_of};
 
 type Plan = Arc<dyn ExecutionPlan>;
 
@@ -95,13 +96,26 @@ fn filter() -> PlanFactory {
     })
 }
 
+/// A harness with the static checks only
+fn static_harness() -> PlanHarness {
+    PlanHarness::new().with_checker(checker_of(&[CheckKind::Static]))
+}
+
 /// The ids of the row id column of `input`
-fn row_ids(input: &MockSourceExec) -> Vec<u64> {
-    input
-        .partitions()
+fn row_ids(input: &Plan) -> Vec<u64> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let partitions = runtime
+        .block_on(collect_partitioned(
+            Arc::clone(input),
+            Arc::new(TaskContext::default()),
+        ))
+        .unwrap();
+    partitions
         .iter()
         .flatten()
-        .flat_map(|batch| {
+        .flat_map(|batch: &RecordBatch| {
             let index = batch.schema().index_of(ROW_ID_COLUMN).unwrap();
             batch
                 .column(index)
@@ -237,7 +251,7 @@ fn ordering_requirement_sorts_the_input() {
             input,
         )))
     });
-    let cases = PlanHarness::new().cases(&factory).unwrap();
+    let cases = static_harness().cases(&factory).unwrap();
     assert_eq!(cases.len(), Profile::defaults().len());
     for case in &cases {
         let ordering = case.inputs[0].ordering().map(ToString::to_string);
@@ -245,6 +259,14 @@ fn ordering_requirement_sorts_the_input() {
             // A constant column meets any ordering on it, so the input is
             // not sorted
             assert_eq!(ordering, None, "{}", case.profile.name);
+        } else if case.profile.column_ordering {
+            // The ordering on every column meets the requirement, and is kept
+            assert_eq!(
+                ordering.as_deref(),
+                Some("a@0 ASC, b@1 ASC"),
+                "{}",
+                case.profile.name
+            );
         } else {
             assert_eq!(
                 ordering.as_deref(),
@@ -278,7 +300,7 @@ fn compatible_base_ordering_is_kept() {
         vec![spec().with_ordering(base_ordering)],
         sort_preserving_merge,
     );
-    let case = &PlanHarness::new().cases(&factory).unwrap()[0];
+    let case = &static_harness().cases(&factory).unwrap()[0];
     assert_eq!(
         case.inputs[0].ordering().unwrap().to_string(),
         "a@0 ASC, b@1 ASC"
@@ -292,7 +314,7 @@ fn compatible_base_ordering_is_kept() {
         ],
         sort_preserving_merge,
     );
-    let case = &PlanHarness::new().cases(&factory).unwrap()[0];
+    let case = &static_harness().cases(&factory).unwrap()[0];
     assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "a@0 ASC");
 }
 
@@ -301,7 +323,7 @@ fn single_partition_requirement() {
     let factory = one_input("GlobalLimitExec", |input| {
         Ok(Arc::new(GlobalLimitExec::new(input, 0, Some(5))))
     });
-    let cases = PlanHarness::new().cases(&factory).unwrap();
+    let cases = static_harness().cases(&factory).unwrap();
     assert_eq!(cases.len(), Profile::defaults().len());
     for case in &cases {
         assert_eq!(case.inputs[0].partition_count(), 1, "{}", case.profile.name);
@@ -338,7 +360,7 @@ fn hash_join(mode: PartitionMode) -> PlanFactory {
 fn hash_requirement_and_co_partitioning() {
     // Both inputs are hash partitioned on their keys, into as many
     // partitions as the profile has
-    let harness = PlanHarness::new().with_profiles(vec![
+    let harness = static_harness().with_profiles(vec![
         Profile::default_profile(),
         Profile {
             partition_weights: vec![1, 1, 0, 1, 1],
@@ -363,7 +385,7 @@ fn hash_requirement_and_co_partitioning() {
 
     // A collect left join puts its build side in one partition, and leaves
     // the probe side as the profile lays it out
-    let cases = PlanHarness::new()
+    let cases = static_harness()
         .cases(&hash_join(PartitionMode::CollectLeft))
         .unwrap();
     assert_eq!(cases[0].inputs[0].partition_rows(), Some(&[60][..]));
@@ -378,7 +400,7 @@ fn requirements_that_depend_on_the_input_are_probed_again() {
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(RequirementExec::plan(input, Rule::HashThenOrdering))
     });
-    let harness = PlanHarness::new().with_profiles(vec![Profile::default_profile()]);
+    let harness = static_harness().with_profiles(vec![Profile::default_profile()]);
     let case = &harness.cases(&factory).unwrap()[0];
     let input = &case.inputs[0];
     assert_eq!(input.hash_partitioning().unwrap()[0].to_string(), "a@0");
@@ -393,7 +415,7 @@ fn soft_ordering_requirements_are_not_imposed() {
     let factory = one_input("RequirementExec", |input| {
         Ok(RequirementExec::plan(input, Rule::SoftOrdering))
     });
-    let case = &PlanHarness::new().cases(&factory).unwrap()[0];
+    let case = &static_harness().cases(&factory).unwrap()[0];
     assert!(case.inputs[0].ordering().is_none());
 }
 
@@ -402,7 +424,7 @@ fn unsatisfiable_requirements_are_an_error() {
     let factory = one_input("RequirementExec", |input| {
         Ok(RequirementExec::plan(input, Rule::Alternating))
     });
-    let error = PlanHarness::new().check(&factory).unwrap_err().to_string();
+    let error = static_harness().check(&factory).unwrap_err().to_string();
     assert!(
         error.contains("deriving the 'default' case of 'RequirementExec'"),
         "{error}"
@@ -426,7 +448,7 @@ fn requirements_on_children_that_are_not_inputs_are_an_error() {
             projection,
         )))
     });
-    let error = PlanHarness::new().cases(&factory).unwrap_err().to_string();
+    let error = static_harness().cases(&factory).unwrap_err().to_string();
     assert!(
         error.contains(
             "SortPreservingMergeExec requires child 0 to be sorted by [a@0 ASC], and the \
@@ -438,7 +460,7 @@ fn requirements_on_children_that_are_not_inputs_are_an_error() {
 
 #[test]
 fn case_inputs_follow_the_profile() {
-    let cases = PlanHarness::new().cases(&filter()).unwrap();
+    let cases = static_harness().cases(&filter()).unwrap();
     for (case, precision) in cases.iter().zip([
         StatisticsPrecision::Exact,
         StatisticsPrecision::Exact,
@@ -461,7 +483,7 @@ fn case_inputs_follow_the_profile() {
     assert_eq!(cases[4].inputs[0].partition_rows(), Some(&[0, 0, 0][..]));
 
     // The extended profiles add more seeds, partition counts and rows
-    let extended = PlanHarness::new()
+    let extended = static_harness()
         .with_profiles(Profile::extended())
         .cases(&filter())
         .unwrap();
@@ -495,7 +517,7 @@ fn row_id_ordering_and_hash_partitioning_profiles() {
             .find(|profile| profile.name == name)
             .unwrap()
     };
-    let harness = PlanHarness::new().with_profiles(vec![
+    let harness = static_harness().with_profiles(vec![
         profile("sorted by row id"),
         profile("hash partitioned"),
     ]);
@@ -542,15 +564,61 @@ fn row_id_ordering_and_hash_partitioning_profiles() {
 }
 
 #[test]
+fn column_ordering_profile() {
+    let profile = Profile::defaults()
+        .into_iter()
+        .find(|profile| profile.name == "sorted by columns")
+        .unwrap();
+    let harness = static_harness().with_profiles(vec![profile]);
+
+    // Every input declares that it is sorted by its columns, in schema order,
+    // without the row id
+    let case = &harness.cases(&filter()).unwrap()[0];
+    let input = case.plan.children()[0];
+    assert_eq!(
+        input.properties().output_ordering().unwrap().to_string(),
+        "a@0 ASC, b@1 ASC"
+    );
+
+    // A base ordering is kept
+    let base_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+        col("b", &schema()).unwrap(),
+    )])
+    .unwrap();
+    let factory = PlanFactory::new(
+        "FilterExec",
+        vec![spec().with_ordering(base_ordering)],
+        |inputs| {
+            let input = Arc::clone(&inputs[0]);
+            let predicate = Arc::new(IsNotNullExpr::new(col("b", &input.schema())?));
+            Ok(Arc::new(FilterExec::try_new(predicate, input)?) as Plan)
+        },
+    );
+    let case = &harness.cases(&factory).unwrap()[0];
+    assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "b@1 ASC");
+
+    // An ordering the plan requires replaces it
+    let case = &harness
+        .cases(&one_input("SortPreservingMergeExec", |input| {
+            Ok(Arc::new(SortPreservingMergeExec::new(
+                ordering_on("b", &input)?,
+                input,
+            )))
+        }))
+        .unwrap()[0];
+    assert_eq!(case.inputs[0].ordering().unwrap().to_string(), "b@1 ASC");
+}
+
+#[test]
 fn row_id_columns() {
     let factory = hash_join(PartitionMode::CollectLeft);
-    let case = &PlanHarness::new().cases(&factory).unwrap()[0];
-    let inputs: Vec<MockSourceExec> = case
+    let case = &static_harness().cases(&factory).unwrap()[0];
+    let inputs: Vec<Plan> = case
         .inputs
         .iter()
-        .map(|spec| spec.build().unwrap())
+        .map(|spec| spec.build_arc().unwrap())
         .collect();
-    let names = |input: &MockSourceExec| -> Vec<String> {
+    let names = |input: &Plan| -> Vec<String> {
         input
             .schema()
             .fields()
@@ -577,7 +645,7 @@ fn row_id_columns() {
 fn inputs_with_the_same_base_spec_have_the_same_schema() {
     // So a union needs no projection to rename the row id columns
     let factory = PlanFactory::new("UnionExec", vec![spec(), spec()], UnionExec::try_new);
-    let case = &PlanHarness::new().cases(&factory).unwrap()[0];
+    let case = &static_harness().cases(&factory).unwrap()[0];
     assert_eq!(case.inputs[0].schema(), case.inputs[1].schema());
     assert!(
         case.plan
@@ -599,17 +667,17 @@ fn factories_without_inputs() {
 }
 
 /// A pass-through node over one input that reports `fetch()` 5 and
-/// `CardinalityEffect::Equal` (reported in every case), and an overall
-/// `num_rows` of `Exact(60)`, which the exact row counts of its partitions
-/// contradict when the input is empty (reported in the `empty input` case
-/// only)
+/// `CardinalityEffect::Equal` (reported in every case), and `num_rows`
+/// `Exact(60)`, which is false when the input is empty (reported in the
+/// `empty input` case only)
 fn fetch_with_equal_effect() -> PlanFactory {
     one_input("ConfigurableExec", |input| {
-        Ok(ConfigurableExec::new(input)
+        let mut exec = ConfigurableExec::new(input)
             .effect(Effect::Equal)
-            .num_rows(Precision::Exact(60))
-            .fetch(5)
-            .build())
+            .num_rows(Precision::Exact(60));
+        exec.fetch = Some(5);
+        exec.fetch_mode = FetchMode::Ignore;
+        Ok(exec.build())
     })
 }
 
@@ -633,8 +701,21 @@ fn findings_are_reported_per_case() {
         Profile::defaults().len()
     );
     assert_eq!(
-        cases_with(&report, "partition_statistics_sum"),
+        cases_with(&report, "exact_statistics_hold"),
         ["empty input"],
+        "{report}"
+    );
+    // A node that polls its input from a spawned task but reports `Lazy` is
+    // only reported in the default case, whose profile runs the stream checks
+    let factory = one_input("ConfigurableExec", |input| {
+        let mut exec = ConfigurableExec::new(input);
+        exec.eager = true;
+        Ok(exec.build())
+    });
+    let report = PlanHarness::new().check(&factory).unwrap();
+    assert_eq!(
+        cases_with(&report, "lazy_evaluation_holds"),
+        ["default"],
         "{report}"
     );
 }
@@ -642,7 +723,7 @@ fn findings_are_reported_per_case() {
 #[test]
 fn report_display() {
     let factory = filter().allow("fetch_not_equal_cardinality", "a reason");
-    let harness = PlanHarness::new().with_profiles(vec![
+    let harness = static_harness().with_profiles(vec![
         Profile::default_profile(),
         Profile {
             partition_weights: vec![1],
@@ -659,9 +740,7 @@ fn report_display() {
     );
 
     // The plan is only shown for a case with violations
-    let report = PlanHarness::new()
-        .check(&fetch_with_equal_effect())
-        .unwrap();
+    let report = static_harness().check(&fetch_with_equal_effect()).unwrap();
     assert!(
         report.to_string().contains(
             "  case empty input:
@@ -677,7 +756,7 @@ fn report_display() {
 fn allowed_checks_are_skipped() {
     let factory = fetch_with_equal_effect()
         .allow("fetch_not_equal_cardinality", "the fetch is only reported");
-    let report = PlanHarness::new().check(&factory).unwrap();
+    let report = static_harness().check(&factory).unwrap();
     assert!(cases_with(&report, "fetch_not_equal_cardinality").is_empty());
 }
 
@@ -685,13 +764,13 @@ fn allowed_checks_are_skipped() {
 #[should_panic(expected = "the checker has no check named 'no_such_check'")]
 fn allowing_an_unknown_check_panics() {
     let factory = filter().allow("no_such_check", "a typo");
-    let _ = PlanHarness::new().check(&factory);
+    let _ = static_harness().check(&factory);
 }
 
 #[test]
 fn cases_can_be_reproduced_from_their_specs() {
     let factory = fetch_with_equal_effect();
-    let harness = PlanHarness::new();
+    let harness = static_harness();
     let report = harness.check(&factory).unwrap();
     for (case, case_report) in &report.cases {
         let inputs = case
@@ -700,7 +779,7 @@ fn cases_can_be_reproduced_from_their_specs() {
             .map(|spec| spec.build_arc().unwrap())
             .collect();
         let plan = factory.create(inputs).unwrap();
-        let by_hand = PlanChecker::new().check(&plan).unwrap();
+        let by_hand = checker_of(&[CheckKind::Static]).check(&plan).unwrap();
         assert_eq!(&by_hand, case_report);
     }
 }
@@ -708,7 +787,7 @@ fn cases_can_be_reproduced_from_their_specs() {
 #[test]
 fn failing_create_is_an_error() {
     let factory = one_input("fails", |_| internal_err!("no plan today"));
-    let error = PlanHarness::new().check(&factory).unwrap_err().to_string();
+    let error = static_harness().check(&factory).unwrap_err().to_string();
     assert!(
         error.contains("deriving the 'default' case of 'fails'"),
         "{error}"
@@ -722,7 +801,7 @@ fn failing_create_is_an_error() {
         }
         Ok(input)
     });
-    let error = PlanHarness::new().check(&factory).unwrap_err().to_string();
+    let error = static_harness().check(&factory).unwrap_err().to_string();
     assert!(
         error.contains("deriving the 'single partition' case"),
         "{error}"
@@ -732,7 +811,7 @@ fn failing_create_is_an_error() {
 #[test]
 #[should_panic(expected = "invariant violations found")]
 fn invariant_violations_fail_the_assertion() {
-    PlanHarness::new()
+    static_harness()
         .check(&fetch_with_equal_effect())
         .unwrap()
         .assert_no_invariant_violations();
@@ -748,7 +827,7 @@ fn lints_do_not_fail_the_invariant_assertion() {
             .with_fetch(Some(1))
             .ok_or_else(|| datafusion_common::internal_datafusion_err!("no fetch"))
     });
-    let report = PlanHarness::new().check(&factory).unwrap();
+    let report = static_harness().check(&factory).unwrap();
     assert!(
         report
             .cases

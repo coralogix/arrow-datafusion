@@ -33,6 +33,10 @@
 //! a plan is fixed, or a new check finds a new problem, a snapshot changes
 //! and must be reviewed and updated with `cargo insta review` (or by running
 //! the test with `INSTA_UPDATE=always`).
+//!
+//! Known findings are also listed, with their causes, in
+//! `docs/physical_plan/IMPLEMENTATION_STATUS.md`, as are checks allowed for
+//! specific plans.
 
 use std::fmt::Write;
 use std::sync::Arc;
@@ -87,12 +91,17 @@ type Plan = Arc<dyn ExecutionPlan>;
 
 const FETCH: usize = 10;
 
-/// Check every factory on the cases of `profiles` and render the reports
-fn audit(factories: Vec<PlanFactory>, profiles: Vec<Profile>) -> Result<String> {
+/// Check every factory on the cases of `profiles` and render the reports.
+///
+/// Runs on a current-thread runtime (see the tests) so that execution, and
+/// therefore the snapshot, is deterministic. Some plans, such as a
+/// partitioned TopK `SortExec`, produce output that depends on how partitions
+/// interleave.
+async fn audit(factories: Vec<PlanFactory>, profiles: Vec<Profile>) -> Result<String> {
     let harness = PlanHarness::new().with_profiles(profiles);
     let mut output = String::new();
     for factory in factories {
-        let report = harness.check(&factory)?;
+        let report = harness.check_async(&factory).await?;
         writeln!(output, "## {report}\n").unwrap();
     }
     Ok(output)
@@ -194,7 +203,13 @@ fn simple_plans() -> Result<Vec<PlanFactory>> {
             let three = Arc::new(Literal::new(ScalarValue::Int32(Some(3))));
             let predicate = Arc::new(BinaryExpr::new(a, Operator::Eq, three));
             Ok(Arc::new(FilterExec::try_new(predicate, input)?))
-        }),
+        })
+        .allow(
+            "emission_type_holds",
+            "the filter keeps one row in 16 and emits batches of 8192 rows \
+             (filter.rs:81), so it needs about 131072 rows per input partition \
+             before it emits, more than the unbounded input delivers (65536)",
+        ),
         one_input("CoalesceBatchesExec", spec(), |input| {
             Ok(coalesce_batches(input, None))
         }),
@@ -344,6 +359,15 @@ fn aggregate_spec_sorted_on_g() -> Result<SourceSpec> {
     )?)])
     .unwrap();
     Ok(aggregate_spec().with_ordering(ordering))
+}
+
+/// Many distinct values, so that few groups tie on `max(v)` and the groups a
+/// TopK aggregate keeps are well defined, or so that there are more groups
+/// than rows
+fn many_values(rows: usize) -> SourceSpec {
+    aggregate_spec()
+        .with_distinct_values(1000)
+        .with_num_rows(rows)
 }
 
 /// `udaf(arg) AS alias`, with `arg` a column of `input`
@@ -610,7 +634,7 @@ fn aggregate_plans() -> Result<Vec<PlanFactory>> {
         // after `TopKAggregation` pushed the limit into both phases
         one_input(
             "AggregateExec Partial and FinalPartitioned with TopK limit",
-            aggregate_spec(),
+            many_values(600),
             move |input| {
                 let group_by = group_by(&["g"], &input)?;
                 let aggr_expr = vec![aggregate(max_udaf(), "v", "max(v)", &input)?];
@@ -627,11 +651,21 @@ fn aggregate_plans() -> Result<Vec<PlanFactory>> {
                 let limit = Some(LimitOptions::new(5));
                 single_phase(AggregateMode::Single, group_by, vec![], input, limit)
             },
+        )
+        .allow(
+            "batch_boundary_invariance",
+            "the limit is a soft limit: the aggregate stops after the input batch in \
+             which it has seen 5 groups, so how many and which groups it emits depends \
+             on batch boundaries, and only the LIMIT above it makes the result well \
+             defined (aggregates/mod.rs:859-864); it reports no fetch, so the check \
+             cannot know that",
         ),
-        // SELECT g, h, count(v), ... FROM t GROUP BY ROLLUP (g, h)
+        // SELECT g, h, count(v), ... FROM t GROUP BY ROLLUP (g, h), on few
+        // rows with many distinct values, so that there are more groups
+        // than input rows
         one_input(
             "AggregateExec Partial and FinalPartitioned with ROLLUP",
-            aggregate_spec(),
+            many_values(90),
             move |input| {
                 let group_by = rollup_g_h(&input)?;
                 let aggr_expr = all_aggregates(&input)?;
@@ -646,13 +680,18 @@ const LEFT_ROWS: usize = 60;
 /// Rows of the right input of a join
 const RIGHT_ROWS: usize = 90;
 
-/// A nullable join key and a value
+/// A nullable join key and a value. The left key has more distinct values
+/// than the right key, so that both sides have rows without a match: left
+/// rows with keys the right side does not have, and rows with null keys on
+/// both sides.
 fn left_spec() -> SourceSpec {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_k", DataType::Int32, true),
         Field::new("l_v", DataType::Int32, false),
     ]));
-    SourceSpec::new(schema).with_num_rows(LEFT_ROWS)
+    SourceSpec::new(schema)
+        .with_distinct_values(12)
+        .with_num_rows(LEFT_ROWS)
 }
 
 fn right_spec() -> SourceSpec {
@@ -660,7 +699,9 @@ fn right_spec() -> SourceSpec {
         Field::new("r_k", DataType::Int32, true),
         Field::new("r_v", DataType::Int32, false),
     ]));
-    SourceSpec::new(schema).with_num_rows(RIGHT_ROWS)
+    SourceSpec::new(schema)
+        .with_distinct_values(8)
+        .with_num_rows(RIGHT_ROWS)
 }
 
 /// A factory for a join of a [`left_spec`] and a [`right_spec`] input
@@ -949,83 +990,83 @@ fn join_plans() -> Vec<PlanFactory> {
     factories
 }
 
-#[test]
-fn builtin_plan_findings() -> Result<()> {
-    let output = audit(builtin_plans()?, Profile::defaults())?;
+#[tokio::test]
+async fn builtin_plan_findings() -> Result<()> {
+    let output = audit(builtin_plans()?, Profile::defaults()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
-#[test]
-fn builtin_aggregate_findings() -> Result<()> {
-    let output = audit(aggregate_plans()?, Profile::defaults())?;
+#[tokio::test]
+async fn builtin_aggregate_findings() -> Result<()> {
+    let output = audit(aggregate_plans()?, Profile::defaults()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
-#[test]
-fn builtin_join_findings() -> Result<()> {
-    let output = audit(join_plans(), Profile::defaults())?;
+#[tokio::test]
+async fn builtin_join_findings() -> Result<()> {
+    let output = audit(join_plans(), Profile::defaults()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
-#[test]
-fn builtin_window_findings() -> Result<()> {
-    let output = audit(windows::window_plans()?, Profile::defaults())?;
+#[tokio::test]
+async fn builtin_window_findings() -> Result<()> {
+    let output = audit(windows::window_plans()?, Profile::defaults()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
-#[test]
-fn builtin_source_findings() -> Result<()> {
-    let output = audit(sources::source_plans()?, Profile::defaults())?;
+#[tokio::test]
+async fn builtin_source_findings() -> Result<()> {
+    let output = audit(sources::source_plans()?, Profile::defaults()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[cfg(feature = "extended_tests")]
-#[test]
-fn builtin_plan_findings_extended() -> Result<()> {
+#[tokio::test]
+async fn builtin_plan_findings_extended() -> Result<()> {
     // A factory without inputs has a single case whatever the profiles, which
     // `builtin_plan_findings` records
     let factories = builtin_plans()?
         .into_iter()
         .filter(|factory| !factory.inputs.is_empty())
         .collect();
-    let output = audit(factories, Profile::extended())?;
+    let output = audit(factories, Profile::extended()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[cfg(feature = "extended_tests")]
-#[test]
-fn builtin_aggregate_findings_extended() -> Result<()> {
-    let output = audit(aggregate_plans()?, Profile::extended())?;
+#[tokio::test]
+async fn builtin_aggregate_findings_extended() -> Result<()> {
+    let output = audit(aggregate_plans()?, Profile::extended()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[cfg(feature = "extended_tests")]
-#[test]
-fn builtin_join_findings_extended() -> Result<()> {
-    let output = audit(join_plans(), Profile::extended())?;
+#[tokio::test]
+async fn builtin_join_findings_extended() -> Result<()> {
+    let output = audit(join_plans(), Profile::extended()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[cfg(feature = "extended_tests")]
-#[test]
-fn builtin_window_findings_extended() -> Result<()> {
-    let output = audit(windows::window_plans()?, Profile::extended())?;
+#[tokio::test]
+async fn builtin_window_findings_extended() -> Result<()> {
+    let output = audit(windows::window_plans()?, Profile::extended()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }
 
 #[cfg(feature = "extended_tests")]
-#[test]
-fn builtin_source_findings_extended() -> Result<()> {
-    let output = audit(sources::source_plans()?, Profile::extended())?;
+#[tokio::test]
+async fn builtin_source_findings_extended() -> Result<()> {
+    let output = audit(sources::source_plans()?, Profile::extended()).await?;
     insta::assert_snapshot!(output);
     Ok(())
 }

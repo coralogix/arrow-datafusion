@@ -49,6 +49,7 @@ datafusion-physical-expr = { workspace = true }
 datafusion-physical-plan = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }
@@ -64,4 +65,4 @@ datafusion-functions-aggregate = { workspace = true }
 datafusion-functions-window = { workspace = true }
 insta = { workspace = true }
 parking_lot = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -20,10 +20,12 @@
 //! [`MockSourceExec`] is a leaf plan that serves fixed batches and reports
 //! properties (statistics, ordering, partitioning, constants, equalities) that
 //! are verified against those batches. Checks treat what it reports as the
-//! truth.
+//! truth. Its
+//! [`StreamBehavior`] controls what its streams do after serving their
+//! batches: end, stall, fail or never end.
 //!
 //! [`SourceSpec`] describes a source to generate: its schema, how its rows are
-//! split into partitions, the value distribution, and the
+//! split into partitions and batches, the value distribution, and the
 //! properties the data must satisfy. It is a plain value, so tests and the
 //! [`harness`] can derive many variations of an input from one spec.
 //!
@@ -33,5 +35,6 @@ mod source;
 mod spec;
 mod values;
 
-pub use source::{Equality, MockSourceExec, StatisticsPrecision};
-pub use spec::{COPY_SUFFIX, ConstantValues, ROW_ID_COLUMN, SourceSpec};
+pub(crate) use source::map_mock_leaves;
+pub use source::{Equality, MockSourceExec, StatisticsPrecision, StreamBehavior};
+pub use spec::{BatchLayout, COPY_SUFFIX, ConstantValues, ROW_ID_COLUMN, SourceSpec};

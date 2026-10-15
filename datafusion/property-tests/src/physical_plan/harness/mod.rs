@@ -39,8 +39,9 @@ use datafusion_common::Result;
 use datafusion_physical_plan::{ExecutionPlan, displayable};
 
 use crate::Report;
-use crate::physical_plan::PlanChecker;
+use crate::physical_plan::exec::runtime;
 use crate::physical_plan::fixtures::{ConstantValues, SourceSpec, StatisticsPrecision};
+use crate::physical_plan::{CheckKind, PlanChecker};
 
 /// Row ids of input `i` start at `i * ROW_ID_RANGE`
 pub const ROW_ID_RANGE: u64 = 1_000_000_000;
@@ -63,8 +64,8 @@ type CreateFn =
 /// that the inputs of a join match), the number of rows, and optionally an
 /// ordering the plan should see, for example to exercise a sorted code path.
 /// The harness sets everything else for each case, replacing what the base
-/// spec says: the partition layout, hash partitioning, the statistics
-/// precision, the seed and the row ids, and in some cases makes
+/// spec says: the partition layout, hash partitioning, the batch layout, the
+/// statistics precision, the seed and the row ids, and in some cases makes
 /// every column constant or adds a copy of every column (see [`Profile`]). It
 /// keeps the base ordering unless the plan requires another one.
 ///
@@ -167,11 +168,13 @@ impl PlanFactory {
 ///
 /// A profile sets everything about an input that the plan's author does not
 /// need to know: how many partitions it has and how its rows are spread over
-/// them, the precision of its statistics, the seed, and whether its columns are
-/// constant or have copies. The size of each input is the number of rows of its
-/// base [`SourceSpec`] times [`Self::row_multiplier`]: only the author of the
-/// plan knows what size makes sense, since for example a cross join produces
-/// the product of its input sizes.
+/// them, the precision of its statistics, the seed, and whether its columns
+/// are constant or have copies. Rows are split into
+/// random batches of up to 16 rows, with empty batches. The size of each
+/// input is the number of rows of its base [`SourceSpec`] times
+/// [`Self::row_multiplier`]: only the author of the plan knows what size
+/// makes sense, since for example a cross join produces the product of its
+/// input sizes.
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// The name, used to refer to the case in reports
@@ -201,6 +204,13 @@ pub struct Profile {
     /// [`SourceSpec::with_row_id_ordering`]), so that every node sees sorted
     /// input
     pub row_id_ordering: bool,
+    /// Whether every input that does not need another ordering, and whose base
+    /// spec has none, declares that its partitions are sorted by every column
+    /// of its base spec, in schema order, which they are. Unlike the row ids,
+    /// the values of these columns repeat, so that a node that reports an
+    /// ordering longer than the one it keeps between rows that tie on its
+    /// input's ordering is caught.
+    pub column_ordering: bool,
     /// Whether every input is hash partitioned on the first column of its
     /// base spec into one partition per weight of
     /// [`Self::partition_weights`], and declares it (see
@@ -208,13 +218,17 @@ pub struct Profile {
     /// partitioned input. How many rows each partition gets then depends on
     /// the data. An input that must be partitioned otherwise is.
     pub hash_partitioning: bool,
+    /// Whether the [`CheckKind::Stream`] checks run. They depend on how a plan
+    /// drives its streams rather than on the shape of its data, and several of
+    /// them wait for timeouts, so only [`Self::default_profile`] runs them.
+    pub stream_checks: bool,
 }
 
 impl Profile {
     /// A profile named `name` with three partitions, the second of them empty
     /// and the third with twice the rows of the first, exact statistics, seed
-    /// 0, no constant or copied columns, no ordering on the row ids and no
-    /// hash partitioning
+    /// 0, no constant or copied columns, no ordering on the row ids or the
+    /// columns and no hash partitioning, that does not run the stream checks
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -225,13 +239,18 @@ impl Profile {
             constants: None,
             copies: false,
             row_id_ordering: false,
+            column_ordering: false,
             hash_partitioning: false,
+            stream_checks: false,
         }
     }
 
-    /// `default`: the layout of [`Self::new`]
+    /// `default`: the layout of [`Self::new`], with every check
     pub fn default_profile() -> Self {
-        Self::new("default")
+        Self {
+            stream_checks: true,
+            ..Self::new("default")
+        }
     }
 
     /// The profiles [`PlanHarness::new`] uses: [`Self::default_profile`],
@@ -241,7 +260,9 @@ impl Profile {
     /// value per partition), `copied columns` (every column has a copy
     /// that the input declares equal to it), `sorted by row id` (every input
     /// that does not need another ordering declares that it is sorted by its
-    /// row ids) and `hash partitioned` (every input that does not need
+    /// row ids), `sorted by columns` (every input that does not need another
+    /// ordering declares that it is sorted by its columns, whose values
+    /// repeat) and `hash partitioned` (every input that does not need
     /// another partitioning is hash partitioned on its first column)
     pub fn defaults() -> Vec<Self> {
         vec![
@@ -277,6 +298,10 @@ impl Profile {
             Self {
                 row_id_ordering: true,
                 ..Self::new("sorted by row id")
+            },
+            Self {
+                column_ordering: true,
+                ..Self::new("sorted by columns")
             },
             Self {
                 hash_partitioning: true,
@@ -376,7 +401,8 @@ impl PlanHarness {
         }
     }
 
-    /// Run the checks of `checker` instead of every built-in check
+    /// Run the checks of `checker`, with its settings such as timeouts,
+    /// instead of every built-in check
     pub fn with_checker(mut self, checker: PlanChecker) -> Self {
         self.checker = checker;
         self
@@ -416,6 +442,10 @@ impl PlanHarness {
 
     /// Check every case of `factory`.
     ///
+    /// Starts a current-thread Tokio runtime to execute the plans, and so
+    /// panics if called from within a Tokio runtime. Use
+    /// [`Self::check_async`] in async code.
+    ///
     /// Returns an error if the cases cannot be derived (see [`Self::cases`]),
     /// or a check could not run (see [`PlanCheck::check`]).
     ///
@@ -425,6 +455,11 @@ impl PlanHarness {
     ///
     /// [`PlanCheck::check`]: crate::physical_plan::PlanCheck::check
     pub fn check(&self, factory: &PlanFactory) -> Result<FactoryReport> {
+        runtime()?.block_on(self.check_async(factory))
+    }
+
+    /// Check every case of `factory` on the current Tokio runtime
+    pub async fn check_async(&self, factory: &PlanFactory) -> Result<FactoryReport> {
         let checker = factory
             .allowed
             .iter()
@@ -433,7 +468,10 @@ impl PlanHarness {
             });
         let mut cases = vec![];
         for case in self.cases(factory)? {
-            let report = checker.check(&case.plan)?;
+            let checker = checker.clone().retain(|check| {
+                case.profile.stream_checks || check.kind != CheckKind::Stream
+            });
+            let report = checker.check_async(&case.plan).await?;
             cases.push((case, report));
         }
         Ok(FactoryReport {

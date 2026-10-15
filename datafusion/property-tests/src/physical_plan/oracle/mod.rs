@@ -18,20 +18,30 @@
 //! Reference implementations that compute the true properties of a set of
 //! batches: their statistics, whether they are sorted, which hash partition
 //! each row belongs to, the distinct values of an expression and whether it is
-//! constant, and whether two expressions are equal.
+//! constant, whether two expressions are equal, how their rows compare with
+//! the rows of another set of batches, and where the rows of an input appear
+//! in an output.
 //!
-//! [`MockSourceExec`] uses these to validate what it reports, so they are
-//! written to be simple rather than fast, and do not reuse the code paths of
-//! the operators under test where that can be avoided.
+//! Both [`MockSourceExec`] (to validate what it reports) and the execution
+//! checks (to compare a plan's claims against its output) use these, so they
+//! are written to be simple rather than fast, and do not reuse the code paths
+//! of the operators they check where that can be avoided.
 //!
 //! [`MockSourceExec`]: crate::physical_plan::fixtures::MockSourceExec
 
 mod ordering;
 mod partitioning;
+mod row_ids;
+mod rows;
 mod statistics;
 mod values;
 
 pub use ordering::{first_unsorted_row, sort_rows};
 pub use partitioning::{hash_partition, rows_outside_hash_partition};
+pub use row_ids::{
+    InputOrder, OrderBreak, RowPosition, input_order, input_order_of, input_positions,
+    order_breaks,
+};
+pub use rows::{first_non_prefix_row, same_rows, same_rows_in_order, unmatched_rows};
 pub use statistics::exact_statistics;
 pub use values::{constant_violations, distinct_values, first_unequal_row};

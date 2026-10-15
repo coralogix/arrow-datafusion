@@ -41,22 +41,22 @@ use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
 use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_property_tests::physical_plan::PlanChecker;
+use datafusion_property_tests::physical_plan::CheckKind;
 use datafusion_property_tests::physical_plan::fixtures::{
     SourceSpec, StatisticsPrecision,
 };
 use datafusion_property_tests::{Report, Severity};
 
 use crate::common::{
-    ConfigurableExec, Effect, checker, exact_source, inexact_source, messages, schema,
-    source, summary,
+    ConfigurableExec, Effect, FetchMode, checker, checker_of, exact_source,
+    inexact_source, messages, schema, source, summary,
 };
 
-/// Run every check. Most plans pass their rows through without supporting
-/// limit pushdown, which `limit_pushdown_missed` reports; it is tested on its
-/// own below.
+/// Run the static checks. Most plans pass their rows through without
+/// supporting limit pushdown, which `limit_pushdown_missed` reports; it is
+/// tested on its own below.
 fn check(plan: &Arc<dyn ExecutionPlan>) -> Report {
-    PlanChecker::new()
+    checker_of(&[CheckKind::Static])
         .allow("limit_pushdown_missed")
         .check(plan)
         .unwrap()
@@ -79,7 +79,7 @@ fn correct_passthrough_is_clean() {
     for input in [exact_source(100), inexact_source(100)] {
         let mut exec = ConfigurableExec::new(input);
         exec.limit_pushdown = true;
-        PlanChecker::new()
+        checker_of(&[CheckKind::Static])
             .check(&exec.build())
             .unwrap()
             .assert_clean();
@@ -517,7 +517,7 @@ fn pass_through_without_limit_pushdown() {
         .effect(Effect::LowerEqual)
         .fetch(10);
     fetching.effect_without_fetch = Some(Effect::Equal);
-    fetching.supports_with_fetch = true;
+    fetching.fetch_mode = FetchMode::Enforce;
     let reported: Vec<Arc<dyn ExecutionPlan>> = vec![
         // Several partitions, each made of the same partition of the child
         ConfigurableExec::new(source(&[10, 0, 30], StatisticsPrecision::Exact)).build(),
@@ -646,7 +646,7 @@ fn allowed_checks_are_skipped() {
         .fetch(10)
         .num_rows(Precision::Exact(10))
         .build();
-    PlanChecker::new()
+    checker_of(&[CheckKind::Static])
         .allow("fetch_not_equal_cardinality")
         .allow("limit_pushdown_missed")
         .check(&plan)
@@ -657,7 +657,7 @@ fn allowed_checks_are_skipped() {
 #[test]
 #[should_panic(expected = "the checker has no check named 'no_such_check'")]
 fn allowing_an_unknown_check_panics() {
-    let _ = PlanChecker::new().allow("no_such_check");
+    let _ = checker_of(&[CheckKind::Static]).allow("no_such_check");
 }
 
 #[test]
@@ -945,18 +945,34 @@ fn dynamic_filters_that_survive_reset_state() {
     exec.reset_dynamic_expressions = true;
     check(&exec.build()).assert_clean();
 
-    // A built-in plan that produces a dynamic filter. `AggregateExec` produces
-    // one too, but keeps it in `reset_state`, which the built-in audit
-    // records.
+    // Built-in plans that produce dynamic filters
     let input = SourceSpec::new(schema())
         .with_partition_rows(&[10, 20])
         .build_arc()
         .unwrap();
     let topk: Arc<dyn ExecutionPlan> =
-        Arc::new(SortExec::new(ordering_on_a(), input).with_fetch(Some(5)));
-    assert_eq!(topk.dynamic_expressions_produced().len(), 1);
-    checker(&["dynamic_expressions_visited", "dynamic_expressions_reset"])
-        .check(&topk)
-        .unwrap()
-        .assert_clean();
+        Arc::new(SortExec::new(ordering_on_a(), Arc::clone(&input)).with_fetch(Some(5)));
+    let min_a = AggregateExprBuilder::new(min_udaf(), vec![col("a", &schema()).unwrap()])
+        .schema(schema())
+        .alias("min(a)")
+        .build()
+        .unwrap();
+    let min: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Partial,
+            PhysicalGroupBy::new_single(vec![]),
+            vec![Arc::new(min_a)],
+            vec![None],
+            input,
+            schema(),
+        )
+        .unwrap(),
+    );
+    for plan in [topk, min] {
+        assert_eq!(plan.dynamic_expressions_produced().len(), 1);
+        checker(&["dynamic_expressions_visited", "dynamic_expressions_reset"])
+            .check(&plan)
+            .unwrap()
+            .assert_clean();
+    }
 }

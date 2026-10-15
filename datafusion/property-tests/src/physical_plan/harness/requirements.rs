@@ -31,11 +31,16 @@ use datafusion_physical_plan::distribution_requirements::ChildSatisfactionOption
 use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use super::{Case, PlanFactory, Profile, ROW_ID_RANGE};
-use crate::physical_plan::fixtures::{COPY_SUFFIX, ROW_ID_COLUMN, SourceSpec};
+use crate::physical_plan::fixtures::{
+    BatchLayout, COPY_SUFFIX, ROW_ID_COLUMN, SourceSpec,
+};
 
 /// How many times the harness builds a plan to find inputs that meet its
 /// requirements, which can change with the inputs
 const MAX_PROBES: usize = 5;
+
+/// How the rows of every input partition are split into batches
+const BATCH_LAYOUT: BatchLayout = BatchLayout::Random { max_rows: 16 };
 
 /// Derive the case of `factory` for `profile`: build the plan on inputs laid
 /// out by the profile, change the inputs to meet the requirements of the nodes
@@ -56,7 +61,7 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
                 .fields()
                 .iter()
                 .map(|field| field.name())
-                .filter(|name| *name != ROW_ID_COLUMN && !name.ends_with(COPY_SUFFIX));
+                .filter(|name| is_base_column(name));
             for name in columns {
                 if let Some(values) = profile.constants {
                     spec = spec.with_constant(name, values);
@@ -64,6 +69,24 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
                 if profile.copies {
                     spec = spec.with_copy(name);
                 }
+            }
+            if profile.column_ordering
+                && base.ordering().is_none()
+                && let Some(ordering) = LexOrdering::new(
+                    schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, field)| is_base_column(field.name()))
+                        .map(|(index, field)| {
+                            PhysicalSortExpr::new_default(Arc::new(Column::new(
+                                field.name(),
+                                index,
+                            )))
+                        }),
+                )
+            {
+                spec = spec.with_ordering(ordering);
             }
             if profile.row_id_ordering {
                 spec = spec.with_row_id_ordering();
@@ -79,7 +102,8 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
                     rows,
                 );
             }
-            spec.with_statistics_precision(profile.statistics)
+            spec.with_batch_layout(BATCH_LAYOUT)
+                .with_statistics_precision(profile.statistics)
                 .with_seed(profile.seed.wrapping_mul(1000).wrapping_add(i as u64))
                 .with_row_ids(i as u64 * ROW_ID_RANGE)
         })
@@ -124,6 +148,12 @@ pub(super) fn derive_case(factory: &PlanFactory, profile: &Profile) -> Result<Ca
             }
         }
     }
+}
+
+/// Whether `name` is a column of a base schema, rather than a column the spec
+/// adds to it
+fn is_base_column(name: &str) -> bool {
+    name != ROW_ID_COLUMN && !name.ends_with(COPY_SUFFIX)
 }
 
 /// A change to the spec of an input that meets a requirement

@@ -67,7 +67,7 @@ pub fn first_unsorted_row(
 
 /// The sort key of every row of each set of batches, in the arrow row format,
 /// so that comparing the bytes of two keys compares their rows by `ordering`
-fn sort_keys<const N: usize>(
+pub(super) fn sort_keys<const N: usize>(
     sets: [&[RecordBatch]; N],
     ordering: &LexOrdering,
 ) -> Result<[Vec<Vec<u8>>; N]> {

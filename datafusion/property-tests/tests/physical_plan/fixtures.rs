@@ -19,6 +19,7 @@
 //! Every other test relies on this.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::{
     Array, AsArray, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
@@ -29,17 +30,23 @@ use arrow::datatypes::{
 };
 use datafusion_common::ScalarValue;
 use datafusion_common::stats::Precision;
+use datafusion_execution::TaskContext;
 use datafusion_expr::Operator;
 use datafusion_physical_expr::expressions::{BinaryExpr, col, lit};
 use datafusion_physical_expr::{
     AcrossPartitions, ConstExpr, LexOrdering, Partitioning, PhysicalSortExpr,
 };
-use datafusion_physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext};
+use datafusion_physical_plan::execution_plan::Boundedness;
+use datafusion_physical_plan::{
+    ExecutionPlan, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
+    displayable,
+};
 use datafusion_property_tests::physical_plan::fixtures::{
-    COPY_SUFFIX, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
-    StatisticsPrecision,
+    BatchLayout, COPY_SUFFIX, ConstantValues, MockSourceExec, ROW_ID_COLUMN, SourceSpec,
+    StatisticsPrecision, StreamBehavior,
 };
 use datafusion_property_tests::physical_plan::{PlanChecker, oracle};
+use futures::StreamExt;
 
 fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -79,23 +86,39 @@ fn generation_is_deterministic() {
 }
 
 #[test]
-fn partition_rows() {
+fn partition_rows_and_batch_layout() {
     let source = SourceSpec::new(schema())
         .with_partition_rows(&[25, 0, 7])
+        .with_batch_layout(BatchLayout::Fixed(10))
         .build()
         .unwrap();
     assert_eq!(rows_per_partition(&source), vec![25, 0, 7]);
-    // One batch per partition, and none for a partition without rows
     let sizes: Vec<Vec<usize>> = source
         .partitions()
         .iter()
         .map(|batches| batches.iter().map(RecordBatch::num_rows).collect())
         .collect();
-    assert_eq!(sizes, vec![vec![25], vec![], vec![7]]);
+    assert_eq!(sizes, vec![vec![10, 10, 5], vec![], vec![7]]);
     assert_eq!(
         source.properties().output_partitioning().partition_count(),
         3
     );
+}
+
+#[test]
+fn random_batch_layout_with_empty_batches() {
+    let source = SourceSpec::new(schema())
+        .with_partition_rows(&[200, 0])
+        .with_batch_layout(BatchLayout::Random { max_rows: 5 })
+        .build()
+        .unwrap();
+    assert_eq!(rows_per_partition(&source), vec![200, 0]);
+    let sizes: Vec<usize> = all_batches(&source)
+        .iter()
+        .map(RecordBatch::num_rows)
+        .collect();
+    assert!(sizes.iter().all(|n| *n <= 5), "{sizes:?}");
+    assert!(sizes.contains(&0), "{sizes:?}");
 }
 
 #[test]
@@ -337,6 +360,7 @@ fn generated_sources_pass_every_check() {
         SourceSpec::new(Arc::clone(&schema)).with_partition_rows(&[0, 0]),
         SourceSpec::new(Arc::clone(&schema))
             .with_partition_rows(&[30, 5, 80])
+            .with_batch_layout(BatchLayout::Random { max_rows: 3 })
             .with_ordering(ordering),
         SourceSpec::new(Arc::clone(&schema)).with_hash_partitioning(
             vec![col("b", &schema).unwrap()],
@@ -653,4 +677,168 @@ fn false_claims_are_rejected() {
     let batch = RecordBatch::new_empty(other_schema);
     let error = MockSourceExec::try_new(schema, vec![vec![batch]]).unwrap_err();
     assert!(error.to_string().contains("expected"), "{error}");
+}
+
+/// Two partitions of 10 rows, in batches of 4 rows: 3 batches each
+fn small_spec() -> SourceSpec {
+    SourceSpec::new(schema())
+        .with_partition_rows(&[10, 10])
+        .with_batch_layout(BatchLayout::Fixed(4))
+}
+
+fn execute(source: &MockSourceExec, partition: usize) -> SendableRecordBatchStream {
+    source
+        .execute(partition, Arc::new(TaskContext::default()))
+        .unwrap()
+}
+
+/// The next item of `stream`, or `None` if the stream does not produce one
+/// within a short time
+async fn next_item(
+    stream: &mut SendableRecordBatchStream,
+) -> Option<Option<datafusion_common::Result<RecordBatch>>> {
+    tokio::time::timeout(Duration::from_millis(50), stream.next())
+        .await
+        .ok()
+}
+
+#[tokio::test]
+async fn pending_after_serves_batches_then_stalls() {
+    let source = small_spec().build().unwrap();
+    let stalling = |batches| {
+        source
+            .clone()
+            .try_with_stream_behavior(StreamBehavior::PendingAfter(batches))
+            .unwrap()
+    };
+    let mut stream = execute(&stalling(2), 0);
+    for _ in 0..2 {
+        assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
+    }
+    assert!(
+        next_item(&mut stream).await.is_none(),
+        "should stay pending"
+    );
+
+    // Fewer batches than requested: all of them, then pending
+    let mut stream = execute(&stalling(10), 1);
+    for _ in 0..3 {
+        assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
+    }
+    assert!(
+        next_item(&mut stream).await.is_none(),
+        "should stay pending"
+    );
+}
+
+#[tokio::test]
+async fn error_after_serves_batches_then_fails() {
+    let source = small_spec()
+        .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::ErrorAfter(1))
+        .unwrap();
+    let mut stream = execute(&source, 0);
+    assert!(matches!(next_item(&mut stream).await, Some(Some(Ok(_)))));
+    let Some(Some(Err(error))) = next_item(&mut stream).await else {
+        panic!("expected an error");
+    };
+    assert!(
+        error.to_string().contains("injected error after 1 batches"),
+        "{error}"
+    );
+    assert!(matches!(next_item(&mut stream).await, Some(None)));
+}
+
+#[test]
+fn stalling_and_failing_sources_keep_their_properties() {
+    let source = small_spec().build().unwrap();
+    for behavior in [
+        StreamBehavior::PendingAfter(1),
+        StreamBehavior::ErrorAfter(1),
+    ] {
+        let variant = source.clone().try_with_stream_behavior(behavior).unwrap();
+        assert!(Arc::ptr_eq(source.properties(), variant.properties()));
+        let stats = StatisticsContext::new()
+            .compute(&variant, &StatisticsArgs::new())
+            .unwrap();
+        assert_eq!(stats.num_rows, Precision::Exact(20));
+    }
+}
+
+#[tokio::test]
+async fn unbounded_source_repeats_its_data() {
+    let bounded = small_spec().build().unwrap();
+    let source = bounded
+        .clone()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 50 })
+        .unwrap();
+    assert_eq!(
+        source.properties().boundedness,
+        Boundedness::Unbounded {
+            requires_infinite_memory: false
+        }
+    );
+    let stats = StatisticsContext::new()
+        .compute(&source, &StatisticsArgs::new())
+        .unwrap();
+    assert_eq!(stats.num_rows, Precision::Absent);
+    let display = displayable(&source).one_line().to_string();
+    assert!(
+        display.contains("stream=Unbounded(max_rows=50)"),
+        "{display}"
+    );
+
+    // Batches repeat until at least `max_rows` rows, then the stream stalls
+    // without ending
+    let mut stream = execute(&source, 0);
+    let mut batches = vec![];
+    while let Some(Some(batch)) = next_item(&mut stream).await {
+        batches.push(batch.unwrap());
+    }
+    let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!(rows, 50);
+    assert_eq!(batches[3], bounded.partitions()[0][0]);
+}
+
+#[tokio::test]
+async fn unbounded_sorted_source_stays_sorted() {
+    let schema = schema();
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+        col("a", &schema).unwrap(),
+    )])
+    .unwrap();
+    let source = SourceSpec::new(schema)
+        .with_partition_rows(&[10, 0])
+        .with_batch_layout(BatchLayout::Fixed(4))
+        .with_ordering(ordering.clone())
+        .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 40 })
+        .unwrap();
+    let mut stream = execute(&source, 0);
+    let mut batches = vec![];
+    while let Some(Some(batch)) = next_item(&mut stream).await {
+        batches.push(batch.unwrap());
+    }
+    assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() >= 40);
+    assert_eq!(
+        oracle::first_unsorted_row(&batches, &ordering).unwrap(),
+        None
+    );
+
+    // A partition without rows ends at once
+    let mut stream = execute(&source, 1);
+    assert!(matches!(next_item(&mut stream).await, Some(None)));
+}
+
+#[test]
+fn unbounded_source_needs_rows() {
+    let error = SourceSpec::new(schema())
+        .with_partition_rows(&[0, 0])
+        .build()
+        .unwrap()
+        .try_with_stream_behavior(StreamBehavior::Unbounded { max_rows: 10 })
+        .unwrap_err();
+    assert!(error.to_string().contains("at least one row"), "{error}");
 }

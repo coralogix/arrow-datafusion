@@ -25,8 +25,8 @@
 //! partitioning of the profiles. Each source declares what the input
 //! declares, as far as it can: its ordering, its hash partitioning, and, for
 //! files, the statistics the input reports for each of its partitions,
-//! which become the statistics of one file per partition. The files are
-//! never read, since no check executes a plan.
+//! which become the statistics of one file per partition. The files are not
+//! written, so the file sources run the static checks only.
 
 use std::fmt;
 use std::sync::Arc;
@@ -61,6 +61,8 @@ use datafusion_physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use datafusion_physical_plan::{
     ExecutionPlan, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
 };
+use datafusion_property_tests::physical_plan::CheckKind;
+use datafusion_property_tests::physical_plan::checks::all_checks;
 use datafusion_property_tests::physical_plan::fixtures::MockSourceExec;
 use datafusion_property_tests::physical_plan::harness::PlanFactory;
 use futures::executor::block_on;
@@ -139,7 +141,7 @@ pub(super) fn source_plans() -> Result<Vec<PlanFactory>> {
         files("DataSourceExec Arrow", |schema| {
             Arc::new(ArrowSource::new_file_source(schema))
         }),
-        one_input(
+        static_checks_only(one_input(
             "DataSourceExec Parquet with projection and limit",
             spec(),
             |input| {
@@ -150,7 +152,7 @@ pub(super) fn source_plans() -> Result<Vec<PlanFactory>> {
                     .with_limit(Some(FETCH));
                 Ok(DataSourceExec::from_data_source(config.build()))
             },
-        ),
+        )),
         one_input("LazyMemoryExec", spec(), |input| {
             let input = Input::of(&input)?;
             let mut exec = LazyMemoryExec::try_new(input.schema(), input.generators())?;
@@ -253,11 +255,25 @@ pub(super) fn source_plans() -> Result<Vec<PlanFactory>> {
 /// A `DataSourceExec` over one file of the format of `source` per partition
 /// of the input
 fn files(name: &str, source: fn(TableSchema) -> Arc<dyn FileSource>) -> PlanFactory {
-    one_input(name, spec(), move |input| {
+    static_checks_only(one_input(name, spec(), move |input| {
         let input = Input::of(&input)?;
         let config = input.file_scan(source(TableSchema::from(input.schema())))?;
         Ok(DataSourceExec::from_data_source(config.build()))
-    })
+    }))
+}
+
+/// Allow every check that executes the plan of `factory`, a source over files
+/// that are not written
+fn static_checks_only(factory: PlanFactory) -> PlanFactory {
+    all_checks()
+        .into_iter()
+        .filter(|check| check.kind != CheckKind::Static)
+        .fold(factory, |factory, check| {
+            factory.allow(
+                check.name,
+                "the files are not written, so the plan cannot run",
+            )
+        })
 }
 
 /// The generated input a source is built from

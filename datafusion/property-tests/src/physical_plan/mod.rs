@@ -19,11 +19,11 @@
 //!
 //! [`ExecutionPlan`] has many methods that describe a plan rather than run it,
 //! such as [`ExecutionPlan::cardinality_effect`],
-//! [`ExecutionPlan::supports_limit_pushdown`] and the statistics it reports.
+//! [`ExecutionPlan::maintains_input_order`] and the statistics it reports.
 //! Optimizer rules trust these descriptions, so an implementation that gets one
 //! wrong can make DataFusion return wrong results or miss optimizations. This
 //! module checks that the descriptions are consistent with each other and with
-//! what the plan's inputs report.
+//! what the plan does when it runs.
 //!
 //! The easiest way to test a plan is to describe how to build it from its
 //! inputs with a [`harness::PlanFactory`], and check it with a
@@ -34,23 +34,38 @@
 //! plan built by hand. Build the plan under test on inputs generated with
 //! [`fixtures::SourceSpec`], which produces a [`fixtures::MockSourceExec`]
 //! whose data, statistics, partitioning and ordering are known to be
-//! consistent. The [`oracle`] module computes the true properties of a set
-//! of batches, which the sources use to verify what they report.
+//! consistent.
 //!
-//! A [`PlanCheck`] looks at one node without executing it, comparing what the
-//! node reports with what its children report.
+//! A [`PlanCheck`] reads what the checker gathered for its [`CheckKind`]:
+//! nothing but the node itself, the output of executing each node, the
+//! outputs of [`Variant`]s of each node (rewritten copies, such as the plan
+//! returned by `with_fetch`, or copies run under other settings, such as
+//! another batch size), or the results of stream [`Experiment`]s (runs on
+//! inputs that stall, fail or never end, observing how the node drives its
+//! input streams). The [`oracle`] module computes the true properties of a
+//! set of batches.
 //!
 //! See `docs/physical_plan/CHECKS.md` in this crate for the catalog of
-//! checks, why each one matters and how to fix a violation.
+//! checks, why each one matters and how to fix a violation, and
+//! `docs/physical_plan/IMPLEMENTATION_STATUS.md` for which checks are
+//! implemented.
 //!
 //! [`ExecutionPlan`]: datafusion_physical_plan::ExecutionPlan
 //! [`ExecutionPlan::cardinality_effect`]: datafusion_physical_plan::ExecutionPlan::cardinality_effect
-//! [`ExecutionPlan::supports_limit_pushdown`]: datafusion_physical_plan::ExecutionPlan::supports_limit_pushdown
+//! [`ExecutionPlan::maintains_input_order`]: datafusion_physical_plan::ExecutionPlan::maintains_input_order
 
 mod checker;
 pub mod checks;
+mod context;
+mod exec;
+mod experiments;
 pub mod fixtures;
 pub mod harness;
 pub mod oracle;
+mod variants;
 
-pub use checker::{PlanCheck, PlanChecker};
+pub use checker::{CheckKind, PlanCheck, PlanChecker};
+pub use context::{CheckContext, NodeOutput};
+pub use exec::RunError;
+pub use experiments::{Experiment, PartitionObservation, RunOutcome, StreamRun};
+pub use variants::{Variant, VariantRun};

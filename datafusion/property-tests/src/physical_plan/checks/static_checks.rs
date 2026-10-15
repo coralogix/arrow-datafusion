@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Static checks: they compare the statistics, cardinality effect, fetch,
-//! limit pushdown support, per-child metadata, schema, expressions and dynamic
-//! filters a node reports with each other and with what its children report,
-//! without executing it.
+//! `CheckKind::Static` checks: they compare the statistics, cardinality effect,
+//! fetch, limit pushdown support, per-child metadata, schema, expressions and
+//! dynamic filters a node reports with each other and with what its children
+//! report, without executing it.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,6 +40,7 @@ use super::{
     overall_statistics, partition_count, partition_statistics, passes_rows_through,
 };
 use crate::Finding;
+use crate::physical_plan::CheckContext;
 
 /// The input rows that one output partition of a node is made of, which its
 /// statistics describe
@@ -98,6 +99,7 @@ fn partition_inputs(
 /// each partition whose input rows are known.
 pub(super) fn equal_cardinality_num_rows(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     if !matches!(node.cardinality_effect(), CardinalityEffect::Equal)
         || node.fetch().is_some()
@@ -181,6 +183,7 @@ fn equal_row_counts(
 /// A2: a node with a fetch does not claim `CardinalityEffect::Equal`.
 pub(super) fn fetch_not_equal_cardinality(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     match (node.fetch(), node.cardinality_effect()) {
         (Some(fetch), CardinalityEffect::Equal) => Ok(vec![Finding::invariant(format!(
@@ -196,6 +199,7 @@ pub(super) fn fetch_not_equal_cardinality(
 /// and at most `n * partition_count` rows overall.
 pub(super) fn fetch_bounds_num_rows(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let Some(fetch) = node.fetch() else {
         return Ok(vec![]);
@@ -237,6 +241,7 @@ pub(super) fn fetch_bounds_num_rows(
 /// `CardinalityEffect::GreaterEqual`, overall and for each partition.
 pub(super) fn cardinality_effect_bounds_num_rows(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let effect = node.cardinality_effect();
     if !matches!(
@@ -340,6 +345,7 @@ pub(super) fn cardinality_effect_bounds_num_rows(
 /// through supports limit pushdown.
 pub(super) fn limit_pushdown_missed(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     if node.supports_limit_pushdown() || !passes_rows_through(node.as_ref()) {
         return Ok(vec![]);
@@ -360,6 +366,7 @@ pub(super) fn limit_pushdown_missed(
 /// limit above it.
 pub(super) fn limit_pushdown_merges_partitions(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     if !node.supports_limit_pushdown() || partition_count(node.as_ref()) != 1 {
         return Ok(vec![]);
@@ -397,7 +404,10 @@ pub(super) fn limit_pushdown_merges_partitions(
 
 /// A7: every method that returns one entry per child returns exactly
 /// `children().len()` entries.
-pub(super) fn per_child_lengths(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+pub(super) fn per_child_lengths(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
     let children = node.children();
     let wrong_len = |method: &str, actual: usize| {
         (actual != children.len()).then(|| {
@@ -452,7 +462,10 @@ pub(super) fn per_child_lengths(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Fin
 /// A7: the node's own [`ExecutionPlan::check_invariants`] passes at
 /// [`InvariantLevel::Always`], and at [`InvariantLevel::Executable`] when its
 /// children meet its input requirements.
-pub(super) fn check_invariants(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+pub(super) fn check_invariants(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
     if let Err(e) = node.check_invariants(InvariantLevel::Always) {
         return Ok(vec![Finding::invariant(format!(
             "check_invariants(Always) failed: {}",
@@ -514,7 +527,10 @@ fn input_requirements_met(node: &dyn ExecutionPlan) -> bool {
 
 /// A8: statistics can be computed, overall and for every partition, and have
 /// one column statistics entry per field.
-pub(super) fn statistics_shape(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+pub(super) fn statistics_shape(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
     // Errors from a child are reported on the child, not again on its parent
     let child_fails = || {
         node.children().into_iter().any(|child| {
@@ -558,6 +574,7 @@ pub(super) fn statistics_shape(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Find
 /// A8: per-partition row counts are consistent with the overall row count.
 pub(super) fn partition_statistics_sum(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let partitions = partition_count(node.as_ref());
     if partitions == 0 {
@@ -620,6 +637,7 @@ pub(super) fn partition_statistics_sum(
 /// input has a known row count also reports a row count.
 pub(super) fn statistics_ignore_inputs(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     if !matches!(node.cardinality_effect(), CardinalityEffect::Equal)
         || node.fetch().is_some()
@@ -658,7 +676,10 @@ pub(super) fn statistics_ignore_inputs(
 }
 
 /// A10: `schema()` is the schema of the node's equivalence properties.
-pub(super) fn schema_consistency(node: &Arc<dyn ExecutionPlan>) -> Result<Vec<Finding>> {
+pub(super) fn schema_consistency(
+    node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
+) -> Result<Vec<Finding>> {
     let findings = schema_differences(node.as_ref());
     // A node builds its schema and its equivalence properties from its
     // children's, so a child whose two schemas differ can make the node's
@@ -730,6 +751,7 @@ fn schema_differences(plan: &dyn ExecutionPlan) -> Vec<Finding> {
 /// `apply_expressions` refers to a field of the input in the same way.
 pub(super) fn expression_column_refs(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let schema = node.schema();
     let properties = node.properties();
@@ -797,7 +819,7 @@ pub(super) fn expression_column_refs(
 /// An invariant finding for each column in `exprs` that does not refer to a
 /// field of `schema`, called `name` in the message, by index and name, such as
 /// `{what} refers to column 'a'@3, but schema() has 2 fields`
-fn stale_columns<'a>(
+pub(super) fn stale_columns<'a>(
     what: &str,
     exprs: impl IntoIterator<Item = &'a Arc<dyn PhysicalExpr>>,
     schema: &Schema,
@@ -843,6 +865,7 @@ fn visited_expressions(node: &dyn ExecutionPlan) -> Result<Vec<Arc<dyn PhysicalE
 /// `apply_expressions` visits an expression with that id.
 pub(super) fn dynamic_expressions_visited(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let produced = node.dynamic_expressions_produced();
     if produced.is_empty() {
@@ -890,6 +913,7 @@ pub(super) fn dynamic_expressions_visited(
 /// node updates.
 pub(super) fn dynamic_expressions_reset(
     node: &Arc<dyn ExecutionPlan>,
+    _context: &CheckContext,
 ) -> Result<Vec<Finding>> {
     let ids: HashSet<u64> = node
         .dynamic_expressions_produced()
