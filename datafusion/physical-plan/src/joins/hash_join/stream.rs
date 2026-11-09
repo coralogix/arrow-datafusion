@@ -13,7 +13,9 @@ use std::task::Poll;
 use crate::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use crate::joins::Map;
 use crate::joins::PartitionMode;
-use crate::joins::hash_join::exec::JoinLeftData;
+use crate::joins::hash_join::exec::{
+    JoinContext, JoinLeftData, SharedProbeState, merge_bitmap,
+};
 use crate::joins::hash_join::not_in::NotInProbe;
 use crate::joins::hash_join::shared_bounds::{
     PartitionBounds, PartitionBuildData, SharedBuildAccumulator,
@@ -131,6 +133,10 @@ pub(super) enum HashJoinStreamState {
     ProcessProbeBatch(ProcessProbeBatchState),
     /// Indicates that probe-side has been fully processed
     ExhaustedProbeSide,
+    /// Indicates that every probe partition of this task has finished, and
+    /// the stream is waiting for [`SharedJoinState`](super::exec::SharedJoinState)
+    /// to decide which task emits the final build-side rows
+    WaitSharedProbeCompleted(ProbeSideSummary),
     /// Indicates that the probe side has been fully processed by every
     /// partition, and this stream is emitting the final build-side rows
     /// (unmatched rows, or matched rows for `LeftSemi`) in chunks
@@ -403,6 +409,8 @@ pub(super) struct HashJoinStream {
     /// Output buffer for coalescing small batches into larger ones with optional fetch limit.
     /// Uses `LimitedBatchCoalescer` to efficiently combine batches and absorb limit with 'fetch'
     output_buffer: LimitedBatchCoalescer,
+    /// Where the build side is stored for other operators in the task
+    join_context: Option<Arc<JoinContext>>,
 }
 
 impl RecordBatchStream for HashJoinStream {
@@ -558,6 +566,7 @@ impl HashJoinStream {
         build_accumulator: Option<Arc<SharedBuildAccumulator>>,
         mode: PartitionMode,
         fetch: Option<usize>,
+        join_context: Option<Arc<JoinContext>>,
     ) -> Self {
         // Create output buffer with coalescing and optional fetch limit.
         let output_buffer =
@@ -585,6 +594,7 @@ impl HashJoinStream {
             build_report: BuildReportHandle::new(partition, mode, build_accumulator),
             mode,
             output_buffer,
+            join_context,
         }
     }
 
@@ -695,6 +705,9 @@ impl HashJoinStream {
                 HashJoinStreamState::ExhaustedProbeSide => {
                     handle_state!(self.prepare_unmatched_build_rows())
                 }
+                HashJoinStreamState::WaitSharedProbeCompleted(_) => {
+                    handle_state!(ready!(self.poll_shared_probe_completed(cx)))
+                }
                 HashJoinStreamState::EmitUnmatchedBuildRows(_) => {
                     handle_state!(self.emit_unmatched_build_rows())
                 }
@@ -745,6 +758,10 @@ impl HashJoinStream {
                 .get_shared(cx)
         )?;
         build_timer.done();
+
+        if let Some(join_context) = &self.join_context {
+            join_context.set_build_state(Arc::clone(&left_data));
+        }
 
         // Note: For null-aware anti join, we need to check the probe side (right) for NULLs,
         // not the build side (left). The probe-side NULL check happens during process_probe_batch.
@@ -1050,7 +1067,8 @@ impl HashJoinStream {
     fn prepare_unmatched_build_rows(
         &mut self,
     ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
-        let timer = self.join_metrics.join_time.timer();
+        let join_time = self.join_metrics.join_time.clone();
+        let timer = join_time.timer();
 
         if !need_produce_result_in_final(self.join_type) {
             timer.done();
@@ -1072,6 +1090,55 @@ impl HashJoinStream {
             return Ok(StatefulStreamResult::Continue);
         };
 
+        if build_side.left_data.shared_state().is_some() {
+            timer.done();
+            self.state = HashJoinStreamState::WaitSharedProbeCompleted(probe_summary);
+            return Ok(StatefulStreamResult::Continue);
+        }
+        let result = self.start_emitting_unmatched_build_rows(probe_summary);
+        timer.done();
+        result
+    }
+
+    /// Reports this task's visited bitmap to the shared join state. Updates
+    /// state to `EmitUnmatchedBuildRows` with the bitmap of every task if this
+    /// task emits the final build-side rows, and to `Completed` otherwise.
+    fn poll_shared_probe_completed(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
+        let HashJoinStreamState::WaitSharedProbeCompleted(probe_summary) = self.state
+        else {
+            return Poll::Ready(internal_err!(
+                "Expected hash join stream in WaitSharedProbeCompleted state"
+            ));
+        };
+        let left_data = &self.build_side.try_as_ready()?.left_data;
+        let Some(shared_state) = left_data.shared_state() else {
+            return Poll::Ready(internal_err!("Expected a shared join state"));
+        };
+
+        {
+            let mut visited = left_data.visited_indices_bitmap().lock();
+            match ready!(shared_state.poll_probe_completed(&visited, cx))? {
+                SharedProbeState::Continue => {
+                    self.state = HashJoinStreamState::Completed;
+                    return Poll::Ready(Ok(StatefulStreamResult::Continue));
+                }
+                SharedProbeState::Ready(shared) => merge_bitmap(&mut visited, &shared)?,
+            }
+        }
+        Poll::Ready(self.start_emitting_unmatched_build_rows(probe_summary))
+    }
+
+    /// Snapshots the final visited bitmap and updates state to
+    /// `EmitUnmatchedBuildRows`.
+    fn start_emitting_unmatched_build_rows(
+        &mut self,
+        probe_summary: ProbeSideSummary,
+    ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        let build_side = self.build_side.try_as_ready()?;
+
         // Every probe partition has finished, so the bitmap is final: snapshot
         // it once and release the lock for the whole emission phase.
         let visited = build_side
@@ -1084,7 +1151,6 @@ impl HashJoinStream {
         // added chunk by chunk in `emit_unmatched_build_rows`.
         self.join_metrics.input_batches.add(1);
 
-        timer.done();
         self.state =
             HashJoinStreamState::EmitUnmatchedBuildRows(EmitUnmatchedBuildRowsState {
                 visited,
