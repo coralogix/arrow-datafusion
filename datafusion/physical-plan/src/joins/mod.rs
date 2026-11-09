@@ -19,7 +19,9 @@ use datafusion_physical_expr::PhysicalExprRef;
 #[doc(hidden)]
 pub use hash_join::HashTableLookupExpr;
 pub use hash_join::{
-    HashExpr, HashJoinExec, HashJoinExecBuilder, PreparedHashJoinBuild, SeededRandomState,
+    HASH_JOIN_SEED, HashExpr, HashJoinExec, HashJoinExecBuilder, JoinContext,
+    JoinLeftData, PreparedHashJoinBuild, SeededRandomState, SharedJoinState,
+    SharedJoinStateImpl, SharedProbeState,
 };
 pub use nested_loop_join::{NestedLoopJoinExec, NestedLoopJoinExecBuilder};
 use parking_lot::Mutex;
