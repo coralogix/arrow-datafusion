@@ -58,7 +58,8 @@ use crate::{
     metrics::{ExecutionPlanMetricsSet, MetricsSet},
 };
 
-use arrow::array::{Array, ArrayRef, BooleanBufferBuilder};
+use arrow::array::{Array, ArrayRef, BooleanArray, BooleanBufferBuilder};
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
@@ -98,8 +99,108 @@ mod prepared;
 pub use prepared::PreparedHashJoinBuild;
 
 /// Hard-coded seed to ensure hash values from the hash join differ from `RepartitionExec`, avoiding collisions.
-pub(crate) const HASH_JOIN_SEED: SeededRandomState =
+pub const HASH_JOIN_SEED: SeededRandomState =
     SeededRandomState::with_seed(12210250226015887276);
+
+/// Holds the build side of a `CollectLeft` join for other operators in the
+/// same task, such as a probe-side scan filtering on build membership.
+///
+/// Install it as a [`SessionConfig`](datafusion_execution::config::SessionConfig)
+/// extension; the join stores its build once it is ready.
+#[derive(Default)]
+pub struct JoinContext {
+    build_state: Mutex<Option<Arc<JoinLeftData>>>,
+}
+
+impl JoinContext {
+    /// Stores the build side of the join.
+    pub fn set_build_state(&self, state: Arc<JoinLeftData>) {
+        self.build_state.lock().replace(state);
+    }
+
+    /// Returns the build side if the join has stored it.
+    pub fn get_build_state(&self) -> Option<Arc<JoinLeftData>> {
+        self.build_state.lock().clone()
+    }
+}
+
+/// Coordinates the final stage of a `CollectLeft` join whose probe side is
+/// split across tasks, so that one task emits the unmatched build rows for
+/// all of them.
+///
+/// Install it as a [`SessionConfig`](datafusion_execution::config::SessionConfig)
+/// extension. The join then waits for the [`Self::num_task_partitions`] probe
+/// partitions this task executes.
+pub struct SharedJoinState {
+    state_impl: Arc<dyn SharedJoinStateImpl>,
+}
+
+impl SharedJoinState {
+    pub fn new(state_impl: Arc<dyn SharedJoinStateImpl>) -> Self {
+        Self { state_impl }
+    }
+
+    fn num_task_partitions(&self) -> usize {
+        self.state_impl.num_task_partitions()
+    }
+
+    pub(super) fn poll_probe_completed(
+        &self,
+        mask: &BooleanBufferBuilder,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<SharedProbeState>> {
+        self.state_impl.poll_probe_completed(mask, cx)
+    }
+
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize) {
+        self.state_impl.register_metrics(metrics, partition)
+    }
+}
+
+/// The result of [`SharedJoinStateImpl::poll_probe_completed`]: which task
+/// emits the unmatched build rows.
+pub enum SharedProbeState {
+    /// Another task emits the unmatched build rows.
+    Continue,
+    /// This task emits the unmatched build rows, using this bitmap of the
+    /// build rows matched in every task.
+    Ready(BooleanBuffer),
+}
+
+/// Combines the visited bitmaps of every task probing a `CollectLeft` join and
+/// chooses the task that emits the unmatched build rows.
+pub trait SharedJoinStateImpl: Send + Sync + 'static {
+    /// Returns the number of probe partitions this task executes.
+    fn num_task_partitions(&self) -> usize;
+
+    /// Reports this task's visited bitmap once all its probe partitions have
+    /// finished.
+    fn poll_probe_completed(
+        &self,
+        visited_indices_bitmap: &BooleanBufferBuilder,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<SharedProbeState>>;
+
+    /// Registers the coordinator's metrics with the join's metrics.
+    fn register_metrics(&self, metrics: &ExecutionPlanMetricsSet, partition: usize);
+}
+
+/// ORs `shared` into `local`.
+pub(super) fn merge_bitmap(
+    local: &mut BooleanBufferBuilder,
+    shared: &BooleanBuffer,
+) -> Result<()> {
+    if local.len() != shared.len() {
+        return internal_err!(
+            "local and shared visited bitmaps have different lengths: {} and {}",
+            local.len(),
+            shared.len()
+        );
+    }
+    let merged = &local.finish() | shared;
+    local.append_buffer(&merged);
+    Ok(())
+}
 
 const ARRAY_MAP_CREATED_COUNT_METRIC_NAME: &str = "array_map_created_count";
 
@@ -210,7 +311,7 @@ struct JoinBuildData {
 }
 
 /// A build lease and mutable bookkeeping for one join execution.
-pub(super) struct JoinLeftData {
+pub struct JoinLeftData {
     /// The `NOT IN` state of a null-aware join, see [`NotInBuild`].
     not_in: Option<NotInBuild>,
     /// Shared bitmap for visited left indices within this consuming join.
@@ -218,11 +319,29 @@ pub(super) struct JoinLeftData {
     /// Tracks the final probe partition and what every partition observed.
     /// See [`ProbeCompletion`] for the completion invariant.
     probe_completion: ProbeCompletion,
+    /// Coordinates the final stage with the tasks probing other partitions, if
+    /// the probe side is split across tasks.
+    shared_state: Option<Arc<SharedJoinState>>,
     // Drop the reservation after the mutable state it also accounts for.
     build: Arc<JoinBuildData>,
 }
 
 impl JoinLeftData {
+    /// Returns which of `hash_values`, computed with [`HASH_JOIN_SEED`], may
+    /// be hashes of build-side keys. An [`ArrayMap`] stores no hashes, so it
+    /// answers `true` for every value.
+    pub fn contain_hashes(&self, hash_values: &[u64]) -> BooleanArray {
+        match self.map() {
+            Map::HashMap(map) => map.contain_hashes(hash_values),
+            Map::ArrayMap(_) => BooleanArray::from(vec![true; hash_values.len()]),
+        }
+    }
+
+    /// Returns the coordination of the final stage across tasks, if any.
+    pub(super) fn shared_state(&self) -> Option<&Arc<SharedJoinState>> {
+        self.shared_state.as_ref()
+    }
+
     /// return a reference to the map
     pub(super) fn map(&self) -> &Map {
         &self.build.map
@@ -1711,21 +1830,36 @@ impl ExecutionPlan for HashJoinExec {
                 let reservation =
                     MemoryConsumer::new("HashJoinInput").register(context.memory_pool());
 
-                Ok(collect_left_input(
+                let shared_state =
+                    context.session_config().get_extension::<SharedJoinState>();
+                let probe_threads_count = match &shared_state {
+                    Some(shared_state) => {
+                        shared_state.register_metrics(&self.metrics, partition);
+                        shared_state.num_task_partitions()
+                    }
+                    None => right_partitions,
+                };
+
+                let build_fut = collect_left_input(
                     self.random_state.random_state().clone(),
                     left_stream,
                     on_left.clone(),
                     join_metrics.clone(),
                     reservation,
                     need_produce_result_in_final(self.join_type),
-                    right_partitions,
+                    probe_threads_count,
                     enable_dynamic_filter_pushdown,
                     Arc::clone(context.session_config().options()),
                     self.null_equality,
                     not_in,
                     array_map_created_count,
                     BuildMode::Ordinary,
-                ))
+                );
+                Ok(async move {
+                    let mut build = build_fut.await?;
+                    build.shared_state = shared_state;
+                    Ok(build)
+                })
             })?,
             (None, PartitionMode::Partitioned) => {
                 let left_stream = self.left.execute(partition, Arc::clone(&context))?;
@@ -1758,6 +1892,9 @@ impl ExecutionPlan for HashJoinExec {
         };
 
         let batch_size = context.session_config().batch_size();
+        let join_context = (self.mode == PartitionMode::CollectLeft)
+            .then(|| context.session_config().get_extension::<JoinContext>())
+            .flatten();
 
         // we have the batches and the hash map with their keys. We can how create a stream
         // over the right that uses this information to issue new batches.
@@ -1797,6 +1934,7 @@ impl ExecutionPlan for HashJoinExec {
             build_accumulator,
             self.mode,
             self.fetch,
+            join_context,
         )))
     }
 
@@ -3399,6 +3537,7 @@ fn build_in_memory(
         not_in,
         visited_indices_bitmap: Mutex::new(visited_indices_bitmap),
         probe_completion: ProbeCompletion::new(probe_threads_count),
+        shared_state: None,
     };
 
     Ok(data)
@@ -4102,6 +4241,159 @@ mod tests {
         assert_join_metrics!(metrics, 3);
         assert_phj_used(&metrics, use_perfect_hash_join_as_possible);
 
+        Ok(())
+    }
+
+    /// Stands in for the coordinator of a join probed by several tasks: ORs
+    /// the visited bitmap of every task and hands the result to the last one.
+    struct TestJoinCoordinator {
+        state: Mutex<TestJoinCoordinatorState>,
+    }
+
+    struct TestJoinCoordinatorState {
+        remaining_tasks: usize,
+        visited: Option<BooleanBuffer>,
+    }
+
+    struct TestSharedJoinState {
+        coordinator: Arc<TestJoinCoordinator>,
+    }
+
+    impl SharedJoinStateImpl for TestSharedJoinState {
+        fn num_task_partitions(&self) -> usize {
+            1
+        }
+
+        fn poll_probe_completed(
+            &self,
+            visited_indices_bitmap: &BooleanBufferBuilder,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<SharedProbeState>> {
+            let mut state = self.coordinator.state.lock();
+            let task_visited = visited_indices_bitmap.finish_cloned();
+            let visited = state
+                .visited
+                .get_or_insert_with(|| BooleanBuffer::new_unset(task_visited.len()));
+            *visited = &*visited | &task_visited;
+            let visited = visited.clone();
+            state.remaining_tasks -= 1;
+            std::task::Poll::Ready(Ok(if state.remaining_tasks == 0 {
+                SharedProbeState::Ready(visited)
+            } else {
+                SharedProbeState::Continue
+            }))
+        }
+
+        fn register_metrics(
+            &self,
+            _metrics: &ExecutionPlanMetricsSet,
+            _partition: usize,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn join_left_split_across_tasks_emits_unmatched_rows_once() -> Result<()> {
+        let left = || {
+            build_table(
+                ("a1", &vec![1, 2, 3, 4]),
+                ("b1", &vec![1, 2, 3, 4]),
+                ("c1", &vec![7, 8, 9, 10]),
+            )
+        };
+        // Each task probes its own half of the right side.
+        let rights = [
+            build_table(("a2", &vec![10]), ("b1", &vec![1]), ("c2", &vec![70])),
+            build_table(("a2", &vec![20]), ("b1", &vec![2]), ("c2", &vec![80])),
+        ];
+        let coordinator = Arc::new(TestJoinCoordinator {
+            state: Mutex::new(TestJoinCoordinatorState {
+                remaining_tasks: rights.len(),
+                visited: None,
+            }),
+        });
+
+        let mut task_batches = vec![];
+        for right in rights {
+            let left = left();
+            let on = vec![(
+                Arc::new(Column::new_with_schema("b1", &left.schema())?) as _,
+                Arc::new(Column::new_with_schema("b1", &right.schema())?) as _,
+            )];
+            let shared_state = SharedJoinState::new(Arc::new(TestSharedJoinState {
+                coordinator: Arc::clone(&coordinator),
+            }));
+            let session_config =
+                SessionConfig::default().with_extension(Arc::new(shared_state));
+            let context =
+                Arc::new(TaskContext::default().with_session_config(session_config));
+            let join = join(
+                left,
+                right,
+                on,
+                &JoinType::Left,
+                NullEquality::NullEqualsNothing,
+            )?;
+            task_batches.push(common::collect(join.execute(0, context)?).await?);
+        }
+
+        // The first task leaves the unmatched build rows to the last one.
+        assert_snapshot!(batches_to_sort_string(&task_batches[0]), @r"
+        +----+----+----+----+----+----+
+        | a1 | b1 | c1 | a2 | b1 | c2 |
+        +----+----+----+----+----+----+
+        | 1  | 1  | 7  | 10 | 1  | 70 |
+        +----+----+----+----+----+----+
+        ");
+        assert_snapshot!(batches_to_sort_string(&task_batches[1]), @r"
+        +----+----+----+----+----+----+
+        | a1 | b1 | c1 | a2 | b1 | c2 |
+        +----+----+----+----+----+----+
+        | 2  | 2  | 8  | 20 | 2  | 80 |
+        | 3  | 3  | 9  |    |    |    |
+        | 4  | 4  | 10 |    |    |    |
+        +----+----+----+----+----+----+
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn join_context_receives_the_build_side() -> Result<()> {
+        let left = build_table(
+            ("a1", &vec![1, 2, 3]),
+            ("b1", &vec![4, 5, 6]),
+            ("c1", &vec![7, 8, 9]),
+        );
+        let right = build_table(("a2", &vec![10]), ("b1", &vec![4]), ("c2", &vec![70]));
+        let on = vec![(
+            Arc::new(Column::new_with_schema("b1", &left.schema())?) as _,
+            Arc::new(Column::new_with_schema("b1", &right.schema())?) as _,
+        )];
+        let join_context = Arc::new(JoinContext::default());
+        let task_ctx = prepare_task_ctx(8192, false);
+        let session_config = task_ctx
+            .session_config()
+            .clone()
+            .with_extension(Arc::clone(&join_context));
+        let context =
+            Arc::new(TaskContext::default().with_session_config(session_config));
+        let join = join(
+            left,
+            right,
+            on,
+            &JoinType::Inner,
+            NullEquality::NullEqualsNothing,
+        )?;
+        common::collect(join.execute(0, context)?).await?;
+
+        let build = join_context.get_build_state().expect("build side");
+        let keys: ArrayRef = Arc::new(Int32Array::from(vec![4, 5, 6, 99]));
+        let mut hashes = vec![0; keys.len()];
+        create_hashes([&keys], HASH_JOIN_SEED.random_state(), &mut hashes)?;
+        assert_eq!(
+            build.contain_hashes(&hashes),
+            BooleanArray::from(vec![true, true, true, false])
+        );
         Ok(())
     }
 

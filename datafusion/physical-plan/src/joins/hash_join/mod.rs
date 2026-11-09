@@ -4,7 +4,10 @@
 
 //! [`HashJoinExec`] Partitioned Hash Join Operator
 
-pub use exec::{HashJoinExec, HashJoinExecBuilder, PreparedHashJoinBuild};
+pub use exec::{
+    HASH_JOIN_SEED, HashJoinExec, HashJoinExecBuilder, JoinContext, JoinLeftData,
+    PreparedHashJoinBuild, SharedJoinState, SharedJoinStateImpl, SharedProbeState,
+};
 /// # Public Only for Internal Use:
 ///
 /// This is not a public API and is for internal use only; see [API policy] for details.
