@@ -15,7 +15,7 @@ use datafusion_physical_plan::common::collect;
 use datafusion_physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
 use datafusion_proto::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
-    PhysicalPlanNodeExt, PhysicalProtoConverterExtension,
+    PhysicalPlanDecodeContext, PhysicalPlanNodeExt, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::{self, PhysicalPlanNode};
 use parking_lot::RwLock;
@@ -323,7 +323,7 @@ impl PhysicalExtensionCodec for FallbackCodec {
         &self,
         _buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("encoding-only test codec")
