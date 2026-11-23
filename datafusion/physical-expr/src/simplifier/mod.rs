@@ -47,8 +47,12 @@ impl<'a> PhysicalExprSimplifier<'a> {
         while count < MAX_LOOP_COUNT {
             count += 1;
             let result = current_expr.transform(|node| {
+                // Only a sanity check: an expression may legitimately have no
+                // statically inferable type here (e.g. a predicate typed against
+                // a virtual schema), so record the type when it is known instead
+                // of unwrapping and panicking.
                 #[cfg(debug_assertions)]
-                let original_type = node.data_type(schema).unwrap();
+                let original_type = node.data_type(schema).ok();
 
                 // Apply NOT expression simplification first, then unwrap cast optimization,
                 // then constant expression evaluation
@@ -60,11 +64,13 @@ impl<'a> PhysicalExprSimplifier<'a> {
                     })?;
 
                 #[cfg(debug_assertions)]
-                assert_eq!(
-                    rewritten.data.data_type(schema).unwrap(),
-                    original_type,
-                    "Simplified expression should have the same data type as the original"
-                );
+                if let Some(original_type) = original_type {
+                    assert_eq!(
+                        rewritten.data.data_type(schema).ok(),
+                        Some(original_type),
+                        "Simplified expression should have the same data type as the original"
+                    );
+                }
 
                 Ok(rewritten)
             })?;
@@ -85,7 +91,7 @@ mod tests {
     use crate::expressions::{
         BinaryExpr, CastExpr, Literal, NotExpr, TryCastExpr, col, in_list, lit,
     };
-    use arrow::datatypes::{DataType, Field};
+    use arrow::datatypes::{DataType, Field, TimeUnit};
     use datafusion_common::ScalarValue;
     use datafusion_common::config::ConfigOptions;
     use datafusion_expr::{
@@ -133,6 +139,27 @@ mod tests {
             &result, &expected,
             "Simplification should transform:\n  input: {input}\n  to:    {expected}\n  got:   {result}"
         );
+    }
+
+    #[test]
+    fn test_simplify_comparison_typed_against_another_schema() {
+        // A predicate typed against a table schema, simplified against a file
+        // schema where the column has a type the literal cannot be compared to.
+        let schema = Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            false,
+        )]);
+        let simplifier = PhysicalExprSimplifier::new(&schema);
+        let input: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            col("ts", &schema).unwrap(),
+            Operator::Gt,
+            lit(ScalarValue::Float64(Some(0.0))),
+        ));
+
+        let result = simplifier.simplify(Arc::clone(&input)).unwrap();
+
+        assert_eq!(&result, &input);
     }
 
     #[test]

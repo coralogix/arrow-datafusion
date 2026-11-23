@@ -31,7 +31,7 @@ use datafusion::physical_plan::{DisplayAs, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::{
     AsExecutionPlan, ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
-    PhysicalProtoConverterExtension,
+    PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf;
 
@@ -144,7 +144,7 @@ impl PhysicalExtensionCodec for ParentPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if buf == b"ParentExec" {
@@ -242,7 +242,7 @@ impl PhysicalExtensionCodec for ChildPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        _ctx: &PhysicalPlanDecodeContext<'_>,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if buf == b"ChildExec" {

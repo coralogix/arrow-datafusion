@@ -61,6 +61,7 @@ impl PreparedHashJoinBuild {
             not_in: None,
             visited_indices_bitmap: Mutex::new(BooleanBufferBuilder::new(0)),
             probe_completion: ProbeCompletion::new(probe_threads),
+            shared_state: None,
         }
     }
 
